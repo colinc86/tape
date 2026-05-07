@@ -1,0 +1,21 @@
+[package]
+name = "tape-diff"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "tape diff — three-pass align/classify/narrate"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+similar.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tape-format.workspace = true
+tape-play.workspace = true

@@ -1,0 +1,5 @@
+{
+  "expect_codes": [
+    "WRONG_TAPE_VERSION"
+  ]
+}

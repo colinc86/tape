@@ -1,0 +1,27 @@
+[package]
+name = "tape-format"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "tape/v0 format: read, write, verify"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+zip.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+anyhow.workspace = true

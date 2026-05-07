@@ -1,0 +1,14 @@
+{
+  "name": "tape-marketplace",
+  "owner": {
+    "name": "tape contributors"
+  },
+  "plugins": [
+    {
+      "name": "tape",
+      "source": "./plugins/tape",
+      "description": "A cassette tape for agent runs — record once, replay anywhere, share as a file.",
+      "version": "0.2.0"
+    }
+  ]
+}

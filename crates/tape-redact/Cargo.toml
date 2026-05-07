@@ -1,0 +1,21 @@
+[package]
+name = "tape-redact"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "Redaction engine for tape v0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tape-format.workspace = true

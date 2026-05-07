@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tape-cli",
+    "crates/tape-format",
+    "crates/tape-record",
+    "crates/tape-mcp-wrap",
+    "crates/tape-redact",
+    "crates/tape-play",
+    "crates/tape-diff",
+    "crates/tape-mcp",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+authors = ["tape contributors"]
+repository = "https://github.com/anthropics/tape"
+version = "0.1.0"
+
+[workspace.dependencies]
+# Errors
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serde / serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "io-std", "net", "process", "signal", "fs"] }
+futures = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Format primitives
+zip = { version = "2", default-features = false, features = ["deflate"] }
+blake3 = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "now"] }
+
+# Redaction
+regex = "1"
+
+# HTTP / proxy
+axum = "0.7"
+hyper = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+bytes = "1"
+http = "1"
+
+# Diff
+similar = "2"
+
+# Internal — workspace crates can refer to each other via path
+tape-format = { path = "crates/tape-format", version = "0.1.0" }
+tape-record = { path = "crates/tape-record", version = "0.1.0" }
+tape-redact = { path = "crates/tape-redact", version = "0.1.0" }
+tape-play = { path = "crates/tape-play", version = "0.1.0" }
+tape-diff = { path = "crates/tape-diff", version = "0.1.0" }
+tape-mcp = { path = "crates/tape-mcp", version = "0.1.0" }
+
+# Dev
+insta = { version = "1", features = ["yaml", "json", "filters"] }
+tempfile = "3"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"

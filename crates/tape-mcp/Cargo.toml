@@ -1,0 +1,31 @@
+[package]
+name = "tape-mcp"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "The deck — tape MCP server"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+tape-format.workspace = true
+tape-play.workspace = true
+tape-diff.workspace = true
+tape-record.workspace = true
+tape-redact.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

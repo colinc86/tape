@@ -1,0 +1,34 @@
+[package]
+name = "tape-cli"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "tape CLI — record, verify, play, ls, diff, mcp"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tape"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tape-format.workspace = true
+tape-play.workspace = true
+tape-diff.workspace = true
+tape-mcp.workspace = true
+tape-record.workspace = true
+tape-redact.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true

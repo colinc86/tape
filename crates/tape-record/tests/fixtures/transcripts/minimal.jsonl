@@ -1,0 +1,2 @@
+{"type":"user","uuid":"user-001","promptId":"prompt-001","timestamp":"2026-05-06T10:00:00.000Z","sessionId":"session-min","cwd":"/tmp/x","message":{"role":"user","content":"Say hello"}}
+{"type":"assistant","uuid":"assist-001","requestId":"req_001","timestamp":"2026-05-06T10:00:01.500Z","sessionId":"session-min","cwd":"/tmp/x","message":{"model":"claude-opus-4-7","id":"msg_001","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":3}}}

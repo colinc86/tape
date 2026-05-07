@@ -1,0 +1,41 @@
+[package]
+name = "tape-record"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "Recording proxies, MCP wrapper, and Claude Code hook integration for tape v0"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tape-hook"
+path = "src/bin/hook.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+axum.workspace = true
+hyper.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+http.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+tempfile.workspace = true
+tape-format.workspace = true
+tape-redact.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

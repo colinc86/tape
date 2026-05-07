@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u-001","promptId":"p-001","timestamp":"2026-05-06T10:00:00.000Z","sessionId":"sess-orphan","cwd":"/tmp/x","message":{"role":"user","content":"Run something"}}
+{"type":"assistant","uuid":"a-001","requestId":"req_001","timestamp":"2026-05-06T10:00:01.000Z","sessionId":"sess-orphan","cwd":"/tmp/x","message":{"model":"claude-opus-4-7","id":"msg_001","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_orphan_01","name":"Bash","input":{"command":"echo hi"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":20}}}
