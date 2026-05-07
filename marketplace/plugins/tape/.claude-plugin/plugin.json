@@ -1,13 +1,13 @@
 {
   "name": "tape",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "A cassette tape for agent runs — record once, replay anywhere, share as a file. Provides the tape MCP deck (12 tools incl. tape.snapshot for in-session recording) for working with .tape files inside Claude Code.",
   "author": {
     "name": "tape contributors"
   },
   "license": "Apache-2.0",
-  "homepage": "https://github.com/anthropics/tape",
-  "repository": "https://github.com/anthropics/tape",
+  "homepage": "https://github.com/colinc86/tape",
+  "repository": "https://github.com/colinc86/tape",
   "keywords": [
     "mcp",
     "recording",

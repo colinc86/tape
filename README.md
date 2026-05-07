@@ -37,7 +37,7 @@ That's it. The plugin bundles `tape`, `tape-mcp-wrap`, and `tape-hook`, register
 <summary><b>Building from source</b> — for non-macOS, or if you want the CLI on your <code>PATH</code></summary>
 
 ```console
-git clone <repo-url>
+git clone https://github.com/colinc86/tape
 cd tape
 cargo build --release
 export PATH="$PWD/target/release:$PATH"

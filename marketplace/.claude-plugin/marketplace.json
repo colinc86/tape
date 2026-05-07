@@ -8,7 +8,7 @@
       "name": "tape",
       "source": "./plugins/tape",
       "description": "A cassette tape for agent runs — record once, replay anywhere, share as a file.",
-      "version": "0.2.0"
+      "version": "0.1.0"
     }
   ]
 }
