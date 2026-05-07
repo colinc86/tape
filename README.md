@@ -22,19 +22,37 @@
 
 ## Install
 
-The plugin marketplace is the fast path:
+`tape` runs in two modes that share the same binaries:
+
+- **As a Claude Code plugin** — adds `/tape:tape-snapshot`, `/tape:tape-resume`, `/tape:tape-list`, and `/tape:tape-record-help` to your sessions, and registers a `tape` MCP server. *(Most people want this.)*
+- **As a CLI** — standalone `tape verify` / `play` / `record` / `diff` / `mcp` commands on your `PATH`. Useful for scripting and non-Claude-Code workflows.
+
+### As a Claude Code plugin
 
 ```console
-/plugin marketplace add /path/to/tape/marketplace
+git clone https://github.com/colinc86/tape
+/plugin marketplace add ./tape/marketplace
 /plugin install tape@tape-marketplace
 ```
 
-That's it. The plugin bundles `tape`, `tape-mcp-wrap`, and `tape-hook`, registers a `tape` MCP server in your Claude Code session, and adds four slash commands.
-
-> Bundled binaries are macOS Apple Silicon at v0.1. Other platforms — keep reading.
+The plugin bundles `tape`, `tape-mcp-wrap`, and `tape-hook` (macOS Apple Silicon binaries at v0.1).
 
 <details>
-<summary><b>Building from source</b> — for non-macOS, or if you want the CLI on your <code>PATH</code></summary>
+<summary><b>As a CLI</b> — prebuilt download or build from source</summary>
+
+#### Prebuilt (macOS Apple Silicon)
+
+Grab the tarball + checksums from the [v0.1.0 release](https://github.com/colinc86/tape/releases/tag/v0.1.0):
+
+```console
+curl -LO https://github.com/colinc86/tape/releases/download/v0.1.0/tape-v0.1.0-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/colinc86/tape/releases/download/v0.1.0/SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+tar xzf tape-v0.1.0-aarch64-apple-darwin.tar.gz
+mv tape tape-hook tape-mcp-wrap /usr/local/bin/
+```
+
+#### From source (any platform)
 
 ```console
 git clone https://github.com/colinc86/tape
@@ -43,7 +61,6 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-This puts `tape`, `tape-mcp-wrap`, and `tape-hook` on your shell `PATH`. The plugin's bundled binaries continue to work for the in-session flow regardless.
 </details>
 
 ## A tape in the wild
@@ -72,9 +89,9 @@ Pick the path that matches your situation. **Default to `/tape:tape-snapshot`** 
 
 | | When you reach for it |
 |---|---|
-| **`/tape:tape-snapshot`**   *(in-session)* | Mid-session and you want a tape NOW. **Default.** |
-| **`tape record -- claude`**   *(CLI proxy)* | Scripted runs, non-interactive `claude -p`, or you need raw HTTP fidelity (streaming chunk timing, exact request bodies). |
-| **`tape.record` + annotate + ⏏ eject**   *(MCP, in-memory)* | The agent assembles a synthetic tape from a few annotations. Niche. |
+| **`/tape:tape-snapshot`** *(in-session)* | Mid-session and you want a tape NOW. **Default.** |
+| **`tape record -- claude`** *(CLI proxy)* | Scripted runs, non-interactive `claude -p`, or you need raw HTTP fidelity (streaming chunk timing, exact request bodies). |
+| **`tape.record` + annotate + ⏏ eject** *(MCP, in-memory)* | The agent assembles a synthetic tape from a few annotations. Niche. |
 
 All three produce valid `tape/v0` files; `meta.recorder.agent` distinguishes them downstream.
 
@@ -112,7 +129,7 @@ The handle-not-contents rule: `tape.load` returns a string handle, not bytes. Tr
 ## What's on the cassette
 
 ```
-my-bug.tape
+bug-447.tape
 ├── meta.yaml          ← who recorded what, when, with what outcome
 ├── liner-notes.md     ← the case insert (200–500 words; four required sections)
 ├── tracks.jsonl       ← every event, in order
@@ -163,4 +180,4 @@ Full changelog: [`RELEASE_NOTES.md`](./RELEASE_NOTES.md).
 
 ## License
 
-Apache 2.0.
+[Apache 2.0](./LICENSE).
