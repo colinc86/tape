@@ -6,3 +6,10 @@ Cargo.lock.*
 .idea/
 .vscode/
 /tests/fixtures/_build/
+
+# Internal-only docs (kept on disk locally; not part of the published repo).
+/TAPE_V0_BRIEF.md
+/DECISIONS.md
+
+# A test snapshot left over from manual /tape:tape-snapshot runs.
+/test-snapshot.tape

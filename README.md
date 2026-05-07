@@ -145,7 +145,7 @@ Frequently asked, dryly answered.
 
 **Is this vcrpy / llmock?**  No, but they're adjacent. vcrpy and llmock record HTTP calls and replay them as deterministic fixtures. `tape` records *runs* — model turns, tool calls, file edits, decisions — as a single coherent trajectory portable between agents and engineers. Different unit, different scope.
 
-**Why a closed event-kind enum if Claude Code keeps adding tools?**  Because `tape verify` is load-bearing. A closed enum is the only way verify can refuse a malformed cassette without guessing. Claude Code's built-in tools (Grep, Glob, WebFetch, etc.) map to `Kind::McpCall` with `payload.server = "builtin"`. See [`DECISIONS.md`](./DECISIONS.md) §D3.
+**Why a closed event-kind enum if Claude Code keeps adding tools?**  Because `tape verify` is load-bearing. A closed enum is the only way verify can refuse a malformed cassette without guessing. Claude Code's built-in tools (Grep, Glob, WebFetch, etc.) map to `Kind::McpCall` with `payload.server = "builtin"`.
 
 **Does the cassette metaphor spread to every section header?**  ~~Yes, every single one.~~  No.
 

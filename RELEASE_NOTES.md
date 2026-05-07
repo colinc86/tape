@@ -28,7 +28,7 @@ The format is identical across paths (`tape verify` accepts all three). `meta.re
 
 ### Design notes
 
-- Built-in non-MCP Claude Code tools (Grep, Glob, WebFetch, WebSearch, Task, Skill, TodoWrite, etc.) map to `Kind::McpCall` with `payload.server = "builtin"`. SPEC.md is fixed for v0; extending the closed `Kind` enum is a `tape/v1` change. See `DECISIONS.md` §D3.
+- Built-in non-MCP Claude Code tools (Grep, Glob, WebFetch, WebSearch, Task, Skill, TodoWrite, etc.) map to `Kind::McpCall` with `payload.server = "builtin"`. SPEC.md is fixed for v0; extending the closed `Kind` enum is a `tape/v1` change.
 - Snapshot captures from session start to now. `/clear` leaves no marker in the transcript; detecting it would be heuristic. Honest default: full session.
 - Tool-result lookup precedence: inline `tool_result` block in subsequent user message → sibling file at `<session-id>/tool-results/<tool_use_id>.txt` → orphan (call recorded with `result: null` and a warning annotation).
 - `+transcript` recorder agent suffix lets downstream tooling recognize the ingestion path.
@@ -139,8 +139,7 @@ These are intentional v0 cuts; each has a stable place to land in the next relea
 tape/
 ├── Cargo.toml                workspace root
 ├── SPEC.md                   normative format spec
-├── README.md                 publishable; 60-second tutorial + killer-scenario walkthrough
-├── DECISIONS.md              non-obvious build decisions
+├── README.md                 publishable; install + worked example + reference
 ├── RELEASE_NOTES.md          this file
 ├── crates/
 │   ├── tape-cli/             CLI binary `tape`
