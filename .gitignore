@@ -13,3 +13,7 @@ Cargo.lock.*
 
 # A test snapshot left over from manual /tape:tape-snapshot runs.
 /test-snapshot.tape
+
+# Claude Code project-local config (dev-side agents, skills, commands, hooks).
+# Useful locally; not part of the distribution.
+/.claude/
