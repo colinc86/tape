@@ -1,12 +1,3 @@
-```
-            ┌──────────────────────────────────────────┐
-            │  ┌───────┐                    ┌───────┐  │
-            │  │   ◉   │  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │   ◉   │  │
-            │  └───────┘                    └───────┘  │
-            │              tape · v0.1                 │
-            └──────────────────────────────────────────┘
-```
-
 # tape 📼
 
 > A cassette tape for agent runs. Record once, replay anywhere, share as a file.
@@ -17,6 +8,15 @@
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
 
 ---
+
+```
+            ┌──────────────────────────────────────────┐
+            │  ┌───────┐                    ┌───────┐  │
+            │  │   ◉   │  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │   ◉   │  │
+            │  └───────┘                    └───────┘  │
+            │              tape · v0.1                 │
+            └──────────────────────────────────────────┘
+```
 
 `tape` captures the messiest artifact in software — an AI agent's actual investigation — into a single file you can hand to a colleague, a different agent, or your future self. It records every model call, tool call, file edit, and pinned insight. The receiving agent loads it via MCP and picks up exactly where you left off.
 
