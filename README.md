@@ -1,13 +1,14 @@
+<div align="center">
+
 # tape 📼
 
-> A cassette tape for agent runs. Record once, replay anywhere, share as a file.
+**A cassette tape for agent runs. Record once, replay anywhere, share as a file.**
 
 ![format: tape/v0](https://img.shields.io/badge/format-tape%2Fv0-purple)
 ![runtime: claude code](https://img.shields.io/badge/runtime-claude%20code-orange)
 ![status: v0.1.1](https://img.shields.io/badge/status-v0.1.1-blue)
+![tests: 106](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
-
----
 
 ```
             ┌──────────────────────────────────────────┐
@@ -18,7 +19,28 @@
             └──────────────────────────────────────────┘
 ```
 
-`tape` captures the messiest artifact in software — an AI agent's actual investigation — into a single file you can hand to a colleague, a different agent, or your future self. It records every model call, tool call, file edit, and pinned insight. The receiving agent loads it via MCP and picks up exactly where you left off.
+</div>
+
+`tape` captures the messiest artifact in software — an AI agent's actual investigation — into a single file you can hand to a colleague, a different agent, or your future self. It records every model call, tool call, file edit, and pinned insight. The receiving agent loads it via MCP and rewinds to exactly where you left off.
+
+### What a tape sounds like
+
+Once you've ejected one, `tape ls` plays back the tracklist:
+
+```console
+$ tape ls bug-447.tape
+
+   1  task         "Investigate payment failures for customer 4471"
+   2  model_call   anthropic/claude-opus-4-7
+   3  shell        grep -n process_refund src/payments.rs
+   4  file_read    src/payments.rs
+   5  mcp_call     db.query("SELECT * FROM payments WHERE customer_id=4471 AND status='failed'")
+   6  annotation   "smoking gun: race condition in process_refund() — customer CUST-447139"
+   7  model_call   anthropic/claude-opus-4-7
+   8  eject        success
+```
+
+Eight tracks, two minutes of investigation, one file — `tape verify` confirms it conforms to `tape/v0`, `tape play --step 6` pulls the full annotation, and `/tape:tape-resume bug-447.tape` hands the cassette to a fresh Claude Code session.
 
 ## Install
 
@@ -73,7 +95,7 @@ export PATH="$PWD/target/release:$PATH"
 
 `bug-447.tape` lands in your repo. You attach it to the Jira ticket.
 
-**Act II — replay.** ⏪  Wednesday morning, your colleague picks up the ticket. In a fresh Claude Code session:
+**Act II — rewind.** ⏪  Wednesday morning, your colleague picks up the ticket. In a fresh Claude Code session:
 
 ```console
 /tape:tape-resume bug-447.tape
@@ -89,9 +111,9 @@ Pick the path that matches your situation. **Default to `/tape:tape-snapshot`** 
 
 | | When you reach for it |
 |---|---|
-| **`/tape:tape-snapshot`** *(in-session)* | Mid-session and you want a tape NOW. **Default.** |
-| **`tape record -- claude`** *(CLI proxy)* | Scripted runs, non-interactive `claude -p`, or you need raw HTTP fidelity (streaming chunk timing, exact request bodies). |
-| **`tape.record` + annotate + ⏏ eject** *(MCP, in-memory)* | The agent assembles a synthetic tape from a few annotations. Niche. |
+| ⏺&nbsp; **`/tape:tape-snapshot`** *(in-session)* | Mid-session and you want a tape NOW. **Default.** |
+| 🎚&nbsp; **`tape record -- claude`** *(CLI proxy)* | Scripted runs, non-interactive `claude -p`, or you need raw HTTP fidelity (streaming chunk timing, exact request bodies). |
+| ⏏&nbsp; **`tape.record` + annotate + eject** *(MCP, in-memory)* | The agent assembles a synthetic tape from a few annotations. Niche. |
 
 All three produce valid `tape/v0` files; `meta.recorder.agent` distinguishes them downstream.
 
@@ -124,7 +146,7 @@ From inside a Claude Code session, the deck (`tape mcp`) exposes 12 tools. Mutat
 | `tape.eject` ⏏ | Save a recording or fork to a `.tape` file on disk. |
 | `tape.snapshot` ⏏ | *(v0.1)* Capture this Claude Code session's transcript as a `.tape` file in one shot. |
 
-The handle-not-contents rule: `tape.load` returns a string handle, not bytes. Track payloads come on demand. A 50 MB tape coexists with a 200 K context window.
+The handle-not-contents rule: `tape.load` returns a string handle, not bytes. Track payloads come on demand — fast-forward to the steps you care about, skip the boring bits. A 50 MB tape coexists with a 200 K context window.
 
 ## What's on the cassette
 
