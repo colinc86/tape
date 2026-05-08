@@ -10,15 +10,6 @@
 ![tests: 106](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
 
-```
-            ┌──────────────────────────────────────────┐
-            │  ┌───────┐                    ┌───────┐  │
-            │  │   ◉   │  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │   ◉   │  │
-            │  └───────┘                    └───────┘  │
-            │             tape · v0.1.1                │
-            └──────────────────────────────────────────┘
-```
-
 </div>
 
 `tape` captures the messiest artifact in software — an AI agent's actual investigation — into a single file you can hand to a colleague, a different agent, or your future self. It records every model call, tool call, file edit, and pinned insight. The receiving agent loads it via MCP and rewinds to exactly where you left off.
