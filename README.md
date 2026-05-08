@@ -10,28 +10,11 @@
 ![tests: 106](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
 
+![tape demo: verify, ls, play](./docs/demo.gif)
+
 </div>
 
 `tape` captures the messiest artifact in software — an AI agent's actual investigation — into a single file you can hand to a colleague, a different agent, or your future self. It records every model call, tool call, file edit, and pinned insight. The receiving agent loads it via MCP and rewinds to exactly where you left off.
-
-### What a tape sounds like
-
-Once you've ejected one, `tape ls` plays back the tracklist:
-
-```console
-$ tape ls bug-447.tape
-
-   1  task         "Investigate payment failures for customer 4471"
-   2  model_call   anthropic/claude-opus-4-7
-   3  shell        grep -n process_refund src/payments.rs
-   4  file_read    src/payments.rs
-   5  mcp_call     db.query("SELECT * FROM payments WHERE customer_id=4471 AND status='failed'")
-   6  annotation   "smoking gun: race condition in process_refund() — customer CUST-447139"
-   7  model_call   anthropic/claude-opus-4-7
-   8  eject        success
-```
-
-Eight tracks, two minutes of investigation, one file — `tape verify` confirms it conforms to `tape/v0`, `tape play --step 6` pulls the full annotation, and `/tape:tape-resume bug-447.tape` hands the cassette to a fresh Claude Code session.
 
 ## Install
 
