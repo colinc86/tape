@@ -37,6 +37,18 @@ impl RawTape {
             unknown_entries: Vec::new(),
         };
 
+        // SPEC §12.3: reject decompression bombs. We track running totals
+        // of compressed and uncompressed bytes; if the ratio exceeds
+        // MAX_DECOMPRESS_RATIO at any point during the read, abort. We
+        // also enforce a per-tape hard size ceiling so a small archive of
+        // many tiny entries can't accumulate unbounded growth.
+        let mut compressed_total: u64 = 0;
+        let mut uncompressed_total: u64 = 0;
+        // Floor: 64 KiB so trivially-small tapes (where the ratio is
+        // numerically high but the absolute size is harmless) don't
+        // false-positive. Above the floor, the ratio rule applies.
+        const COMPRESSED_FLOOR: u64 = 64 * 1024;
+
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
             let name = entry.name().to_owned();
@@ -45,8 +57,22 @@ impl RawTape {
                 return Err(Error::Invalid(format!("unsafe zip entry path: {name}")));
             }
 
+            compressed_total = compressed_total.saturating_add(entry.compressed_size());
+
             let mut buf = Vec::with_capacity(entry.size() as usize);
             entry.read_to_end(&mut buf)?;
+            uncompressed_total = uncompressed_total.saturating_add(buf.len() as u64);
+
+            if compressed_total >= COMPRESSED_FLOOR
+                && uncompressed_total > compressed_total.saturating_mul(crate::MAX_DECOMPRESS_RATIO)
+            {
+                return Err(Error::Invalid(format!(
+                    "decompression bomb: {} bytes uncompressed from {} compressed (ratio > {}×)",
+                    uncompressed_total,
+                    compressed_total,
+                    crate::MAX_DECOMPRESS_RATIO
+                )));
+            }
 
             match name.as_str() {
                 "meta.yaml" => {

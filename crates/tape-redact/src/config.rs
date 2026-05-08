@@ -78,16 +78,40 @@ impl TapeRcConfig {
                 .replacement
                 .clone()
                 .unwrap_or_else(|| format!("<CUSTOM:{}>", custom.id));
+            // P1 #2: SPEC §6.2 — replacement MUST be a typed placeholder of the
+            // form `<TYPE>` or `<TYPE:subtype>`, never the original or a hash.
+            // Validate at config load so a malicious or mistaken `.taperc`
+            // can't bypass the redaction invariant.
+            if !is_typed_placeholder(&replacement) {
+                anyhow::bail!(
+                    "custom rule {:?}: replacement {:?} is not a typed placeholder (expected <TYPE> or <TYPE:subtype>)",
+                    custom.id,
+                    replacement
+                );
+            }
             engine.add_rule(crate::Rule {
                 id: format!("custom:{}", custom.id),
                 regex,
                 replacement,
                 validator: None,
                 default_enabled: true,
+                target_capture: None,
             });
         }
         Ok(())
     }
+}
+
+/// SPEC §6.2 typed-placeholder check. Accepts `<TYPE>` or `<TYPE:subtype>`
+/// where TYPE is uppercase letters/digits/underscore and subtype is
+/// alphanumeric / `_` / `-`. Rejects everything else, including bare strings,
+/// hashes, and the original secret.
+fn is_typed_placeholder(s: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"^<[A-Z][A-Z0-9_]*(?::[A-Za-z0-9_-]+)?>$").unwrap()
+    });
+    re.is_match(s)
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
@@ -140,6 +164,53 @@ redact:
         let mut s = "host 10.0.0.1 here".to_string();
         engine.redact_string(&mut s);
         assert!(s.contains("<IP:private>"), "got: {s}");
+    }
+
+    #[test]
+    fn rejects_non_typed_placeholder() {
+        // P1 #2: SPEC §6.2 forbids replacements that aren't typed placeholders.
+        let yaml = r#"
+redact:
+  custom:
+    - id: leaky
+      pattern: 'CUST-\d{6}'
+      replacement: 'literal_secret_value'
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        let mut engine = crate::Engine::with_default_rules();
+        let err = cfg.apply(&mut engine).unwrap_err();
+        assert!(
+            err.to_string().contains("typed placeholder"),
+            "expected typed-placeholder error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_typed_placeholder_subtype() {
+        let yaml = r#"
+redact:
+  custom:
+    - id: pii
+      pattern: 'CUST-\d{6}'
+      replacement: '<CUST_ID:internal>'
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        let mut engine = crate::Engine::with_default_rules();
+        cfg.apply(&mut engine).unwrap(); // no error
+    }
+
+    #[test]
+    fn rejects_replacement_that_is_a_hash() {
+        let yaml = r#"
+redact:
+  custom:
+    - id: leaky2
+      pattern: 'CUST-\d{6}'
+      replacement: 'sha256:abcdef'
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        let mut engine = crate::Engine::with_default_rules();
+        assert!(cfg.apply(&mut engine).is_err());
     }
 
     #[test]

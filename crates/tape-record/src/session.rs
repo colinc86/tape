@@ -24,14 +24,26 @@ struct Inner {
 }
 
 impl Session {
-    /// Start a session. Emits a `task` event as step 1.
+    /// Start a session at the current wall clock. Emits a `task` event as step 1.
     pub fn start(task: impl Into<String>, recorder_agent: impl Into<String>) -> Self {
-        let now = chrono::Utc::now();
+        Self::start_at(task, recorder_agent, chrono::Utc::now())
+    }
+
+    /// Start a session at an explicit timestamp. Used by `tape.snapshot` to
+    /// align `meta.created_at` with the first user prompt's actual time
+    /// rather than "now"; otherwise replaying an older transcript would
+    /// produce a tape whose meta.created_at is in the future relative to
+    /// its first track.
+    pub fn start_at(
+        task: impl Into<String>,
+        recorder_agent: impl Into<String>,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
         let task_text = task.into();
         let task_event = Track {
             step: 1,
             kind: Kind::Task,
-            ts: format_ts(now),
+            ts: format_ts(started_at),
             payload: serde_json::json!({"prompt": task_text}),
             parent_step: None,
             refs: vec![],
@@ -42,7 +54,7 @@ impl Session {
                 task: task_text,
                 recorder_agent: recorder_agent.into(),
                 tracks: vec![task_event],
-                created_at: now,
+                created_at: started_at,
             })),
         }
     }

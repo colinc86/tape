@@ -69,14 +69,17 @@ pub struct Summary {
 pub struct Budget {
     pub a: u64,
     pub b: u64,
-    pub delta_pct: i64,
+    /// Percent change from a to b. `None` when undefined (a is zero, b nonzero).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_pct: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Latency {
     pub a: u64,
     pub b: u64,
-    pub delta_pct: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_pct: Option<i64>,
 }
 
 /// Compute a diff from two .tape file paths.
@@ -292,11 +295,16 @@ fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn pct_delta(a: u64, b: u64) -> i64 {
-    if a == 0 {
-        return if b == 0 { 0 } else { 100 };
+/// Percent change from a to b.
+/// - Returns `Some(0)` when both are 0 (no change).
+/// - Returns `None` when a is 0 and b is non-zero (undefined ratio).
+/// - Otherwise returns the integer percent delta.
+fn pct_delta(a: u64, b: u64) -> Option<i64> {
+    match (a, b) {
+        (0, 0) => Some(0),
+        (0, _) => None,
+        _ => Some(((b as i64 - a as i64) * 100) / (a as i64)),
     }
-    ((b as i64 - a as i64) * 100) / (a as i64)
 }
 
 fn last_answer(tracks: &[Track]) -> Option<String> {
@@ -385,19 +393,31 @@ pub fn render_text(diff: &Diff, show_all: bool) -> String {
     );
     let _ = writeln!(
         out,
-        "Tool budget:   before {} calls · after {} calls (Δ{}%)",
-        diff.summary.tool_budget.a, diff.summary.tool_budget.b, diff.summary.tool_budget.delta_pct
+        "Tool budget:   before {} calls · after {} calls ({})",
+        diff.summary.tool_budget.a,
+        diff.summary.tool_budget.b,
+        format_delta(diff.summary.tool_budget.delta_pct)
     );
     let _ = writeln!(
         out,
-        "Latency:       before {} ms · after {} ms (Δ{}%)",
-        diff.summary.latency_ms.a, diff.summary.latency_ms.b, diff.summary.latency_ms.delta_pct
+        "Latency:       before {} ms · after {} ms ({})",
+        diff.summary.latency_ms.a,
+        diff.summary.latency_ms.b,
+        format_delta(diff.summary.latency_ms.delta_pct)
     );
     out
 }
 
 pub fn render_json(diff: &Diff) -> String {
     serde_json::to_string_pretty(diff).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn format_delta(d: Option<i64>) -> String {
+    match d {
+        Some(0) => "Δ0%".to_string(),
+        Some(n) => format!("Δ{n}%"),
+        None => "Δ n/a".to_string(),
+    }
 }
 
 fn class_str(c: Class) -> &'static str {
@@ -472,8 +492,15 @@ mod tests {
 
     #[test]
     fn pct_delta_basic() {
-        assert_eq!(pct_delta(100, 130), 30);
-        assert_eq!(pct_delta(100, 70), -30);
-        assert_eq!(pct_delta(0, 0), 0);
+        assert_eq!(pct_delta(100, 130), Some(30));
+        assert_eq!(pct_delta(100, 70), Some(-30));
+        assert_eq!(pct_delta(0, 0), Some(0));
+    }
+
+    #[test]
+    fn pct_delta_undefined_when_a_is_zero_b_nonzero() {
+        // P3 #17: 0 → 5 has no meaningful percent delta. Returns None.
+        assert_eq!(pct_delta(0, 5), None);
+        assert_eq!(pct_delta(0, 1), None);
     }
 }

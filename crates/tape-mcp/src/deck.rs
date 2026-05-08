@@ -49,6 +49,12 @@ impl DeckState {
     pub fn remove(&mut self, handle: &str) -> Option<Loaded> {
         self.handles.remove(handle)
     }
+
+    /// Returns true if any current handle is in recording mode. Used by
+    /// `tape.record` to enforce the `ALREADY_RECORDING` deck-contract rule.
+    pub fn any_recording(&self) -> bool {
+        self.handles.values().any(|l| l.recording)
+    }
 }
 
 /// Shareable deck handle.

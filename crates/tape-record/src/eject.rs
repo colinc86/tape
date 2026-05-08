@@ -122,16 +122,33 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     };
 
     // 8. Redact meta.yaml itself (defense-in-depth: the task string and
-    // recorder.user can carry secrets too). We re-serialize meta to YAML,
-    // redact, and accept the redacted version.
+    // recorder.user can carry secrets too). We redact the individual fields
+    // we know about (task, recorder.user) instead of redacting the whole
+    // serialized YAML as text, so that a redaction insertion that contains
+    // YAML-significant punctuation (e.g. `:`) can never break the document
+    // structure. P2 #9.
     if let Some(engine) = &opts.redact_engine {
-        let yaml = meta.to_yaml()?;
-        let (redacted_yaml, meta_recs) = engine.redact_text(&yaml, 0, "$.meta");
+        let mut meta_recs: Vec<tape_redact::Redaction> = Vec::new();
+
+        // task — always present, often user-provided.
+        let (redacted_task, recs) = engine.redact_text(&meta.task, 0, "$.meta.task");
+        meta.task = redacted_task;
+        meta_recs.extend(recs);
+
+        // recorder.user — optional.
+        if let Some(user) = meta.recorder.user.as_ref() {
+            let (redacted_user, recs) = engine.redact_text(user, 0, "$.meta.recorder.user");
+            meta.recorder.user = Some(redacted_user);
+            meta_recs.extend(recs);
+        }
+
+        // recorder.agent — usually our own string but redact for safety.
+        let (redacted_agent, recs) = engine.redact_text(&meta.recorder.agent, 0, "$.meta.recorder.agent");
+        meta.recorder.agent = redacted_agent;
+        meta_recs.extend(recs);
+
         if !meta_recs.is_empty() {
-            // Re-parse the redacted YAML and update the redaction_summary.
-            meta = tape_format::meta::Meta::parse(&redacted_yaml)?;
             redactions.extend(meta_recs);
-            // Rewrite summary after the meta-pass redactions.
             let mut rules_applied: Vec<String> =
                 redactions.iter().map(|r| r.rule_id.clone()).collect();
             rules_applied.sort();
@@ -271,17 +288,21 @@ fn summarize_tools(snap: &SessionSnapshot) -> Vec<tape_format::meta::ToolSummary
         .collect()
 }
 
-/// Walk a JSON value; for any string field whose UTF-8 byte length exceeds
-/// `PAYLOAD_INLINE_MAX`, hash the bytes, place them in `artifacts`, and
-/// replace the value in-place with `{"ref": "sha:<hex>"}`. Add the ref to
+/// Walk a JSON value; for any string field whose JSON-serialized length
+/// exceeds `PAYLOAD_INLINE_MAX`, hash the bytes, place them in `artifacts`,
+/// and replace the value in-place with `{"ref": "sha:<hex>"}`. Add the ref to
 /// the enclosing event's `refs` array.
+///
+/// SPEC §5.6 measures the JSON-encoded value, which adds quotes plus
+/// any required escapes. A 4096-byte raw string serializes to ≥4098 bytes
+/// JSON-encoded and thus belongs in artifacts.
 fn spill_oversize_in_value(
     v: &mut Value,
     refs: &mut Vec<String>,
     artifacts: &mut BTreeMap<String, Vec<u8>>,
 ) {
     match v {
-        Value::String(s) if s.len() > PAYLOAD_INLINE_MAX => {
+        Value::String(s) if json_encoded_len(s) > PAYLOAD_INLINE_MAX => {
             let bytes = std::mem::take(s).into_bytes();
             let hex = blake3_hex(&bytes);
             artifacts.insert(artifact_path(&hex), bytes);
@@ -307,6 +328,12 @@ fn spill_oversize_in_value(
         }
         _ => {}
     }
+}
+
+/// Length of `s` as it would appear JSON-encoded (quotes + escapes).
+/// Used to enforce SPEC §5.6's spillover threshold against the encoded form.
+fn json_encoded_len(s: &str) -> usize {
+    serde_json::to_string(s).map(|v| v.len()).unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]

@@ -104,10 +104,9 @@ async fn main() -> Result<()> {
         r = s2c => ("s2c", r),
     };
     tracing::debug!(direction = either.0, "wrap shutting down");
-    {
-        let mut guard = server_stdin_arc.lock().await;
-        let _ = guard.shutdown().await;
-    }
+    // P2 #12: drop the Arc<Mutex<ChildStdin>> outright. This closes the FD
+    // when the inner ChildStdin drops, signaling EOF to the server. No lock
+    // contention with s2c (which holds an Arc<Mutex<UnixStream>>, not stdin).
     drop(server_stdin_arc);
     let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
     let _ = child.start_kill();
@@ -119,6 +118,10 @@ struct PendingCall {
     request: Value,
     started: Instant,
 }
+
+/// Maximum age for a pending tool_use entry before it's evicted as stale.
+/// Bounds memory if the server never replies to a request.
+const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 async fn client_to_server<R>(
     client_stdin: R,
@@ -143,7 +146,14 @@ where
                 if let Some(method) = v.get("method").and_then(Value::as_str) {
                     if method == "tools/call" {
                         if let Some(id) = id_to_string(v.get("id")) {
-                            pending.lock().await.insert(
+                            let mut p = pending.lock().await;
+                            // Opportunistic GC: drop entries older than TTL
+                            // before inserting. Cheap (HashMap walk).
+                            let cutoff = Instant::now()
+                                .checked_sub(PENDING_TTL)
+                                .unwrap_or_else(Instant::now);
+                            p.retain(|_, call| call.started >= cutoff);
+                            p.insert(
                                 id,
                                 PendingCall {
                                     request: v.clone(),

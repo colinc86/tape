@@ -141,6 +141,7 @@ fn cmd_record(
         let stem = label
             .as_deref()
             .map(sanitize_label)
+            .filter(|s| !s.is_empty() && !s.chars().all(|c| c == '-'))
             .unwrap_or_else(|| "session".to_owned());
         std::path::PathBuf::from(format!("{stem}.tape"))
     });

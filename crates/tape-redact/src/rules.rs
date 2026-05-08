@@ -1,13 +1,16 @@
 //! Built-in redaction rules. See SPEC.md §7.
 //!
 //! Order matters: `anthropic_api_key` runs before `openai_api_key` so an
-//! `sk-ant-…` value isn't first matched as an OpenAI key.
+//! `sk-ant-…` value isn't first matched as an OpenAI key. `aws_secret_key`
+//! runs before `generic_high_entropy` so a context-tagged AWS secret gets
+//! a typed placeholder rather than the generic `<SECRET>`.
 
 use regex::Regex;
 
 use crate::Rule;
 
 /// Build the canonical built-in rule set in priority order.
+#[allow(clippy::too_many_lines)]
 pub fn built_in() -> Vec<Rule> {
     vec![
         Rule {
@@ -16,6 +19,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<API_KEY:anthropic>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "openai_api_key".into(),
@@ -25,6 +29,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<API_KEY:openai>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "aws_access_key".into(),
@@ -32,6 +37,27 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<API_KEY:aws_access>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
+        },
+        Rule {
+            // SPEC §7: 40-char base64 within 50 bytes of `aws_secret`/`AWS_SECRET`
+            // context. We match the full window (case-insensitive label + up to
+            // 50 chars of separator + 40 base64 chars) but redact only capture
+            // group 1 (the secret) so the label survives — leaks contained,
+            // breadcrumbs intact.
+            id: "aws_secret_key".into(),
+            regex: Regex::new(
+                // Context label, then up to 50 chars (lazy) of *anything*
+                // non-newline, then 40 base64 chars. Lazy quantifier finds
+                // the shortest gap; the {0,50} ceiling keeps the rule from
+                // pairing a label with a secret far away in the document.
+                r#"(?i)aws[_\-]?secret(?:[_\-](?:access[_\-])?key)?[^\n]{0,50}?([A-Za-z0-9/+=]{40})"#,
+            )
+            .unwrap(),
+            replacement: "<API_KEY:aws_secret>".into(),
+            validator: None,
+            default_enabled: true,
+            target_capture: Some(1),
         },
         Rule {
             id: "jwt".into(),
@@ -39,6 +65,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<JWT>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "bearer_token".into(),
@@ -46,6 +73,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<BEARER>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "ssn".into(),
@@ -53,13 +81,17 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<SSN>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
+            // Tightened: domain part requires alphanumeric+dash before each dot;
+            // rejects `..` runs.
             id: "email".into(),
-            regex: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap(),
+            regex: Regex::new(r"[A-Za-z0-9._%+\-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}").unwrap(),
             replacement: "<EMAIL>".into(),
             validator: None,
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "credit_card".into(),
@@ -67,6 +99,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<CC>".into(),
             validator: Some(luhn_valid),
             default_enabled: true,
+            target_capture: None,
         },
         Rule {
             id: "ipv4_private".into(),
@@ -77,6 +110,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<IP:private>".into(),
             validator: None,
             default_enabled: false,
+            target_capture: None,
         },
         Rule {
             id: "generic_high_entropy".into(),
@@ -84,6 +118,7 @@ pub fn built_in() -> Vec<Rule> {
             replacement: "<SECRET>".into(),
             validator: Some(high_entropy_validator),
             default_enabled: false,
+            target_capture: None,
         },
     ]
 }
@@ -166,6 +201,8 @@ mod tests {
             "alice@.com",     // empty domain label
             "not.an.email.address",
             "no at sign here",
+            "alice@example..com", // P3 #18: consecutive dots in domain
+            "alice@.example.com", // leading dot in domain
         ] {
             assert!(!matches(&r, s), "should NOT match: {s}");
         }
@@ -253,6 +290,53 @@ mod tests {
         ] {
             assert!(!matches(&r, s), "should NOT match: {s}");
         }
+    }
+
+    // -------- aws_secret_key (P1 #1) --------
+    // Capture-group rule: full match includes the context label, but
+    // replacement targets only group 1 (the 40-char secret). End-to-end
+    // behavior tested via Engine::redact_string in the engine tests below.
+    #[test]
+    fn aws_secret_positives_match() {
+        let r = rule_by_id("aws_secret_key");
+        for s in [
+            // Synthetic 40-char base64-style secrets. Real ones look the same shape.
+            "aws_secret_access_key = abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            "AWS_SECRET_ACCESS_KEY=abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            "aws_secret_key: abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            "aws-secret-key=\"abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==\"",
+            "config:\n  aws_secret_access_key = abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==\n",
+        ] {
+            assert!(matches(&r, s), "should match: {s}");
+        }
+    }
+    #[test]
+    fn aws_secret_negatives() {
+        let r = rule_by_id("aws_secret_key");
+        for s in [
+            // Bare 40-char base64 with no aws_secret context — no match.
+            "abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            // Context but secret is too short.
+            "aws_secret_access_key = tooshort",
+            // No "secret" in the label.
+            "aws_access_key = abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            // Context too far from secret (>50 chars between).
+            "aws_secret_access_key was rotated last week — see ticket. The new value is abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==",
+            // 40 chars but contains a non-base64 character.
+            "aws_secret_access_key = abcd!FGH1234ijklMNOP5678qrstUVWX9012yz==",
+        ] {
+            assert!(!matches(&r, s), "should NOT match: {s}");
+        }
+    }
+    #[test]
+    fn aws_secret_redacts_only_secret_not_label() {
+        // End-to-end: ensure the label survives, only the secret is replaced.
+        let mut s = "aws_secret_access_key = abcdEFGH1234ijklMNOP5678qrstUVWX9012yz==".to_string();
+        let engine = crate::Engine::with_default_rules();
+        engine.redact_string(&mut s);
+        assert!(s.contains("aws_secret_access_key"));
+        assert!(s.contains("<API_KEY:aws_secret>"));
+        assert!(!s.contains("abcdEFGH1234ijklMNOP5678qrstUVWX9012yz=="));
     }
 
     // -------- jwt --------
@@ -344,7 +428,6 @@ mod tests {
     #[test]
     fn cc_positives() {
         let r = rule_by_id("credit_card");
-        // Valid Luhn test numbers
         for s in [
             "4532015112830366",                   // Visa test
             "5555555555554444",                   // Mastercard test
@@ -359,26 +442,15 @@ mod tests {
     fn cc_negatives() {
         let r = rule_by_id("credit_card");
         for s in [
-            "4532015112830367",         // bad Luhn (last digit wrong)
+            "4532015112830367",         // bad Luhn
             "1234567890123456",         // bad Luhn
-            "0000000000000000",         // Luhn-passes but special-cased? actually valid Luhn for 16 zeros
             "12345",                    // too short
             "abcdefghijklmnop",         // not digits
-        ] {
-            // 0000... is a Luhn pass; we accept that as a known fp for this rule.
-            // The rest should not match.
-            if s == "0000000000000000" {
-                continue;
-            }
-            assert!(!matches(&r, s), "should NOT match: {s}");
-        }
-        // Regression negatives:
-        for s in [
             "no card here",
-            "4532-0151-1283-0367", // bad Luhn with separators
-            "12 34 56 78",         // too short
-            "phone 555-1234",      // too short
-            "id 1234",             // too short
+            "4532-0151-1283-0367",      // bad Luhn with separators
+            "12 34 56 78",              // too short
+            "phone 555-1234",           // too short
+            "id 1234",                  // too short
         ] {
             assert!(!matches(&r, s), "should NOT match: {s}");
         }
@@ -403,12 +475,11 @@ mod tests {
         let r = rule_by_id("ipv4_private");
         for s in [
             "8.8.8.8",
-            "172.15.0.1",   // outside 16-31 range
-            "172.32.0.1",   // outside 16-31 range
-            "192.169.0.1",  // not 192.168
-            "1.2.3.4.5",    // too many octets — but our regex would still match the valid prefix; check carefully
+            "172.15.0.1",
+            "172.32.0.1",
+            "192.169.0.1",
+            "1.2.3.4.5",
         ] {
-            // For "1.2.3.4.5" the regex doesn't anchor, but we test: not in 10/172/192 ranges
             assert!(!matches(&r, s), "should NOT match: {s}");
         }
     }
@@ -417,10 +488,9 @@ mod tests {
     #[test]
     fn high_entropy_positives() {
         let r = rule_by_id("generic_high_entropy");
-        // Each ≥32 random-distributed chars; entropy ≥4.5 bits/char.
         for s in [
-            "QkpaUVlGYWNYTm5hVU5JT1JzN1F0V01HVEpoUWVtR3o",  // base64-y
-            "prefix Mk7PqRsTuVwXyZ12AbCdE3FgHiJkLmNoPqRsTuV", // mid-text
+            "QkpaUVlGYWNYTm5hVU5JT1JzN1F0V01HVEpoUWVtR3o",
+            "prefix Mk7PqRsTuVwXyZ12AbCdE3FgHiJkLmNoPqRsTuV",
             "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXyZ_aB",
             "ZyrQv9kF3pSx7TWmJ8Lh2NbA1cV6oKgEdU0Pn4iH5R",
             "0K9j8H7g6F5e4D3c2B1aZyXwVuTsRqPoNmLkJiHgFeDcBa",
@@ -432,11 +502,11 @@ mod tests {
     fn high_entropy_negatives() {
         let r = rule_by_id("generic_high_entropy");
         for s in [
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // low entropy
-            "12345678",                               // too short
-            "the quick brown fox jumps", // contains spaces — regex requires no spaces
-            "abc",                                    // way too short
-            "----------------------------------------", // single character
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "12345678",
+            "the quick brown fox jumps",
+            "abc",
+            "----------------------------------------",
         ] {
             assert!(!matches(&r, s), "should NOT match: {s}");
         }

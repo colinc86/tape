@@ -187,6 +187,38 @@ fn stateful_workflow_within_one_session() {
 }
 
 #[test]
+fn second_record_without_eject_returns_already_recording() {
+    let deck = tape_mcp::Deck::new();
+    let mut buf = Vec::<u8>::new();
+    let calls = [
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"tape.record","arguments":{"task":"first"}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"tape.record","arguments":{"task":"second"}}}),
+    ];
+    let mut input = String::new();
+    for c in &calls {
+        input.push_str(&c.to_string());
+        input.push('\n');
+    }
+    tape_mcp::server::run(input.as_bytes(), &mut buf, deck).unwrap();
+    let lines: Vec<Value> = String::from_utf8(buf).unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+
+    // First record succeeds.
+    assert_eq!(
+        lines[0]["result"]["isError"].as_bool().unwrap_or(false),
+        false,
+        "first record should succeed"
+    );
+    // Second record fails with ALREADY_RECORDING.
+    assert_eq!(lines[1]["result"]["isError"], true);
+    assert_eq!(lines[1]["result"]["_meta"]["code"], "ALREADY_RECORDING");
+}
+
+#[test]
 fn record_annotate_eject_round_trip() {
     let deck = tape_mcp::Deck::new();
     let tmp = tempfile::tempdir().unwrap();

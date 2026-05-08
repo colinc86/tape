@@ -35,7 +35,9 @@ fn main() {
     let event = match tool_name {
         "Bash" => Some(shell_event(&tool_input, &tool_response)),
         "Read" => Some(file_read_event(&tool_input, &tool_response)),
-        "Write" | "Edit" | "MultiEdit" => Some(file_write_event(tool_name, &tool_input, &tool_response)),
+        "Write" | "Edit" | "MultiEdit" => {
+            Some(file_write_event(tool_name, &tool_input, &tool_response))
+        }
         _ => None,
     };
 
@@ -55,7 +57,11 @@ fn main() {
 }
 
 fn shell_event(input: &Value, response: &Value) -> Value {
-    let command = input.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+    let command = input
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let exit_code = response
         .get("exit_code")
         .and_then(Value::as_i64)
@@ -93,22 +99,22 @@ fn file_read_event(input: &Value, response: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    // We don't always have the contents available here. If `file_content`
-    // appears in the response, hash it so the consumer can correlate. Otherwise
-    // emit a sentinel "blake3:?" hash — readers expect the format but we
-    // can't compute it without bytes.
+    // If the response includes file_content, hash it so the consumer can
+    // correlate. Otherwise, omit the field entirely — emitting a fake
+    // `blake3:0` would violate the format's hash format. Readers should
+    // treat content_hash as optional in the file_read payload.
     let content_hash = response
         .get("file_content")
         .and_then(Value::as_str)
-        .map(|c| format!("blake3:{}", blake3::hash(c.as_bytes()).to_hex()))
-        .unwrap_or_else(|| "blake3:0".to_string());
+        .map(|c| format!("blake3:{}", blake3::hash(c.as_bytes()).to_hex()));
 
+    let mut payload = serde_json::json!({"path": path});
+    if let Some(h) = content_hash {
+        payload["content_hash"] = serde_json::Value::String(h);
+    }
     serde_json::json!({
         "kind": "file_read",
-        "payload": {
-            "path": path,
-            "content_hash": content_hash
-        }
+        "payload": payload
     })
 }
 
@@ -120,21 +126,33 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
         .to_string();
     // After-hash from new content, or from response file_content if present.
     let after_source = match tool_name {
-        "Write" => input.get("content").and_then(Value::as_str).map(str::to_owned),
+        "Write" => input
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         _ => response
             .get("file_content")
             .and_then(Value::as_str)
             .map(str::to_owned),
     };
+    // Omit after_hash when content isn't available rather than emitting a
+    // sentinel like "blake3:0" — the format expects 64 hex chars after
+    // the prefix, and a sentinel violates that. Readers should treat
+    // after_hash as optional.
     let after_hash = after_source
         .as_deref()
-        .map(|s| format!("blake3:{}", blake3::hash(s.as_bytes()).to_hex()))
-        .unwrap_or_else(|| "blake3:0".to_string());
+        .map(|s| format!("blake3:{}", blake3::hash(s.as_bytes()).to_hex()));
 
     let diff = match tool_name {
         "Edit" => {
-            let old = input.get("old_string").and_then(Value::as_str).unwrap_or("");
-            let new = input.get("new_string").and_then(Value::as_str).unwrap_or("");
+            let old = input
+                .get("old_string")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let new = input
+                .get("new_string")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             Some(simple_diff(old, new))
         }
         "MultiEdit" => Some("(multi-edit)".to_string()),
@@ -144,8 +162,10 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
     let mut payload = serde_json::json!({
         "path": path,
         "before_hash": serde_json::Value::Null,
-        "after_hash": after_hash,
     });
+    if let Some(h) = after_hash {
+        payload["after_hash"] = Value::String(h);
+    }
     if let Some(d) = diff {
         payload["diff"] = Value::String(d);
     }
@@ -156,7 +176,11 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
 }
 
 fn simple_diff(old: &str, new: &str) -> String {
-    format!("- {}\n+ {}", old.replace('\n', "\\n"), new.replace('\n', "\\n"))
+    format!(
+        "- {}\n+ {}",
+        old.replace('\n', "\\n"),
+        new.replace('\n', "\\n")
+    )
 }
 
 fn post_event(socket_path: &str, event: &Value) -> std::io::Result<()> {

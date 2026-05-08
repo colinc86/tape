@@ -78,16 +78,19 @@ fn handle_from_path(jsonl_path: PathBuf) -> TranscriptHandle {
 }
 
 /// Encode an absolute cwd path the way Claude Code does for its
-/// `~/.claude/projects/` directory naming. Both `/` and spaces become `-`.
+/// `~/.claude/projects/` directory naming. Any character that isn't
+/// alphanumeric or `_` becomes `-` — this matches Claude Code's actual
+/// encoding empirically across `/`, ` `, `:`, `@`, `(`, `)`, `+`, `'`, `.`,
+/// and other punctuation.
 ///
-/// Empirically validated against Claude Code 2.1.129: a path like
+/// Validated against Claude Code 2.1.129. A path like
 /// `/Users/colin/Local Documents/Programming/Misc/tape` encodes to
 /// `-Users-colin-Local-Documents-Programming-Misc-tape`.
 pub fn encode_cwd(cwd: &Path) -> String {
     cwd.display()
         .to_string()
         .chars()
-        .map(|c| if c == '/' || c == ' ' { '-' } else { c })
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' })
         .collect()
 }
 
@@ -113,6 +116,41 @@ mod tests {
             encode_cwd(p),
             "-Users-colin-Local-Documents-Programming-Misc-tape"
         );
+    }
+
+    #[test]
+    fn encode_cwd_handles_special_chars() {
+        // P2 #8: paths with :, @, (, ), +, ', . all get replaced with -.
+        for (input, expected) in [
+            (
+                "/Users/colin/iCloud Drive: Synced/proj",
+                "-Users-colin-iCloud-Drive--Synced-proj",
+            ),
+            (
+                "/repos/foo+bar/proj (work)",
+                "-repos-foo-bar-proj--work-",
+            ),
+            (
+                "/Users/o'reilly/code",
+                "-Users-o-reilly-code",
+            ),
+            (
+                "/repos/v1.2.3/project",
+                "-repos-v1-2-3-project",
+            ),
+            (
+                "/work/email@host.com/proj",
+                "-work-email-host-com-proj",
+            ),
+        ] {
+            assert_eq!(encode_cwd(Path::new(input)), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn encode_cwd_keeps_underscores_and_alnum() {
+        let p = Path::new("/repos/my_project_42");
+        assert_eq!(encode_cwd(p), "-repos-my_project_42");
     }
 
     #[test]

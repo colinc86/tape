@@ -5,7 +5,7 @@ description: How to use the tape MCP deck effectively. Load when the user asks t
 
 # How to use the `tape` deck
 
-This plugin exposes a `tape` MCP server providing 11 tools for working with `.tape` files (cassettes capturing agent runs). When the user references a `.tape` file or asks you to "pick up" a prior session, follow these patterns.
+This plugin exposes a `tape` MCP server providing 12 tools for working with `.tape` files (cassettes capturing agent runs). When the user references a `.tape` file or asks you to "pick up" a prior session, follow these patterns.
 
 ## The handle-not-contents rule
 

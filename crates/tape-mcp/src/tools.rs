@@ -535,9 +535,14 @@ fn tool_fork(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 fn tool_record(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let task = handle_arg(args, "task")?;
     let mut state = deck.state.lock().unwrap();
-    // Refuse if any handle is currently recording.
-    // (DeckState doesn't track that publicly, so we check via the recording flag.)
-    // We don't have direct iteration; for v0, allow concurrent recordings.
+    // P1 #3: enforce the deck contract — refuse if any handle is already
+    // recording in this MCP session.
+    if state.any_recording() {
+        return Err(ToolErr {
+            code: "ALREADY_RECORDING",
+            message: "this session already has an active recording; eject it first".into(),
+        });
+    }
     let new_handle = state.mint_handle();
     let now_ts = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -611,8 +616,13 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let out = handle_arg(args, "out")?;
 
-    let state = deck.state.lock().unwrap();
+    let mut state = deck.state.lock().unwrap();
     let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?.clone();
+    // Mark the handle as no longer recording so a future tape.record in this
+    // session is allowed (otherwise ALREADY_RECORDING fires forever).
+    if let Some(l) = state.get_mut(&handle) {
+        l.recording = false;
+    }
     drop(state);
 
     if !loaded.recording && loaded.tracks.is_empty() {
@@ -663,6 +673,47 @@ fn extract_task(loaded: &Loaded) -> String {
         .and_then(|t| t.payload.get("prompt").and_then(Value::as_str))
         .unwrap_or("")
         .to_owned()
+}
+
+/// Reduce a multi-line / over-long task prompt to a single one-liner suitable
+/// for `meta.task` (per SPEC §3.1). Takes the first non-empty line; clamps to
+/// 200 chars with an ellipsis.
+fn one_line_summary(raw: &str) -> String {
+    const MAX_LEN: usize = 200;
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(raw.trim());
+    if first_line.chars().count() <= MAX_LEN {
+        first_line.to_string()
+    } else {
+        let truncated: String = first_line.chars().take(MAX_LEN - 1).collect();
+        format!("{truncated}…")
+    }
+}
+
+#[cfg(test)]
+mod task_summary_tests {
+    use super::one_line_summary;
+
+    #[test]
+    fn one_line_takes_first_nonempty_line() {
+        assert_eq!(one_line_summary("\n\n  hello world\nmore"), "hello world");
+    }
+
+    #[test]
+    fn one_line_truncates_long_prompts() {
+        let long: String = "x".repeat(500);
+        let s = one_line_summary(&long);
+        assert!(s.chars().count() <= 200);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn one_line_passes_through_short_input() {
+        assert_eq!(one_line_summary("short prompt"), "short prompt");
+    }
 }
 
 /// `tape.snapshot` — read Claude Code's active session transcript and produce
@@ -722,7 +773,7 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         to_tracks(&entries, &handle.sibling_dir, parse_report);
 
     // Derive task: explicit arg wins; else first user prompt; else session-id.
-    let task_text = task
+    let raw_task_text = task
         .or_else(|| {
             tracks
                 .first()
@@ -732,33 +783,28 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         })
         .unwrap_or_else(|| format!("session {}", handle.session_id));
 
+    // P3 #16: meta.task is one line. Truncate to first newline, then to ≤200
+    // chars so a giant first prompt doesn't blow up meta.yaml.
+    let task_text = one_line_summary(&raw_task_text);
+
+    // P3 #15: align Session::created_at with the transcript's first event
+    // timestamp instead of "now". If we can't parse the first ts, fall back
+    // to current time.
+    let started_at = tracks
+        .first()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t.ts).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+
     // Replay tracks into a fresh Session, then call the existing eject pipeline.
     let recorder_agent = format!("tape-mcp/{}+transcript", env!("CARGO_PKG_VERSION"));
-    let session = tape_record::session::Session::start(&task_text, recorder_agent.clone());
-    // Skip the auto-injected step 1 (task) — convert produces its own task event.
-    // We rebuild by appending all converted tracks except the auto-task.
-    // Simpler: clear and re-append.
-    {
-        let snap = session.snapshot();
-        // Drop the auto task by overwriting with our converted tracks.
-        // We can't easily drop, but appending more is fine — we'll get a
-        // duplicate task event. Instead, replay-append starting from index 1
-        // of `tracks` if the converted set has its own task at step 1.
-        let _ = snap; // (keeping for readability)
-    }
-    // Strategy: if `tracks` already begins with a task, skip the auto-injected
-    // session.start task by appending only `tracks[1..]`. Otherwise append all.
+    let session =
+        tape_record::session::Session::start_at(&task_text, recorder_agent.clone(), started_at);
+    // Convert produces a Task event as track 1; the session's start_at
+    // injection already placed a task at step 1. Skip the converted Task
+    // and append the rest so we don't duplicate.
     let skip_first = tracks.first().is_some_and(|t| t.kind == Kind::Task);
     if skip_first {
-        // Replace the session entirely: rebuild a new one via direct append.
-        // Session::start always injects a task as step 1; that step's content
-        // is overwritten conceptually by appending the converted tracks.
-        // Since the eject pipeline numbers steps from session order, we let
-        // both task events stand: the auto-injected one with the same text,
-        // and the converted one which becomes an annotation per our user
-        // mapping. Cleaner: don't auto-inject — but Session::start contract
-        // demands a task. Workaround: use the auto task and skip the
-        // converted task's first entry.
         for t in tracks.iter().skip(1) {
             session.append(t.kind, t.payload.clone());
         }

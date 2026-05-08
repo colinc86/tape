@@ -436,14 +436,17 @@ fn check_payload_size(v: &serde_json::Value, step: u64, report: &mut VerifyRepor
     use serde_json::Value;
     match v {
         Value::String(s) => {
-            // If the encoded JSON of just the string exceeds the threshold, flag it.
-            if s.len() > crate::PAYLOAD_INLINE_MAX {
+            // SPEC §5.6 measures JSON-encoded length, including quotes/escapes.
+            let encoded_len = serde_json::to_string(s)
+                .map(|v| v.len())
+                .unwrap_or(usize::MAX);
+            if encoded_len > crate::PAYLOAD_INLINE_MAX {
                 report.push(Diagnostic::error(
                     DiagnosticCode::OversizedInlinePayload,
                     format!(
-                        "step {} has an inline string of {} bytes (max {})",
+                        "step {} has an inline string of {} encoded bytes (max {})",
                         step,
-                        s.len(),
+                        encoded_len,
                         crate::PAYLOAD_INLINE_MAX
                     ),
                 ));

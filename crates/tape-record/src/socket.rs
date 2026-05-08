@@ -107,12 +107,17 @@ pub async fn spawn(path: PathBuf, session: Session) -> std::io::Result<SocketHan
     })
 }
 
+/// Maximum time to wait for the next line on an open recorder connection.
+/// A client that connects and never sends data closes after this elapses,
+/// so a misbehaving hook can't tie up a tokio task forever.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn handle_connection(stream: UnixStream, session: Arc<Session>) {
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
+        match tokio::time::timeout(IDLE_TIMEOUT, lines.next_line()).await {
+            Ok(Ok(Some(line))) => {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -127,9 +132,14 @@ async fn handle_connection(stream: UnixStream, session: Arc<Session>) {
                     }
                 }
             }
-            Ok(None) => break,
-            Err(e) => {
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
                 warn!(%e, "recorder socket read error");
+                break;
+            }
+            Err(_elapsed) => {
+                // Idle timeout — close the connection. Sender can reconnect.
+                debug!("recorder socket idle timeout");
                 break;
             }
         }

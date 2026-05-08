@@ -34,11 +34,15 @@ pub struct Rule {
     pub id: String,
     pub regex: Regex,
     pub replacement: String,
-    /// Optional secondary validator (e.g. Luhn for credit cards).
-    /// Returns true if the match should be kept; false to skip it.
+    /// Optional secondary validator (e.g. Luhn for credit cards). Receives
+    /// the full match (group 0). Returns true to keep, false to skip.
     pub validator: Option<fn(&str) -> bool>,
     /// Default state: enabled or opt-in.
     pub default_enabled: bool,
+    /// If set, replace only this capture group (1-indexed) rather than the
+    /// whole match. Used by `aws_secret_key` so that the leading
+    /// `aws_secret = ` context label survives the redaction.
+    pub target_capture: Option<usize>,
 }
 
 impl std::fmt::Debug for Rule {
@@ -93,24 +97,41 @@ impl Engine {
     pub fn redact_string(&self, s: &mut String) -> Vec<(String, String)> {
         let mut records = Vec::new();
         for rule in &self.rules {
-            // Collect non-overlapping matches first; we apply replacements
+            // Collect non-overlapping match spans first; we apply replacements
             // right-to-left so byte offsets in the source string remain valid.
-            let mut matches: Vec<(usize, usize)> = rule
-                .regex
-                .find_iter(s)
-                .filter(|m| match rule.validator {
-                    Some(v) => v(m.as_str()),
-                    None => true,
-                })
-                .map(|m| (m.start(), m.end()))
-                .collect();
+            let mut spans: Vec<(usize, usize)> = if let Some(group) = rule.target_capture {
+                rule.regex
+                    .captures_iter(s)
+                    .filter_map(|caps| {
+                        let whole = caps.get(0)?;
+                        if let Some(v) = rule.validator {
+                            if !v(whole.as_str()) {
+                                return None;
+                            }
+                        }
+                        let target = caps.get(group)?;
+                        Some((target.start(), target.end()))
+                    })
+                    .collect()
+            } else {
+                rule.regex
+                    .find_iter(s)
+                    .filter(|m| match rule.validator {
+                        Some(v) => v(m.as_str()),
+                        None => true,
+                    })
+                    .map(|m| (m.start(), m.end()))
+                    .collect()
+            };
 
-            if matches.is_empty() {
+            if spans.is_empty() {
                 continue;
             }
 
-            matches.sort_unstable();
-            for (start, end) in matches.iter().rev() {
+            spans.sort_unstable();
+            // Drop overlaps left-to-right (keep first occurrence).
+            spans.dedup_by(|b, a| a.1 > b.0);
+            for (start, end) in spans.iter().rev() {
                 s.replace_range(*start..*end, &rule.replacement);
                 records.push((rule.id.clone(), rule.replacement.clone()));
             }
@@ -148,7 +169,11 @@ impl Engine {
             }
             Value::Object(map) => {
                 for (k, v) in map.iter_mut() {
-                    let child = format!("{path}.{}", json_path_segment(k));
+                    let child = if is_simple_ident(k) {
+                        format!("{path}.{k}")
+                    } else {
+                        format!("{path}[{:?}]", k)
+                    };
                     self.redact_value_inner(v, step, &child, out);
                 }
             }
@@ -202,11 +227,11 @@ pub fn scan_for_secrets(text: &str) -> Vec<String> {
     hits
 }
 
-/// Encode a JSON object key as a JSONPath segment.
-fn json_path_segment(key: &str) -> String {
-    if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        key.to_string()
-    } else {
-        format!("[{key:?}]")
-    }
+fn is_simple_ident(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
