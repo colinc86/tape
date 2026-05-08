@@ -10,7 +10,7 @@
 ![tests: 106](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
 
-![tape demo: verify, ls, play](./docs/demo.gif)
+![tape demo — verify, tracklist, filter by kind, machine-readable JSON](./docs/demo.gif)
 
 </div>
 
