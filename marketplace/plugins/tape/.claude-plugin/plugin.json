@@ -1,6 +1,6 @@
 {
   "name": "tape",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A cassette tape for agent runs — record once, replay anywhere, share as a file. Provides the tape MCP deck (12 tools incl. tape.snapshot for in-session recording) for working with .tape files inside Claude Code.",
   "author": {
     "name": "tape contributors"

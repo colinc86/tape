@@ -4,6 +4,78 @@ A cassette tape for agent runs. Record once, replay anywhere, share as a file.
 
 ---
 
+## v0.1.1 — 2026-05-07 — Audit cleanup
+
+A bug-fix-only release. Closes 20 findings from a three-agent audit covering
+spec compliance, security posture, concurrency, and edge-case correctness.
+**No format or behavior changes** — every existing tape and every existing
+plugin install continue to work unchanged.
+
+Test count grows from 88 to 106 (+18 new tests).
+
+### Security & spec compliance
+
+- **`aws_secret_key` redaction rule** added (SPEC §7). Capture-group-targeted:
+  the `aws_secret_access_key = ...` label survives, only the 40-char secret
+  is replaced with `<API_KEY:aws_secret>`.
+- **Custom `.taperc` replacement validation** (SPEC §6.2). Replacements must
+  be typed placeholders (`<TYPE>` or `<TYPE:subtype>`); literal secrets and
+  hashes are rejected at config-load time.
+- **100× decompression-bomb limit** (SPEC §12.3) in the tape reader, with a
+  64 KiB floor so trivially-small tapes don't false-positive.
+- **`ALREADY_RECORDING` enforcement** in the deck's `tape.record` tool, with
+  the recording flag cleared on `tape.eject` so subsequent recordings work.
+- **Empty/whitespace-only line rejection** in `tracks.jsonl` per SPEC §5.1.
+- **JSONPath validation** on `redactions.json::field_path`. Cheap subset
+  (`$`, `$.name`, `$[n]`, `$["key"]`).
+- **Email regex tightened** to disallow consecutive dots in domain.
+
+### Robustness
+
+- **`encode_cwd` hardened** — every non-alphanumeric/underscore char now
+  becomes `-`, matching Claude Code's actual encoding for paths with `:`,
+  `@`, `(`, `)`, `+`, `.`, `'`. Previously only `/` and ` ` were escaped.
+- **Recorder Unix socket idle timeout** (30s) prevents a hung client from
+  tying up a tokio task forever.
+- **`tape-mcp-wrap` pending-map TTL** (5 min) bounds memory in long sessions
+  where some `tools/call` requests never receive responses.
+- **`tape-mcp-wrap` shutdown ordering** — drop the `Arc<Mutex<ChildStdin>>`
+  outright instead of locking-and-shutdown, eliminating the race with the
+  server-to-client tee task.
+- **Per-field meta redaction** — instead of redacting the whole serialized
+  YAML as text and re-parsing (which could fail if a redaction landed in a
+  key position), redact `meta.task`, `meta.recorder.user`, and
+  `meta.recorder.agent` individually. No re-parse, no failure mode.
+- **JSON-serialized spillover threshold** — SPEC §5.6 measures the encoded
+  value (which adds quotes plus escapes). Both writer (`eject`) and reader
+  (`verify`) updated.
+- **Empty `--label` fallback** — sanitization producing only dashes or empty
+  string falls back to `session.tape` instead of an ambiguous filename.
+
+### Polish
+
+- **`hook.rs` content_hash sentinel removed.** When a hook's `tool_response`
+  doesn't include `file_content`, the field is omitted entirely instead of
+  emitting an invalid `blake3:0`.
+- **`Session::start_at`** variant accepts an explicit timestamp so
+  `tape.snapshot` aligns `meta.created_at` with the transcript's first event
+  rather than wall-clock-now.
+- **`task_text` truncation** — `meta.task` is documented as one line, and a
+  ≤200-char first-line truncation enforces it. A 10 KB first user prompt no
+  longer produces a 10 KB `meta.task`.
+- **`pct_delta` returns `Option<i64>`** instead of `100` for the undefined
+  case (a=0, b≠0). Renders as "Δ n/a".
+- **`tape-snapshot.md` instruction** — clarified that `task` is optional.
+- **`tape-usage` SKILL** — fixed stale "11 tools" lead.
+
+### Bonus catch
+
+The redact engine's JSONPath generator was producing `$.parent.["weird key"]`
+(extra dot before bracket) for keys with non-identifier characters. Fixed
+alongside the JSONPath validation work.
+
+---
+
 ## v0.1 — 2026-05-06 — In-session recording
 
 The big addition in v0.1 is **`tape.snapshot`**: record a Claude Code session into a `.tape` file from inside the session, in one MCP call. No separate shell, no `tape record -- claude` wrapping, no API key needed.
