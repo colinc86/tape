@@ -64,7 +64,12 @@ fn main() {
     // PreToolUse on file-mutating tools: buffer the file's current hash so
     // the matching PostToolUse hook can emit it as `before_hash`. No track
     // event is posted from PreToolUse.
-    if is_pre && matches!(tool_name, "Write" | "Edit" | "MultiEdit") {
+    //
+    // The list MUST stay in sync with the PostToolUse dispatch below and
+    // with the overlay matchers in `crates/tape-record/src/overlay.rs`.
+    // (Issue #83: NotebookEdit slipped past PreToolUse for the same shape
+    // of reason as #75 missed it from the overlay.)
+    if is_pre && matches!(tool_name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
         handle_file_write_pre(&tool_input, tool_use_id.as_deref());
         return;
     }
@@ -77,7 +82,9 @@ fn main() {
     let event = match tool_name {
         "Bash" => Some(shell_event(&tool_input, &tool_response)),
         "Read" => Some(file_read_event(&tool_input, &tool_response)),
-        "Write" | "Edit" | "MultiEdit" => Some(file_write_event(
+        // Keep this list in sync with the PreToolUse dispatch above and the
+        // overlay matchers in `crates/tape-record/src/overlay.rs`. (Issue #83.)
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Some(file_write_event(
             tool_name,
             &tool_input,
             &tool_response,
