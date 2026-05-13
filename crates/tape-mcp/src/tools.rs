@@ -150,7 +150,12 @@ pub fn definitions() -> Vec<ToolDef> {
                 "required": ["handle", "out"],
                 "properties": {
                     "handle": {"type": "string"},
-                    "out": {"type": "string"}
+                    "out": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["success", "failure", "abandoned", "unknown"],
+                        "description": "Recording outcome to record in meta.yaml. Defaults to 'unknown' — the deck doesn't know what happened, so callers should supply this when they do."
+                    }
                 }
             }),
         },
@@ -631,9 +636,31 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     Ok(json!({"step": next_step}))
 }
 
+/// Parse `args.outcome` into a `meta::Outcome`. Missing → `Unknown` (the
+/// honest default — the deck doesn't know what happened during recording).
+/// Unknown enum value → `params` error.
+fn parse_outcome_arg(args: &Value) -> Result<tape_format::meta::Outcome, ToolErr> {
+    use tape_format::meta::Outcome;
+    match args.get("outcome").and_then(Value::as_str) {
+        None => Ok(Outcome::Unknown),
+        Some("success") => Ok(Outcome::Success),
+        Some("failure") => Ok(Outcome::Failure),
+        Some("abandoned") => Ok(Outcome::Abandoned),
+        Some("unknown") => Ok(Outcome::Unknown),
+        Some(other) => Err(ToolErr::params(format!(
+            "outcome must be success|failure|abandoned|unknown; got {other:?}"
+        ))),
+    }
+}
+
 fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let out = handle_arg(args, "out")?;
+    // SPEC §3.1 defines `success | failure | abandoned | unknown`. The deck
+    // has no way to know which one applies, so the caller may supply it.
+    // Default to `unknown` (matching `tool_snapshot`) rather than the old
+    // hardcoded `success`, which silently lied about every recording. (#30.)
+    let outcome = parse_outcome_arg(args)?;
 
     let mut state = deck.state.lock().unwrap();
     let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?.clone();
@@ -667,7 +694,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         &tape_record::eject::EjectOptions {
             task: extract_task(&loaded),
             recorder_agent: format!("tape-mcp/{}", env!("CARGO_PKG_VERSION")),
-            outcome: tape_format::meta::Outcome::Success,
+            outcome,
             stub_liner_notes: true,
             out_path: out.clone().into(),
             redact_engine: Some(tape_redact::Engine::with_default_rules()),
