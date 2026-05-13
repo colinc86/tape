@@ -310,6 +310,34 @@ fn collect_inline_tool_results(entries: &[RawEntry]) -> HashMap<String, Value> {
     out
 }
 
+/// Pull the textually-meaningful subset of a tool_result. Returns:
+/// - `Some(s)` when result is a string, or an array of content blocks where
+///   at least one block has `type: "text"` and a `text` string.
+/// - `None` for an empty/missing result, an array with no text blocks, or
+///   any other shape we don't know how to interpret as text.
+///
+/// Used to compute real `content_hash` / `after_hash` values in the file-IO
+/// branches of `map_tool_to_track`; see issue #13.
+fn extract_tool_result_text(result: Option<&Value>) -> Option<String> {
+    match result? {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::String(_) => None,
+        Value::Array(blocks) => {
+            let mut buf = String::new();
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) != Some("text") {
+                    continue;
+                }
+                if let Some(t) = b.get("text").and_then(Value::as_str) {
+                    buf.push_str(t);
+                }
+            }
+            (!buf.is_empty()).then_some(buf)
+        }
+        _ => None,
+    }
+}
+
 /// Map one tool_use block to (Kind, payload). The payload shape per kind
 /// follows SPEC.md §5.5.
 fn map_tool_to_track(name: &str, input: &Value, result: Option<&Value>) -> (Kind, Value) {
@@ -337,29 +365,54 @@ fn map_tool_to_track(name: &str, input: &Value, result: Option<&Value>) -> (Kind
         }
         "Read" => {
             let path = input.get("file_path").and_then(Value::as_str).unwrap_or("");
-            let content_hash = match result {
-                Some(Value::String(s)) => format!("blake3:{}", blake3::hash(s.as_bytes()).to_hex()),
-                _ => "blake3:0".to_string(),
-            };
-            (
-                Kind::FileRead,
-                json!({
-                    "path": path,
-                    "content_hash": content_hash,
-                }),
-            )
+            // Hash the file's real bytes. The tool_result is either a raw
+            // string (older transcripts) or an array of content blocks
+            // (current Claude Code) — extract whatever text we can find. If
+            // we can't see any content, omit the hash field rather than emit
+            // a `"blake3:0"` sentinel that doesn't match SPEC §5.5.5's
+            // `blake3:<64 hex>` shape. (Issue #13.)
+            let mut payload = json!({"path": path});
+            if let Some(text) = extract_tool_result_text(result) {
+                payload["content_hash"] = Value::String(format!(
+                    "blake3:{}",
+                    blake3::hash(text.as_bytes()).to_hex()
+                ));
+            }
+            (Kind::FileRead, payload)
         }
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let path = input.get("file_path").and_then(Value::as_str).unwrap_or("");
-            let new_content = input.get("content").and_then(Value::as_str);
-            let after_hash = new_content
-                .map(|c| format!("blake3:{}", blake3::hash(c.as_bytes()).to_hex()))
-                .unwrap_or_else(|| "blake3:0".to_string());
+            // Compute a real `after_hash` from whatever post-edit bytes we
+            // can see. Preference order:
+            //   1. `input.content` — present for `Write` only.
+            //   2. The tool_result text — Claude Code's edit tools return
+            //      the post-edit file content (or a snippet) here.
+            //   3. `input.new_string` — `Edit`'s replacement text. A partial
+            //      hash of just the new chunk is still a real blake3 hash;
+            //      consumers comparing across tapes won't get false hits.
+            // If none of these are available, omit the field rather than
+            // emit the `"blake3:0"` sentinel. (Issue #13.)
+            let after_text = input
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| extract_tool_result_text(result))
+                .or_else(|| {
+                    input
+                        .get("new_string")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
             let mut payload = json!({
                 "path": path,
                 "before_hash": Value::Null,
-                "after_hash": after_hash,
             });
+            if let Some(text) = after_text {
+                payload["after_hash"] = Value::String(format!(
+                    "blake3:{}",
+                    blake3::hash(text.as_bytes()).to_hex()
+                ));
+            }
             if name == "Edit" {
                 if let (Some(o), Some(n)) = (
                     input.get("old_string").and_then(Value::as_str),
@@ -508,5 +561,137 @@ mod tests {
         let (tracks, _r) = convert_fixture("redaction_bait");
         let task = &tracks[0];
         assert!(task.payload["prompt"].as_str().unwrap().contains("AKIA"));
+    }
+
+    /// Issue #13: `Read` whose tool_result is an array of text content blocks
+    /// must hash the concatenated text, not emit `"blake3:0"`.
+    #[test]
+    fn read_with_block_array_result_hashes_concatenated_text() {
+        let input = json!({"file_path": "/etc/hosts"});
+        let result = json!([
+            {"type": "text", "text": "127.0.0.1 localhost\n"},
+            {"type": "text", "text": "::1 localhost\n"},
+        ]);
+        let (kind, payload) = map_tool_to_track("Read", &input, Some(&result));
+        assert_eq!(kind, Kind::FileRead);
+        let hash = payload["content_hash"].as_str().unwrap();
+        assert!(hash.starts_with("blake3:"));
+        assert_eq!(hash.len(), 7 + 64, "expected blake3:<64 hex>, got {hash}");
+        assert_ne!(hash, "blake3:0");
+        // Hash should be of the concatenated text.
+        let expected = blake3::hash(b"127.0.0.1 localhost\n::1 localhost\n").to_hex();
+        assert_eq!(hash, format!("blake3:{expected}"));
+    }
+
+    /// Issue #13: `Read` with no tool_result (orphan tool_use) should *omit*
+    /// the content_hash field rather than emit `"blake3:0"`.
+    #[test]
+    fn read_without_result_omits_content_hash() {
+        let input = json!({"file_path": "/etc/hosts"});
+        let (kind, payload) = map_tool_to_track("Read", &input, None);
+        assert_eq!(kind, Kind::FileRead);
+        assert!(
+            payload.get("content_hash").is_none(),
+            "expected content_hash omitted; got {payload}"
+        );
+    }
+
+    /// Issue #13: `Edit` tools have no `input.content` field. The old code
+    /// always took the `"blake3:0"` fallback. Now we hash whatever post-edit
+    /// text we can see — tool_result preferred, `new_string` as last resort.
+    #[test]
+    fn edit_falls_back_to_new_string_when_no_result() {
+        let input = json!({
+            "file_path": "/tmp/x.rs",
+            "old_string": "foo",
+            "new_string": "bar",
+        });
+        let (kind, payload) = map_tool_to_track("Edit", &input, None);
+        assert_eq!(kind, Kind::FileWrite);
+        let hash = payload["after_hash"].as_str().unwrap();
+        assert!(hash.starts_with("blake3:"));
+        assert_eq!(hash.len(), 7 + 64);
+        assert_ne!(hash, "blake3:0");
+        let expected = blake3::hash(b"bar").to_hex();
+        assert_eq!(hash, format!("blake3:{expected}"));
+    }
+
+    /// Issue #13: `Edit` prefers tool_result text over `new_string` because
+    /// the result usually contains a richer post-edit snippet.
+    #[test]
+    fn edit_prefers_tool_result_text_over_new_string() {
+        let input = json!({
+            "file_path": "/tmp/x.rs",
+            "old_string": "foo",
+            "new_string": "bar",
+        });
+        let result = json!("post-edit content here");
+        let (_kind, payload) = map_tool_to_track("Edit", &input, Some(&result));
+        let hash = payload["after_hash"].as_str().unwrap();
+        let expected = blake3::hash(b"post-edit content here").to_hex();
+        assert_eq!(hash, format!("blake3:{expected}"));
+    }
+
+    /// `Write` keeps its existing behaviour — `input.content` wins.
+    #[test]
+    fn write_hashes_input_content() {
+        let input = json!({"file_path": "/tmp/x", "content": "hello world"});
+        let (kind, payload) = map_tool_to_track("Write", &input, None);
+        assert_eq!(kind, Kind::FileWrite);
+        let hash = payload["after_hash"].as_str().unwrap();
+        let expected = blake3::hash(b"hello world").to_hex();
+        assert_eq!(hash, format!("blake3:{expected}"));
+    }
+
+    /// Regression test: no branch should ever produce the `"blake3:0"`
+    /// sentinel for any of the cases the bug-finder enumerated.
+    #[test]
+    fn no_branch_emits_blake3_zero_sentinel() {
+        let cases: Vec<(&str, Value, Option<Value>)> = vec![
+            // Read, block-array result
+            (
+                "Read",
+                json!({"file_path": "/a"}),
+                Some(json!([{"type": "text", "text": "x"}])),
+            ),
+            // Read, string result
+            ("Read", json!({"file_path": "/a"}), Some(json!("x"))),
+            // Read, no result (omits the field — also not "blake3:0")
+            ("Read", json!({"file_path": "/a"}), None),
+            // Edit, result + new_string
+            (
+                "Edit",
+                json!({"file_path": "/a", "old_string": "o", "new_string": "n"}),
+                Some(json!("post")),
+            ),
+            // Edit, only new_string
+            (
+                "Edit",
+                json!({"file_path": "/a", "old_string": "o", "new_string": "n"}),
+                None,
+            ),
+            // MultiEdit, only new_string fallback (no result)
+            (
+                "MultiEdit",
+                json!({"file_path": "/a", "new_string": "n"}),
+                None,
+            ),
+            // NotebookEdit
+            (
+                "NotebookEdit",
+                json!({"file_path": "/a", "new_string": "n"}),
+                None,
+            ),
+            // Write
+            ("Write", json!({"file_path": "/a", "content": "c"}), None),
+        ];
+        for (name, input, result) in cases {
+            let (_kind, payload) = map_tool_to_track(name, &input, result.as_ref());
+            let s = payload.to_string();
+            assert!(
+                !s.contains("blake3:0\""),
+                "{name} emitted blake3:0 sentinel: {s}"
+            );
+        }
     }
 }
