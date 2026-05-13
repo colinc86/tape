@@ -394,6 +394,26 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         // No payload field can exceed PAYLOAD_INLINE_MAX as serialized JSON
         check_payload_size(&t.payload, t.step, &mut report);
 
+        // SPEC §5.5.1: a task event's prompt MUST be non-empty. Verifier
+        // didn't enforce this — `tape.record { task: "" }` produced tapes
+        // that passed verify clean. (Issue #96.)
+        if t.kind == Kind::Task {
+            let prompt = t
+                .payload
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if prompt.is_empty() {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidPayload,
+                    format!(
+                        "step {} task event has empty prompt (SPEC §5.5.1)",
+                        t.step
+                    ),
+                ));
+            }
+        }
+
         for r in &t.refs {
             let Some(hex) = r.strip_prefix("sha:") else {
                 report.push(Diagnostic::error(
