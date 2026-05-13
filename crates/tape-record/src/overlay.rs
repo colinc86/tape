@@ -51,12 +51,12 @@ pub fn settings_overlay(inputs: &OverlayInputs) -> Value {
         "hooks": {
             "PreToolUse": [
                 { "matcher": "Bash",            "hooks": [cmd("shell_pre")] },
-                { "matcher": "Write|Edit|MultiEdit", "hooks": [cmd("file_write_pre")] }
+                { "matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [cmd("file_write_pre")] }
             ],
             "PostToolUse": [
                 { "matcher": "Bash",            "hooks": [cmd("shell")] },
                 { "matcher": "Read",            "hooks": [cmd("file_read")] },
-                { "matcher": "Write|Edit|MultiEdit", "hooks": [cmd("file_write")] }
+                { "matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [cmd("file_write")] }
             ]
         }
     })
@@ -146,9 +146,13 @@ mod tests {
         assert_eq!(
             pre.as_array().unwrap().len(),
             2,
-            "Bash (shell_pre) + Write|Edit|MultiEdit (file_write_pre)"
+            "Bash (shell_pre) + Write|Edit|MultiEdit|NotebookEdit (file_write_pre)"
         );
-        assert_eq!(post.as_array().unwrap().len(), 3, "Bash + Read + Write|Edit|MultiEdit");
+        assert_eq!(
+            post.as_array().unwrap().len(),
+            3,
+            "Bash + Read + Write|Edit|MultiEdit|NotebookEdit"
+        );
     }
 
     #[test]
@@ -156,23 +160,54 @@ mod tests {
         let s = settings_overlay(&inputs());
         let pre = s["hooks"]["PreToolUse"].as_array().unwrap().clone();
         let has_bash_pre = pre.iter().any(|h| h["matcher"] == "Bash");
-        let has_write_pre = pre.iter().any(|h| h["matcher"] == "Write|Edit|MultiEdit");
+        let has_write_pre = pre.iter().any(|h| h["matcher"] == "Write|Edit|MultiEdit|NotebookEdit");
         assert!(has_bash_pre, "expected a PreToolUse hook matching Bash");
         assert!(
             has_write_pre,
-            "expected a PreToolUse hook matching Write|Edit|MultiEdit"
+            "expected a PreToolUse hook matching Write|Edit|MultiEdit|NotebookEdit"
         );
         // Confirm the file-write PreToolUse hook carries the `file_write_pre`
         // discriminator so tape-hook routes it correctly.
         let write_pre = pre
             .iter()
-            .find(|h| h["matcher"] == "Write|Edit|MultiEdit")
+            .find(|h| h["matcher"] == "Write|Edit|MultiEdit|NotebookEdit")
             .unwrap();
         let cmd = write_pre["hooks"][0]["command"].as_str().unwrap();
         assert!(
             cmd.contains("TAPE_HOOK_KIND=file_write_pre"),
             "expected file_write_pre kind in command, got: {cmd}"
         );
+    }
+
+    /// Issue #75: the overlay must cover every tool that `tape-hook`'s
+    /// `file_write_event` accepts. `NotebookEdit` was dispatched by the
+    /// hook and by the transcript converter but missing from the
+    /// PreToolUse / PostToolUse matchers, so live recordings dropped
+    /// notebook edits.
+    #[test]
+    fn overlay_matchers_cover_every_file_write_tool() {
+        let s = settings_overlay(&inputs());
+        let pre = s["hooks"]["PreToolUse"].as_array().unwrap().clone();
+        let post = s["hooks"]["PostToolUse"].as_array().unwrap().clone();
+
+        for tool in &["Write", "Edit", "MultiEdit", "NotebookEdit"] {
+            let pre_hit = pre
+                .iter()
+                .filter_map(|h| h["matcher"].as_str())
+                .any(|m| m.split('|').any(|alt| alt == *tool));
+            let post_hit = post
+                .iter()
+                .filter_map(|h| h["matcher"].as_str())
+                .any(|m| m.split('|').any(|alt| alt == *tool));
+            assert!(
+                pre_hit,
+                "no overlay PreToolUse matcher covers tool {tool}; got {pre:?}"
+            );
+            assert!(
+                post_hit,
+                "no overlay PostToolUse matcher covers tool {tool}; got {post:?}"
+            );
+        }
     }
 
     #[test]
