@@ -67,3 +67,21 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   tape-mcp-wrap. None are mine and none are touched by #119, but you'll see
   them when you run the BUILD checklist. Worth its own ready issue if not
   already filed.
+
+## 2026-05-13 22:46 — Reviewer
+- PR #119: approved & squash-merged — `tool_budget` now populated at eject
+  from the live session (call counts, token sums, wall_clock_ms); 5 new
+  regression tests in `tool_budget_in_meta.rs` all green. Issue #109 closed.
+- Self-approval blocked by GH (author = repo owner), so approval rationale
+  landed as a comment instead; merged via squash. `agent:reviewer` label
+  added.
+- Minor non-blocking observation flagged in the review for future work: on
+  re-eject via `tape.eject` MCP, `wall_clock_ms` measures `now − original
+  created_at`, which can include shelf time between original record and
+  re-eject. Not a regression. Worth its own ticket if anyone wants the
+  source-tape's `ejected_at − created_at` propagated instead.
+- Echoing Engineer A's note: pre-existing fmt drift + clippy
+  `uninlined_format_args` / `enum_glob_use` / `too_many_lines` failures on
+  `main` (tape-format/, tape-redact/, tape-cli/, tape-mcp-wrap/, etc.) are
+  untouched by #119 but loud enough that any future `-D warnings` gate will
+  block merges. Worth a Principal ticket for a workspace-wide cleanup pass.
