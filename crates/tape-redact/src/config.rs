@@ -8,7 +8,12 @@ pub struct TapeRcConfig {
     pub redact: RedactConfig,
 }
 
+/// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
+/// `TapeRcConfig` stays permissive at the top level (forward-compat) but this
+/// struct denies typos so users learn fast when `disable_default` becomes
+/// `disabled_default`. (Issue #36.)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedactConfig {
     #[serde(default)]
     pub custom: Vec<CustomRule>,
@@ -250,5 +255,61 @@ redact:
         let mut s = "alice@example.com".to_string();
         engine.redact_string(&mut s);
         assert_eq!(s, "alice@example.com", "email should NOT be redacted");
+    }
+
+    /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load
+    /// failure. Each entry below is a realistic typo the user might make.
+    /// (Issue #36.)
+    #[test]
+    fn typo_under_redact_rejects() {
+        for bad in [
+            // wrong key entirely
+            "redact:\n  customs:\n    - id: x\n      pattern: 'y'\n",
+            // plural / case typos for the documented fields
+            "redact:\n  disabled_default: [\"email\"]\n",
+            "redact:\n  enable_optionals: [\"ipv4_private\"]\n",
+            "redact:\n  enableOptional: [\"ipv4_private\"]\n",
+            // entirely made-up section
+            "redact:\n  disable: [\"email\"]\n",
+        ] {
+            let err = TapeRcConfig::parse(bad).err();
+            assert!(
+                err.is_some(),
+                "expected typo to fail config-load; parsed clean: {bad}"
+            );
+        }
+    }
+
+    /// SPEC §9.1: unknown TOP-LEVEL keys are ignored for forward-compat.
+    /// Make sure the new `deny_unknown_fields` attribute didn't leak up.
+    #[test]
+    fn unknown_top_level_key_still_accepted() {
+        let yaml = r#"
+some_future_section:
+  foo: bar
+redact:
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).expect("top-level forward-compat");
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    /// Regression: a well-formed config with all three documented keys still
+    /// parses without complaint.
+    #[test]
+    fn all_documented_keys_still_parse() {
+        let yaml = r#"
+redact:
+  custom:
+    - id: cust_id
+      pattern: 'CUST-\d{6}'
+      replacement: '<CUST_ID>'
+  enable_optional: ["ipv4_private"]
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.redact.custom.len(), 1);
+        assert_eq!(cfg.redact.enable_optional, vec!["ipv4_private"]);
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
     }
 }
