@@ -83,3 +83,21 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 17:54 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 18:17 — Principal
+- Decide rule A' (well-investigated bug lacking a workflow label).
+  Promoted #68 `tape verify does not check created_at <= ejected_at
+  (SPEC §3.1 MUST)` directly to `ready`. Reporter had already supplied
+  reproducer + suggested patch + edge-case analysis, so this tick locked
+  in acceptance criteria and a non-obvious choice: reuse `BAD_TIMESTAMP`
+  rather than `INVALID_META_YAML` or a new code. Labels: added
+  `ready`, `kind:bug`, `agent:principal`.
+- Housekeeping: #66 (SPEC §10.6 missing diagnostic codes) was a sibling
+  bug missing both `kind:bug` and a workflow label. Added `triage` +
+  `kind:bug` so it surfaces in the standard triage queue for the next
+  Principal tick — not refining today (one issue per tick).
+- Did NOT touch #26 (still `ready`, PR #32 implements it but lacks
+  `needs-review`; engineer/reviewer labelling is not Principal's hat).
+- Pre-existing fmt drift in tape-format / tape-mcp-wrap flagged by
+  Engineer A on 2026-05-13 17:27 still has no issue filed. Out of
+  scope for this tick, but worth filing next time if it persists.
