@@ -118,6 +118,31 @@ fn dirs_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
+/// Build a redaction engine seeded with default rules, with `.taperc` overlay
+/// applied if present. Search order (SPEC §9): walk from `cwd` up to `$HOME`,
+/// then `$HOME/.taperc` as fallback. CWD wins — no merge.
+///
+/// If a `.taperc` is found but fails to read, parse, or apply, the error is
+/// returned. The caller MUST abort the recording rather than silently fall
+/// back to defaults — otherwise a user's custom redaction rules would be
+/// invisibly skipped.
+pub fn engine_with_taperc(cwd: &std::path::Path) -> anyhow::Result<crate::Engine> {
+    let mut engine = crate::Engine::with_default_rules();
+    let path = TapeRcConfig::locate_workspace(cwd).or_else(TapeRcConfig::locate_user);
+    if let Some(p) = path {
+        let yaml = std::fs::read_to_string(&p).map_err(|e| {
+            anyhow::anyhow!("failed to read {}: {e}", p.display())
+        })?;
+        let cfg = TapeRcConfig::parse(&yaml).map_err(|e| {
+            anyhow::anyhow!("failed to parse {}: {e}", p.display())
+        })?;
+        cfg.apply(&mut engine).map_err(|e| {
+            anyhow::anyhow!("failed to apply {}: {e}", p.display())
+        })?;
+    }
+    Ok(engine)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
