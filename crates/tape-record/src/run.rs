@@ -144,6 +144,12 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
         Outcome::Failure
     };
 
+    // Issue #17: load `.taperc` (workspace ancestor walk → $HOME) so custom
+    // rules, enable_optional, and disable_default actually take effect.
+    // Bad config aborts the eject — better to fail loudly than silently
+    // drop a user's intended redactions.
+    let cwd = std::env::current_dir()?;
+    let redact_engine = tape_redact::engine_with_taperc(&cwd)?;
     let eject_result = eject(
         &session,
         &EjectOptions {
@@ -152,7 +158,7 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             outcome,
             stub_liner_notes: true,
             out_path: opts.out_path,
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
         },
     )?;
 

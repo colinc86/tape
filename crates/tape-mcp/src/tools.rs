@@ -680,6 +680,16 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         session.append_at(t.kind, t.payload.clone(), ts);
     }
 
+    // Issue #17: load `.taperc` from the current workspace so custom rules,
+    // enable_optional, and disable_default take effect on MCP-driven ejects.
+    let cwd = std::env::current_dir().map_err(|e| ToolErr {
+        code: "INTERNAL_ERROR",
+        message: format!("cwd: {e}"),
+    })?;
+    let redact_engine = tape_redact::engine_with_taperc(&cwd).map_err(|e| ToolErr {
+        code: "TAPERC_INVALID",
+        message: format!("failed to load .taperc: {e}"),
+    })?;
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -688,7 +698,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             outcome: tape_format::meta::Outcome::Success,
             stub_liner_notes: true,
             out_path: out.clone().into(),
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
         },
     )
     .map_err(|e| ToolErr {
@@ -903,6 +913,17 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     }
 
     let out_path = std::path::PathBuf::from(&out);
+    // Issue #17: load `.taperc` so a user's custom rules + enable/disable
+    // settings apply to snapshots, not just default built-ins.
+    let snapshot_cwd = std::env::current_dir().map_err(|e| ToolErr {
+        code: "INTERNAL_ERROR",
+        message: format!("cwd: {e}"),
+    })?;
+    let redact_engine =
+        tape_redact::engine_with_taperc(&snapshot_cwd).map_err(|e| ToolErr {
+            code: "TAPERC_INVALID",
+            message: format!("failed to load .taperc: {e}"),
+        })?;
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -911,7 +932,7 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             outcome: tape_format::meta::Outcome::Unknown,
             stub_liner_notes: true,
             out_path: out_path.clone(),
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
         },
     )
     .map_err(|e| ToolErr {

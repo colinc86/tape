@@ -15,6 +15,8 @@
 pub mod config;
 pub mod rules;
 
+pub use config::engine_with_taperc;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
