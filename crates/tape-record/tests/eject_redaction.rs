@@ -60,6 +60,118 @@ fn eject_redacts_email_in_track_payload() {
     assert!(meta_yaml.contains("email"));
 }
 
+/// Issue #11: when an oversize string contains a secret, spillover used to
+/// `mem::take` the string into an artifact *before* the redaction engine ran,
+/// so the artifact bytes leaked the secret in plaintext. After the fix,
+/// redaction runs first; the spilled bytes are post-redaction.
+#[test]
+fn spilled_payloads_are_redacted_in_artifacts() {
+    use std::io::Read;
+    let session = Session::start("spill leak", "test/0.0.1");
+    let bait = format!(
+        "{}\nlog: AKIA{}\n{}",
+        "x".repeat(2048),
+        "1234567890ABCDEF",
+        "y".repeat(2048),
+    );
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": bait,
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("spill.tape");
+    eject(
+        &session,
+        &EjectOptions {
+            task: "spill leak".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+        },
+    )
+    .unwrap();
+
+    // Walk every entry under artifacts/ and assert the literal AWS access-key
+    // prefix is nowhere to be found.
+    let zip_file = std::fs::File::open(&out).unwrap();
+    let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+    let mut found_artifacts = 0;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let name = entry.name().to_owned();
+        if !name.starts_with("artifacts/") {
+            continue;
+        }
+        found_artifacts += 1;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).unwrap();
+        assert!(
+            !buf.windows(20).any(|w| w == b"AKIA1234567890ABCDEF"),
+            "artifact {name} contains unredacted AWS access key"
+        );
+    }
+    assert!(found_artifacts > 0, "expected the oversize string to spill");
+}
+
+/// A bearer token embedded in an oversize payload should be replaced before
+/// the bytes reach `artifacts/`.
+#[test]
+fn spilled_payloads_redact_bearer_tokens() {
+    use std::io::Read;
+    let session = Session::start("bearer leak", "test/0.0.1");
+    let padding = "x".repeat(4096);
+    let leak = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": format!("{padding}\nAuthorization: {leak}\n{padding}"),
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("bearer.tape");
+    eject(
+        &session,
+        &EjectOptions {
+            task: "bearer leak".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+        },
+    )
+    .unwrap();
+
+    let zip_file = std::fs::File::open(&out).unwrap();
+    let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let name = entry.name().to_owned();
+        if !name.starts_with("artifacts/") {
+            continue;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        assert!(
+            !s.contains(leak),
+            "artifact {name} contains unredacted bearer token"
+        );
+    }
+}
+
 #[test]
 fn eject_redacts_anthropic_key_in_response() {
     let session = Session::start("key leak", "test/0.0.1");
