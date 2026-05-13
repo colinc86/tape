@@ -38,6 +38,9 @@ fn main() -> anyhow::Result<()> {
     malformed_leaked_anthropic_key(&malformed_dir)?;
     malformed_wrong_tape_version(&malformed_dir)?;
     malformed_invalid_parent_step(&malformed_dir)?;
+    malformed_leaked_jwt(&malformed_dir)?;
+    malformed_leaked_aws_access_key(&malformed_dir)?;
+    malformed_leaked_email(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -58,7 +61,7 @@ Nothing material.
 
 fn minimal_success(out_dir: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000001"
+id: "01h8xy00-0000-7000-b8aa-000000000001"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Say hello"
@@ -99,7 +102,7 @@ fn oversized_payload(out_dir: &Path) -> anyhow::Result<()> {
     let path = artifact_path(&hex);
 
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000002"
+id: "01h8xy00-0000-7000-b8aa-000000000002"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Read a large log"
@@ -133,7 +136,7 @@ outcome: success
 
 fn with_mcp_calls(out_dir: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000003"
+id: "01h8xy00-0000-7000-b8aa-000000000003"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:01:00Z"
 task: "Investigate payment failures for customer 4471"
@@ -192,7 +195,7 @@ fn write_expected(path: &Path, codes: &[&str]) -> anyhow::Result<()> {
 }
 
 fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000101", "Missing eject", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000101", "Missing eject", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:05Z","payload":{"vendor":"anthropic","model":"x","request":{},"response":{}}}"#, "\n",
@@ -210,7 +213,7 @@ fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000102", "Step gap", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000102", "Step gap", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
@@ -228,7 +231,7 @@ fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000103", "Unknown kind", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000103", "Unknown kind", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
@@ -247,7 +250,7 @@ fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_outcome_mismatch(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000104", "Outcome mismatch", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000104", "Outcome mismatch", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"failure"}}"#, "\n",
@@ -274,7 +277,7 @@ fn malformed_artifact_hash_mismatch(out: &Path) -> anyhow::Result<()> {
     let claimed_path = artifact_path(&claimed_hex);
 
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000105",
+        "01h8xy00-0000-7000-b8aa-000000000105",
         "Artifact hash mismatch",
         "success",
     );
@@ -310,7 +313,7 @@ fn malformed_oversized_inline(out: &Path) -> anyhow::Result<()> {
     // An inline string > 4 KiB that is NOT a `{ref: ...}` stub.
     let big: String = "Y".repeat(8_000);
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000106",
+        "01h8xy00-0000-7000-b8aa-000000000106",
         "Oversized inline payload",
         "success",
     );
@@ -354,7 +357,7 @@ Flag this fixture as malformed.
 Nothing.
 ");
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000107",
+        "01h8xy00-0000-7000-b8aa-000000000107",
         "Leaked anthropic key in liner",
         "success",
     );
@@ -379,7 +382,7 @@ Nothing.
 
 fn malformed_wrong_tape_version(out: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v9"
-id: "01h8xy00-0000-7000-8000-000000000108"
+id: "01h8xy00-0000-7000-b8aa-000000000108"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Future version"
@@ -406,13 +409,130 @@ outcome: success
     Ok(())
 }
 
+/// SPEC §3.3 / §4.3 / §10.5: every default-enabled built-in rule must be
+/// flagged by `tape verify`'s defense-in-depth scan. Three fixtures clone
+/// the `leaked-anthropic-key` template for `jwt`, `aws_access_key`, and
+/// `email` — the rules that pre-#33 `tape verify` silently let through.
+fn malformed_leaked_jwt(out: &Path) -> anyhow::Result<()> {
+    let leak = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let liner = format!("## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+A leaked JWT was somehow embedded: {leak} (synthetic test value).
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010a",
+        "Leaked JWT in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner,
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-jwt.tape"))?;
+    write_expected(
+        &out.join("leaked-jwt.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
+fn malformed_leaked_aws_access_key(out: &Path) -> anyhow::Result<()> {
+    let leak = "AKIA1234567890ABCDEF";
+    let liner = format!("## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+A leaked AWS access key id: {leak} (synthetic test value).
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010b",
+        "Leaked AWS access key in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner,
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-aws-access-key.tape"))?;
+    write_expected(
+        &out.join("leaked-aws-access-key.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
+fn malformed_leaked_email(out: &Path) -> anyhow::Result<()> {
+    let liner = "## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+Ping the team at alice@example.com for follow-up.
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+";
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010c",
+        "Leaked email in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-email.tape"))?;
+    write_expected(
+        &out.join("leaked-email.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
 /// Three back-to-back `parent_step` violations on one tape: an out-of-range
 /// reference, a `parent_step == step` (violates the `< step` rule), and a
 /// `parent_step == 0` (out of the `[1, step)` range). All three must fire
 /// `INVALID_PARENT_STEP`. See SPEC §5.3 and issue #3.
 fn malformed_invalid_parent_step(out: &Path) -> anyhow::Result<()> {
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000109",
+        "01h8xy00-0000-7000-b8aa-000000000109",
         "Invalid parent_step",
         "success",
     );

@@ -1487,6 +1487,7 @@ dependencies = [
  "blake3",
  "chrono",
  "insta",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
