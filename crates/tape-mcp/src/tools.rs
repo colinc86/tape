@@ -356,6 +356,50 @@ fn tool_tracks(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     Ok(json!({"tracks": out}))
 }
 
+/// Walk a JSON value and replace every `{"ref": "sha:<hex>"}` stub with the
+/// corresponding artifact's bytes (decoded as UTF-8 with `from_utf8_lossy`).
+///
+/// Recurses into objects and arrays; leaves scalars and non-stub objects
+/// alone. A ref pointing at a missing artifact (corrupt tape) is left as
+/// the stub — the caller can still see what was *supposed* to be there.
+/// (Issue #44.)
+fn resolve_artifact_refs(
+    value: &mut Value,
+    artifacts: &std::collections::HashMap<String, Vec<u8>>,
+) {
+    match value {
+        Value::Object(map) => {
+            // Detect a ref stub: 1-element object with key "ref" mapping to
+            // "sha:<hex>". Anything else is a regular object we recurse into.
+            if map.len() == 1 {
+                if let Some(Value::String(s)) = map.get("ref") {
+                    if let Some(hex) = s.strip_prefix("sha:") {
+                        let path = tape_format::artifact::artifact_path(hex);
+                        if let Some(bytes) = artifacts.get(&path) {
+                            *value = Value::String(
+                                String::from_utf8_lossy(bytes).into_owned(),
+                            );
+                            return;
+                        }
+                        // Artifact missing — leave the stub for the caller
+                        // to notice rather than panicking.
+                        return;
+                    }
+                }
+            }
+            for v in map.values_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let step = args.get("step").and_then(Value::as_u64);
@@ -383,13 +427,21 @@ fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         if !include {
             continue;
         }
-        // Resolve any artifact refs to full bytes if present.
-        let track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        // Resolve any `{"ref": "sha:<hex>"}` stubs against the loaded
+        // tape's artifacts so callers see the actual content. Without
+        // this, every spilled payload comes back as an opaque hash and
+        // the agent has no way to inspect what was recorded. (Issue #44.)
+        let mut track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        resolve_artifact_refs(&mut track_value, &loaded.raw.artifacts);
         let serialized = track_value.to_string();
         if total_bytes + serialized.len() > CAP {
             return Err(ToolErr {
                 code: "OUT_OF_RANGE",
-                message: format!("response exceeds 200 KB cap; narrow the range"),
+                message: format!(
+                    "step {} alone is {} bytes after resolving artifact refs; narrow the range",
+                    t.step,
+                    serialized.len()
+                ),
             });
         }
         total_bytes += serialized.len();
