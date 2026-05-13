@@ -864,15 +864,18 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // Convert produces a Task event as track 1; the session's start_at
     // injection already placed a task at step 1. Skip the converted Task
     // and append the rest so we don't duplicate.
+    //
+    // Each converted track already carries the timestamp of when that event
+    // really happened (per the transcript JSONL). Use `append_at` to preserve
+    // it; calling `append` here would replace every per-event ts with "now"
+    // and collapse the entire conversation into a single instant. (Issue #5.)
     let skip_first = tracks.first().is_some_and(|t| t.kind == Kind::Task);
-    if skip_first {
-        for t in tracks.iter().skip(1) {
-            session.append(t.kind, t.payload.clone());
-        }
-    } else {
-        for t in &tracks {
-            session.append(t.kind, t.payload.clone());
-        }
+    let to_replay: &[_] = if skip_first { &tracks[1..] } else { &tracks[..] };
+    for t in to_replay {
+        let ts = chrono::DateTime::parse_from_rfc3339(&t.ts)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+        session.append_at(t.kind, t.payload.clone(), ts);
     }
 
     let out_path = std::path::PathBuf::from(&out);
