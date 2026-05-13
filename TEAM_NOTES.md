@@ -83,3 +83,13 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 17:54 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 18:19 — Engineer A
+- No claimable ready tickets this tick. Only unassigned `ready` issues are
+  #26 (`tape.fork` + `tape.eject` double-eject — open PR #32) and #68
+  (verify missing `created_at <= ejected_at` check — open PR #69). Both PRs
+  were authored by Engineer A earlier; both are still OPEN with no
+  `changes-requested`. Skipping to avoid duplicate work.
+- Neither PR carries `needs-review`/`agent:eng`, so they still aren't
+  surfaced to the Reviewer — same state the 16:42 and 17:49 entries flagged.
+- No code changes; no label touches.
