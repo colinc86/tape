@@ -31,6 +31,17 @@ pub struct EjectOptions {
     pub out_path: std::path::PathBuf,
     /// Redaction engine. `None` disables redaction (for testing only).
     pub redact_engine: Option<Engine>,
+    /// Artifacts inherited from a prior tape (e.g. when `tape.eject`
+    /// round-trips a loaded handle whose tracks already carry
+    /// `{"ref": "sha:<hex>"}` stubs). The eject pipeline seeds its working
+    /// artifact map with these bytes before running the spillover loop, so
+    /// the resulting tape resolves every existing ref. Orphans (entries
+    /// referenced by no surviving track — e.g. after a fork truncation) are
+    /// dropped before the tape is written. `None` is equivalent to an empty
+    /// map: the recording path (no prior artifacts) and the snapshot path
+    /// (transcript → tracks, no prior artifacts) both pass `None`.
+    /// (Issue #41.)
+    pub preserved_artifacts: Option<BTreeMap<String, Vec<u8>>>,
 }
 
 /// Final-shape result of an eject.
@@ -62,10 +73,27 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     }
 
     // 3. Spillover — operates on already-redacted payload bytes.
-    let mut artifacts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    //
+    // Seed the working artifact map with any artifacts inherited from a
+    // prior tape (issue #41). Without this seed, a `tape.eject` of a
+    // loaded handle would copy `{"ref": "sha:<hex>"}` stubs into the new
+    // tracks without their backing bytes, and the resulting tape would
+    // fail `tape verify MISSING_ARTIFACT`. The recording and snapshot
+    // paths pass `None` and behave exactly as before.
+    let mut artifacts: BTreeMap<String, Vec<u8>> =
+        opts.preserved_artifacts.clone().unwrap_or_default();
     for t in &mut snap.tracks {
         spill_oversize_in_value(&mut t.payload, &mut t.refs, &mut artifacts);
     }
+
+    // 3a. Orphan dropping (issue #41). The preserved set may include
+    // artifacts that no surviving track references — for example, when an
+    // intermediate fork truncated the tracks that pointed at them. Walk
+    // the final tracks and intersect with `artifacts.keys()`; drop the
+    // rest so the resulting tape is minimal and `tape verify` doesn't
+    // flag dangling bytes.
+    let referenced = collect_referenced_artifact_paths(&snap.tracks);
+    artifacts.retain(|path, _| referenced.contains(path));
 
     // 4. Append eject event. The payload is a small, agent-built constant
     // (`{"outcome": ...}`) with no user-derived strings, so it bypasses the
@@ -420,6 +448,64 @@ fn encoded_len(v: &Value) -> usize {
     serde_json::to_string(v)
         .map(|s| s.len())
         .unwrap_or(usize::MAX)
+}
+
+/// Walk the final track set and collect every artifact-zip path that a
+/// surviving event still references. References come from two places:
+///
+/// 1. Each track's top-level `refs` array (each entry is `"sha:<hex>"`).
+/// 2. `{"ref": "sha:<hex>"}` stubs embedded in the payload at arbitrary
+///    nesting depth — spillover writes these in-place during step 3 above,
+///    and a loaded tape may already contain them.
+///
+/// We collect both so that orphan dropping (issue #41) only removes
+/// artifacts that are reachable from *no* surviving track. The set is
+/// keyed by the canonical artifact zip path (`artifacts/<aa>/<bb>/<full>.bin`)
+/// so it matches the keys in the working `artifacts` map directly.
+fn collect_referenced_artifact_paths(tracks: &[Track]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for t in tracks {
+        for r in &t.refs {
+            if let Some(hex) = tape_format::artifact::parse_ref(r) {
+                if hex.len() >= 4 {
+                    out.insert(artifact_path(hex));
+                }
+            }
+        }
+        collect_refs_in_value(&t.payload, &mut out);
+    }
+    out
+}
+
+/// Recursively walk a payload `Value`, harvesting every `{"ref": "sha:<hex>"}`
+/// stub into the supplied set as a canonical artifact zip path.
+fn collect_refs_in_value(v: &Value, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        Value::Object(map) => {
+            // Ref stubs are exactly `{"ref": "sha:<hex>"}` — recognized via
+            // the same predicate the spillover loop uses, so we don't recurse
+            // into the synthetic `"ref"` string and treat it as a normal child.
+            if is_ref_stub_map(map) {
+                if let Some(Value::String(s)) = map.get("ref") {
+                    if let Some(hex) = tape_format::artifact::parse_ref(s) {
+                        if hex.len() >= 4 {
+                            out.insert(artifact_path(hex));
+                        }
+                    }
+                }
+                return;
+            }
+            for child in map.values() {
+                collect_refs_in_value(child, out);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                collect_refs_in_value(child, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

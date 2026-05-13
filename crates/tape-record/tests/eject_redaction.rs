@@ -33,6 +33,7 @@ fn eject_redacts_email_in_track_payload() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .unwrap();
@@ -95,6 +96,7 @@ fn spilled_payloads_are_redacted_in_artifacts() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .unwrap();
@@ -150,6 +152,7 @@ fn spilled_payloads_redact_bearer_tokens() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .unwrap();
@@ -210,6 +213,7 @@ fn eject_succeeds_when_oversize_artifact_is_high_entropy_base64() {
             out_path: out.clone(),
             // Default rules — generic_high_entropy NOT enabled.
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .expect("eject should succeed with default rules");
@@ -252,6 +256,7 @@ fn eject_succeeds_when_oversize_artifact_contains_private_ip() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .expect("eject should succeed with default rules");
@@ -301,6 +306,7 @@ fn eject_redacts_high_entropy_when_opted_in() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(engine),
+            preserved_artifacts: None,
         },
     )
     .expect("eject should succeed when high-entropy is redacted, not flagged");
@@ -333,6 +339,7 @@ fn eject_redacts_anthropic_key_in_response() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: Some(Engine::with_default_rules()),
+            preserved_artifacts: None,
         },
     )
     .unwrap();

@@ -80,6 +80,7 @@ fn eject_with_engine(
             stub_liner_notes: true,
             out_path: out.to_path_buf(),
             redact_engine: Some(engine),
+            preserved_artifacts: None,
         },
     )
     .expect("eject succeeded")

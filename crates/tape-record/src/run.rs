@@ -159,6 +159,8 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             stub_liner_notes: true,
             out_path: opts.out_path,
             redact_engine: Some(redact_engine),
+            // Fresh recording — no inherited artifacts.
+            preserved_artifacts: None,
         },
     )?;
 

@@ -717,6 +717,20 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         code: "TAPERC_INVALID",
         message: format!("failed to load .taperc: {e}"),
     })?;
+    // Issue #41: thread the loaded tape's existing artifact bytes into the
+    // eject pipeline. The replay above only copied `{"ref": "sha:<hex>"}`
+    // stubs into the new session's tracks — without seeding the pipeline's
+    // artifact map with the backing bytes, the resulting tape would fail
+    // `tape verify MISSING_ARTIFACT`. `loaded.raw.artifacts` is a
+    // `HashMap<String, Vec<u8>>` on disk, but the pipeline expects a
+    // `BTreeMap`, so we materialize a fresh sorted map here.
+    let preserved: std::collections::BTreeMap<String, Vec<u8>> = loaded
+        .raw
+        .artifacts
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -726,6 +740,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             stub_liner_notes: true,
             out_path: out.clone().into(),
             redact_engine: Some(redact_engine),
+            preserved_artifacts: Some(preserved),
         },
     )
     .map_err(|e| ToolErr {
@@ -960,6 +975,10 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             stub_liner_notes: true,
             out_path: out_path.clone(),
             redact_engine: Some(redact_engine),
+            // Snapshot starts from a Claude Code transcript, which has no
+            // prior artifact bytes — the spillover loop will create any
+            // artifacts the new tape needs.
+            preserved_artifacts: None,
         },
     )
     .map_err(|e| ToolErr {
