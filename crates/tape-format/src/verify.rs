@@ -32,6 +32,7 @@ pub enum DiagnosticCode {
     MissingArtifact,
     ArtifactHashMismatch,
     OversizedInlinePayload,
+    InvalidParentStep,
     OutcomeMismatch,
     RedactionSummaryMismatch,
     LeakedSecretInMeta,
@@ -64,6 +65,7 @@ impl DiagnosticCode {
             MissingArtifact => "MISSING_ARTIFACT",
             ArtifactHashMismatch => "ARTIFACT_HASH_MISMATCH",
             OversizedInlinePayload => "OVERSIZED_INLINE_PAYLOAD",
+            InvalidParentStep => "INVALID_PARENT_STEP",
             OutcomeMismatch => "OUTCOME_MISMATCH",
             RedactionSummaryMismatch => "REDACTION_SUMMARY_MISMATCH",
             LeakedSecretInMeta => "LEAKED_SECRET_IN_META",
@@ -240,6 +242,36 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
                     expected
                 ),
             ));
+        }
+    }
+
+    // SPEC §5.3 — when parent_step is present, it MUST be in `[1, step)` and
+    // MUST reference a step that exists in this tape. Because `step` is
+    // contiguous from 1 (checked above), an existing step is exactly any
+    // value in `[1, tracks.len()]`; the stricter `< step` rule subsumes the
+    // upper bound for any well-numbered tape, but we still report both forms
+    // so a tape that fails BOTH StepGap and InvalidParentStep at once gets
+    // both errors.
+    let max_step = tracks.len() as u64;
+    for t in &tracks {
+        if let Some(p) = t.parent_step {
+            if p == 0 || p >= t.step {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidParentStep,
+                    format!(
+                        "step {} has parent_step={}, must be in [1, {})",
+                        t.step, p, t.step
+                    ),
+                ));
+            } else if p > max_step {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidParentStep,
+                    format!(
+                        "step {} parent_step={} references nonexistent step",
+                        t.step, p
+                    ),
+                ));
+            }
         }
     }
 

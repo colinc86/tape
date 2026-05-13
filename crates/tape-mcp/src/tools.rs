@@ -605,7 +605,17 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let loaded = state.get_mut(&handle).ok_or_else(ToolErr::invalid_handle)?;
 
     let next_step = (loaded.tracks.len() as u64) + 1;
-    let target_step = step_arg.unwrap_or(next_step);
+    // SPEC §5.3 — `parent_step`, when present, MUST be in [1, step). The new
+    // annotation event has `step == next_step`, so `step_arg` (which becomes
+    // its `parent_step`) must satisfy `1 <= step_arg < next_step`. Reject
+    // early so the deck never produces a non-conforming tape. (Issue #3.)
+    if let Some(s) = step_arg {
+        if s == 0 || s >= next_step {
+            return Err(ToolErr::params(format!(
+                "step must be in [1, {next_step}); got {s}"
+            )));
+        }
+    }
     let new_track = tape_format::tracks::Track {
         step: next_step,
         kind: Kind::Annotation,
@@ -613,11 +623,7 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string(),
         payload: json!({"by": by, "note": note}),
-        parent_step: if step_arg.is_some() {
-            Some(target_step)
-        } else {
-            None
-        },
+        parent_step: step_arg,
         refs: vec![],
         annotations: vec![],
     };
