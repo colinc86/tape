@@ -86,6 +86,85 @@ async fn spawn_mock_upstream() -> (std::net::SocketAddr, tokio::sync::oneshot::S
     (addr, tx)
 }
 
+/// A canned-response upstream used by the HTTP-error tests below. The handler
+/// echoes back a fixed status code, content-type, and body for any POST to
+/// `/v1/messages`, regardless of the request payload.
+#[derive(Clone)]
+struct CannedState {
+    status: StatusCode,
+    content_type: &'static str,
+    body: Vec<u8>,
+}
+
+async fn canned_messages(AxState(state): AxState<CannedState>, _body: axum::body::Bytes) -> Response<Body> {
+    Response::builder()
+        .status(state.status)
+        .header(header::CONTENT_TYPE, state.content_type)
+        .body(Body::from(state.body))
+        .unwrap()
+}
+
+async fn spawn_canned_upstream(
+    status: StatusCode,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {
+    let app: Router = Router::new()
+        .route("/v1/messages", post(canned_messages))
+        .with_state(CannedState {
+            status,
+            content_type,
+            body,
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await;
+    });
+    (addr, tx)
+}
+
+/// Drive a non-streaming POST through the proxy and return the recorded
+/// model_call payload.
+async fn record_non_streaming_against(
+    upstream_addr: std::net::SocketAddr,
+    task: &'static str,
+) -> serde_json::Value {
+    let session = Session::start(task, "test/0.0.1");
+    let mut cfg = ProxyConfig::anthropic();
+    cfg.upstream = format!("http://{upstream_addr}");
+    cfg.request_timeout = None;
+    let proxy = spawn(cfg, session.clone()).await.unwrap();
+    let proxy_url = proxy.base_url();
+
+    let client = reqwest::Client::new();
+    // We don't assert on the client-side status here — the tests calling this
+    // helper care about the recorded payload, not the proxied response.
+    let _ = client
+        .post(format!("{proxy_url}/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "claude-opus-4-7",
+            "messages": [{"role": "user", "content": "x"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let snap = session.snapshot();
+    assert_eq!(snap.tracks.len(), 2, "expected task + model_call");
+    let mc = &snap.tracks[1];
+    assert_eq!(mc.kind, Kind::ModelCall);
+    let payload = mc.payload.clone();
+
+    proxy.shutdown().await;
+    payload
+}
+
 #[tokio::test]
 async fn streaming_chunks_are_not_buffered() {
     let (mock_addr, mock_shutdown) = spawn_mock_upstream().await;
@@ -177,7 +256,82 @@ async fn non_streaming_request_records() {
     let mc = &snap.tracks[1];
     assert_eq!(mc.kind, Kind::ModelCall);
     assert!(mc.payload["response"].is_object());
+    // Regression for #6: 2xx must NOT inject an `error` field, but should
+    // still carry the non-normative `status_code` diagnostic.
+    assert!(
+        mc.payload.get("error").is_none(),
+        "2xx payload must not carry an `error` field, got: {:?}",
+        mc.payload.get("error")
+    );
+    assert_eq!(mc.payload["status_code"].as_u64(), Some(200));
 
     proxy.shutdown().await;
     let _ = mock_shutdown.send(());
+}
+
+// --- HTTP failure recording (issue #6) -------------------------------------
+
+#[tokio::test]
+async fn http_429_records_error_field() {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "type": "error",
+        "error": {"type": "rate_limit_error", "message": "slow down"}
+    }))
+    .unwrap();
+    let (addr, shutdown) =
+        spawn_canned_upstream(StatusCode::TOO_MANY_REQUESTS, "application/json", body).await;
+
+    let payload = record_non_streaming_against(addr, "429 test").await;
+
+    assert_eq!(
+        payload["error"]["code"].as_str(),
+        Some("HTTP_429"),
+        "payload: {payload}"
+    );
+    assert_eq!(payload["status_code"].as_u64(), Some(429));
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_401_records_error_and_preserves_json_body() {
+    let body_json = serde_json::json!({
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "invalid x-api-key"}
+    });
+    let body = serde_json::to_vec(&body_json).unwrap();
+    let (addr, shutdown) =
+        spawn_canned_upstream(StatusCode::UNAUTHORIZED, "application/json", body).await;
+
+    let payload = record_non_streaming_against(addr, "401 test").await;
+
+    // Error field present and well-formed.
+    assert_eq!(payload["error"]["code"].as_str(), Some("HTTP_401"));
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "error.message should be non-empty, got: {:?}",
+        payload["error"]["message"]
+    );
+    assert_eq!(payload["status_code"].as_u64(), Some(401));
+    // Response body is preserved as parsed JSON.
+    assert_eq!(payload["response"], body_json);
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_500_plaintext_body_records_error_and_raw_response() {
+    let plain = b"upstream blew up".to_vec();
+    let (addr, shutdown) =
+        spawn_canned_upstream(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", plain).await;
+
+    let payload = record_non_streaming_against(addr, "500 plaintext test").await;
+
+    assert_eq!(payload["error"]["code"].as_str(), Some("HTTP_500"));
+    assert_eq!(payload["status_code"].as_u64(), Some(500));
+    // Plaintext body is preserved verbatim as a JSON string.
+    assert_eq!(payload["response"].as_str(), Some("upstream blew up"));
+
+    let _ = shutdown.send(());
 }
