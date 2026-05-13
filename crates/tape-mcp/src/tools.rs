@@ -653,13 +653,31 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 
     // Build a session-shape struct in-memory and reuse the eject pipeline.
     // We do this by constructing a Session and replaying tracks into it.
-    let session = tape_record::session::Session::start(
-        &extract_task(&loaded),
+    //
+    // Mirror tool_snapshot (issue #5 / PR #16): use `start_at` + `append_at`
+    // so per-event timestamps from the loaded tape survive the round-trip
+    // instead of being clobbered with "now". The source-of-truth created_at
+    // is `meta.yaml`'s `created_at` field; fall back to now if it won't parse.
+    let task_text = extract_task(&loaded);
+    let original_created_at =
+        serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
+            .ok()
+            .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.created_at).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+
+    let session = tape_record::session::Session::start_at(
+        &task_text,
         format!("tape-mcp/{}", env!("CARGO_PKG_VERSION")),
+        original_created_at,
     );
-    // Skip the auto-injected step 1 (task) and replay the rest.
+    // Skip the auto-injected step 1 (task) and replay the rest, preserving
+    // each event's original ts. (Issue #20.)
     for t in loaded.tracks.iter().skip(1) {
-        session.append(t.kind, t.payload.clone());
+        let ts = chrono::DateTime::parse_from_rfc3339(&t.ts)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+        session.append_at(t.kind, t.payload.clone(), ts);
     }
 
     let result = tape_record::eject::eject(
