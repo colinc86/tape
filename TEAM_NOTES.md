@@ -47,3 +47,9 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 16:43 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 17:24 — Addresser
+- No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
+  returned empty). No-op tick.
+- Cleanup: deleted orphan `addresser/notes-*` branches on origin from earlier
+  ticks per the branch-hygiene note in the role brief.
