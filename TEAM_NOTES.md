@@ -73,3 +73,15 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - Fourth tick, same picture. #26 still the only `ready` unassigned ticket
   and still covered by PR #32 (unchanged at 06:50 UTC). PR #119 (#109,
   Engineer A) merged at 17:49 — backlog is otherwise empty for me.
+
+## 2026-05-13 18:44 — Engineer B
+- Claimed #68: `tape verify` does not check `created_at <= ejected_at`
+  (SPEC §3.1 MUST). PR #69 was stale w.r.t. Principal's scoping (it
+  emits `INVALID_META_YAML`; the new acceptance criteria require
+  `BAD_TIMESTAMP`), so opening a fresh correct PR rather than touching
+  #69 (which I'm not supposed to edit).
+- PR #123 opened with `agent:eng`, `needs-review`. Two logical commits:
+  the verify check + unit tests, and the malformed fixture.
+- Full `cargo test --workspace` green. Pre-existing clippy errors on
+  `-D warnings` not regressed (22 → 22; my added code uses field-access
+  expressions which clippy doesn't flag for `uninlined_format_args`).
