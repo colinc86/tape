@@ -182,6 +182,20 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         }
     };
 
+    // SPEC §3.1: `created_at` MUST be lexicographically ≤ `ejected_at`.
+    // The fields are parsed as `String`; ISO-8601 UTC values (the SPEC
+    // requires the `Z` suffix) sort the same way as the underlying instant,
+    // so we don't need to parse them into a `DateTime`. Issue #68.
+    if meta.created_at > meta.ejected_at {
+        report.push(Diagnostic::error(
+            DiagnosticCode::BadTimestamp,
+            format!(
+                "created_at {:?} is after ejected_at {:?} (SPEC §3.1)",
+                meta.created_at, meta.ejected_at
+            ),
+        ));
+    }
+
     if meta.tape_version != TAPE_VERSION {
         report.push(Diagnostic::error(
             DiagnosticCode::WrongTapeVersion,
@@ -399,7 +413,11 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         // rejected — there's no meaningful tape without a real prompt to
         // anchor it. See issue #96.
         if t.kind == Kind::Task {
-            let prompt = t.payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+            let prompt = t
+                .payload
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if prompt.is_empty() {
                 report.push(Diagnostic::error(
                     DiagnosticCode::InvalidPayload,
@@ -752,9 +770,12 @@ x
     #[test]
     fn fork_kind_emits_reserved_kind_not_invalid_tracks_json() {
         let tracks = concat!(
-            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
-            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+            "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
         );
         let raw = raw_with_tracks(tracks);
         let report = verify(&raw);
@@ -773,15 +794,21 @@ x
             .map(|d| d.message.clone())
             .unwrap_or_default();
         assert!(msg.contains("fork"), "message should name the kind: {msg}");
-        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+        assert!(
+            msg.contains("step 2"),
+            "message should name the step: {msg}"
+        );
     }
 
     #[test]
     fn splice_kind_emits_reserved_kind() {
         let tracks = concat!(
-            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-            r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
-            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+            "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
         );
         let raw = raw_with_tracks(tracks);
         let report = verify(&raw);
@@ -821,7 +848,10 @@ x
             .map(|d| d.message.clone())
             .unwrap_or_default();
         assert!(msg.contains("bogus"), "message should name the kind: {msg}");
-        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+        assert!(
+            msg.contains("step 2"),
+            "message should name the step: {msg}"
+        );
     }
 
     /// Multiple unknown kinds on the same tape should each get their own
@@ -870,8 +900,14 @@ x
             .find(|d| d.code == DiagnosticCode::InvalidPayload)
             .map(|d| d.message.clone())
             .unwrap_or_default();
-        assert!(msg.contains("empty prompt"), "message should explain the cause: {msg}");
-        assert!(msg.contains("step 1"), "message should name the step: {msg}");
+        assert!(
+            msg.contains("empty prompt"),
+            "message should explain the cause: {msg}"
+        );
+        assert!(
+            msg.contains("step 1"),
+            "message should name the step: {msg}"
+        );
     }
 
     /// A `task` event with no `prompt` field at all is treated the same as
@@ -904,10 +940,14 @@ x
         let report = verify(&raw);
         let prompt_errs = report
             .errors()
-            .filter(|d| d.code == DiagnosticCode::InvalidPayload
-                && d.message.contains("empty prompt"))
+            .filter(|d| {
+                d.code == DiagnosticCode::InvalidPayload && d.message.contains("empty prompt")
+            })
             .count();
-        assert_eq!(prompt_errs, 0, "non-empty prompt should not fire INVALID_PAYLOAD");
+        assert_eq!(
+            prompt_errs, 0,
+            "non-empty prompt should not fire INVALID_PAYLOAD"
+        );
     }
 
     /// A tape mixing a reserved kind AND an unknown kind should emit BOTH
@@ -932,6 +972,118 @@ x
         assert!(
             !codes.contains(&"INVALID_TRACKS_JSON"),
             "either typed diagnostic suppresses the generic; got {codes:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod meta_timestamp_tests {
+    //! SPEC §3.1 / issue #68: `created_at` MUST be lexicographically ≤
+    //! `ejected_at`. The fields parse fine in isolation; the violation is
+    //! a semantic ordering issue, reported as `BAD_TIMESTAMP` to match the
+    //! existing diagnostic family for timestamp problems (cf. §10.6).
+
+    use super::*;
+    use crate::reader::RawTape;
+    use std::collections::HashMap;
+
+    fn raw_with_meta_timestamps(created_at: &str, ejected_at: &str) -> RawTape {
+        let meta = format!(
+            r#"tape_version: "tape/v0"
+id: "01h8xy00-0000-7000-b8aa-000000000990"
+created_at: "{created_at}"
+ejected_at: "{ejected_at}"
+task: "meta timestamp unit test"
+recorder:
+  agent: "claude-code/2.1.4"
+outcome: success
+"#
+        );
+        let liner = "## What I was asked to do
+x
+
+## What I found
+x
+
+## Suggested next step / fix
+x
+
+## What I'm uncertain about
+x
+";
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:01Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        RawTape {
+            meta_yaml: Some(meta),
+            liner_md: Some(liner.into()),
+            tracks_jsonl: Some(tracks.into()),
+            redactions_json: None,
+            artifacts: HashMap::new(),
+            unknown_entries: Vec::new(),
+        }
+    }
+
+    fn error_codes(report: &VerifyReport) -> Vec<&'static str> {
+        report.errors().map(|d| d.code.as_str()).collect()
+    }
+
+    #[test]
+    fn created_after_ejected_emits_bad_timestamp() {
+        let raw = raw_with_meta_timestamps("2026-05-06T10:00:30Z", "2026-05-06T10:00:00Z");
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(
+            codes.contains(&"BAD_TIMESTAMP"),
+            "expected BAD_TIMESTAMP, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"INVALID_META_YAML"),
+            "should not surface INVALID_META_YAML — the YAML parses fine, the ordering is the violation: {codes:?}"
+        );
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::BadTimestamp)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("SPEC §3.1"),
+            "message should cite the SPEC clause: {msg}"
+        );
+        assert!(
+            msg.contains("created_at") && msg.contains("ejected_at"),
+            "message should name both fields: {msg}"
+        );
+    }
+
+    #[test]
+    fn equal_timestamps_verify_clean() {
+        let raw = raw_with_meta_timestamps("2026-05-06T10:00:00Z", "2026-05-06T10:00:00Z");
+        let report = verify(&raw);
+        let timestamp_errs: Vec<_> = report
+            .errors()
+            .filter(|d| d.code == DiagnosticCode::BadTimestamp)
+            .collect();
+        assert!(
+            timestamp_errs.is_empty(),
+            "created_at == ejected_at is valid per SPEC §3.1 (≤); got {timestamp_errs:?}"
+        );
+    }
+
+    #[test]
+    fn created_before_ejected_verify_clean() {
+        let raw = raw_with_meta_timestamps("2026-05-06T10:00:00Z", "2026-05-06T10:00:30Z");
+        let report = verify(&raw);
+        let timestamp_errs: Vec<_> = report
+            .errors()
+            .filter(|d| d.code == DiagnosticCode::BadTimestamp)
+            .collect();
+        assert!(
+            timestamp_errs.is_empty(),
+            "monotonic timestamps should pass; got {timestamp_errs:?}"
         );
     }
 }
