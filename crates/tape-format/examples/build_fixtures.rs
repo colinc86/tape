@@ -249,7 +249,7 @@ fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
         artifacts: BTreeMap::new(),
     };
     pending.write_to(out.join("unknown-kind.tape"))?;
-    write_expected(&out.join("unknown-kind.expected.json"), &["INVALID_TRACKS_JSON"])?;
+    write_expected(&out.join("unknown-kind.expected.json"), &["UNKNOWN_KIND"])?;
     Ok(())
 }
 
