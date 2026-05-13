@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
     malformed_oversized_inline(&malformed_dir)?;
     malformed_leaked_anthropic_key(&malformed_dir)?;
     malformed_wrong_tape_version(&malformed_dir)?;
+    malformed_invalid_parent_step(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -401,6 +402,43 @@ outcome: success
     write_expected(
         &out.join("wrong-tape-version.expected.json"),
         &["WRONG_TAPE_VERSION"],
+    )?;
+    Ok(())
+}
+
+/// Three back-to-back `parent_step` violations on one tape: an out-of-range
+/// reference, a `parent_step == step` (violates the `< step` rule), and a
+/// `parent_step == 0` (out of the `[1, step)` range). All three must fire
+/// `INVALID_PARENT_STEP`. See SPEC §5.3 and issue #3.
+fn malformed_invalid_parent_step(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-8000-000000000109",
+        "Invalid parent_step",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"annotation","ts":"2026-05-06T10:00:01Z","payload":{"by":"agent","note":"out of range"},"parent_step":9999}"#,
+        "\n",
+        r#"{"step":3,"kind":"annotation","ts":"2026-05-06T10:00:02Z","payload":{"by":"agent","note":"self-ref"},"parent_step":3}"#,
+        "\n",
+        r#"{"step":4,"kind":"annotation","ts":"2026-05-06T10:00:03Z","payload":{"by":"agent","note":"zero"},"parent_step":0}"#,
+        "\n",
+        r#"{"step":5,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("invalid-parent-step.tape"))?;
+    write_expected(
+        &out.join("invalid-parent-step.expected.json"),
+        &["INVALID_PARENT_STEP"],
     )?;
     Ok(())
 }
