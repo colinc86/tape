@@ -172,6 +172,142 @@ fn spilled_payloads_redact_bearer_tokens() {
     }
 }
 
+/// Issue #23: an oversize string of legitimate high-entropy base64 (e.g. a
+/// large attachment) used to trip the defense-in-depth scan because that scan
+/// ran `generic_high_entropy` regardless of whether the engine was configured
+/// to redact it. With default rules, `generic_high_entropy` is opt-in, so the
+/// scan must NOT flag the artifact. Eject should succeed.
+#[test]
+fn eject_succeeds_when_oversize_artifact_is_high_entropy_base64() {
+    // A base64-ish blob that easily exceeds 4 KiB and satisfies the
+    // generic_high_entropy validator (≥4.5 bits/char).
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut blob = String::with_capacity(8192);
+    for i in 0..8192 {
+        blob.push(alphabet[i % alphabet.len()] as char);
+    }
+
+    let session = Session::start("base64 payload", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": blob,
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("base64.tape");
+    let result = eject(
+        &session,
+        &EjectOptions {
+            task: "base64 payload".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            // Default rules — generic_high_entropy NOT enabled.
+            redact_engine: Some(Engine::with_default_rules()),
+        },
+    )
+    .expect("eject should succeed with default rules");
+
+    // Artifact spilled, no redactions applied (no opted-in rule matched).
+    assert!(out.exists());
+    assert_eq!(result.redaction_count, 0);
+}
+
+/// Issue #23 (variant): a legitimate private IPv4 buried in an oversize string
+/// matches the opt-in `ipv4_private` rule. With default rules it must NOT be
+/// flagged by the defense-in-depth scan.
+#[test]
+fn eject_succeeds_when_oversize_artifact_contains_private_ip() {
+    let bait = format!(
+        "{}\nhealthcheck: 192.168.1.42 ok\n{}",
+        "x".repeat(2048),
+        "y".repeat(2048),
+    );
+
+    let session = Session::start("private ip payload", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": bait,
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("privip.tape");
+    let result = eject(
+        &session,
+        &EjectOptions {
+            task: "private ip payload".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+        },
+    )
+    .expect("eject should succeed with default rules");
+
+    assert!(out.exists());
+    assert_eq!(result.redaction_count, 0);
+}
+
+/// Positive-coverage: when the user explicitly opts into `generic_high_entropy`,
+/// the engine redacts it inline AND the defense-in-depth scan stays clean
+/// because Pass 1 caught it. Symmetric enforcement, end-to-end.
+#[test]
+fn eject_redacts_high_entropy_when_opted_in() {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut blob = String::with_capacity(8192);
+    for i in 0..8192 {
+        blob.push(alphabet[i % alphabet.len()] as char);
+    }
+
+    let session = Session::start("opt-in high entropy", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": blob,
+        }),
+    );
+
+    // Engine with default rules PLUS generic_high_entropy explicitly enabled.
+    let mut engine = Engine::with_default_rules();
+    let hi = tape_redact::rules::built_in()
+        .into_iter()
+        .find(|r| r.id == "generic_high_entropy")
+        .expect("rule defined");
+    engine.add_rule(hi);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("optin.tape");
+    let result = eject(
+        &session,
+        &EjectOptions {
+            task: "opt-in high entropy".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(engine),
+        },
+    )
+    .expect("eject should succeed when high-entropy is redacted, not flagged");
+
+    assert!(result.redaction_count >= 1);
+}
+
 #[test]
 fn eject_redacts_anthropic_key_in_response() {
     let session = Session::start("key leak", "test/0.0.1");
