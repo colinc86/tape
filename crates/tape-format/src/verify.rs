@@ -335,6 +335,28 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         }
     }
 
+    // SPEC §5.4 cardinality: exactly one `task` event, exactly one `eject`
+    // event. The first/last checks above don't catch duplicates anywhere
+    // else in the tape (a tape with `[task, task, ..., eject]` passes the
+    // first-is-task check, and `[task, ..., eject, eject]` passes the
+    // last-is-eject check while the EjectNotLast check fires only once
+    // for the non-final eject). Count explicitly so the cardinality
+    // violation is named precisely. (Issue #86.)
+    let task_count = tracks.iter().filter(|t| t.kind == Kind::Task).count();
+    if task_count > 1 {
+        report.push(Diagnostic::error(
+            DiagnosticCode::MissingTaskEvent,
+            format!("tape contains {task_count} task events; SPEC §5.4 requires exactly one"),
+        ));
+    }
+    let eject_count = tracks.iter().filter(|t| t.kind == Kind::Eject).count();
+    if eject_count > 1 {
+        report.push(Diagnostic::error(
+            DiagnosticCode::EjectNotLast,
+            format!("tape contains {eject_count} eject events; SPEC §5.4 requires exactly one"),
+        ));
+    }
+
     // ts monotonic
     {
         let mut prev: Option<&str> = None;

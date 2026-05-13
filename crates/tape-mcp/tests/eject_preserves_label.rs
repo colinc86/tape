@@ -5,15 +5,17 @@
 
 use serde_json::{json, Value};
 use tape_format::meta::Outcome;
-use tape_format::tracks::Kind;
 use tape_record::eject::{eject, EjectOptions};
 use tape_record::session::Session;
 
 /// Build a minimal valid `.tape` on disk with the given `label` and return
 /// the path inside `tmp`. Used to manufacture a source tape we can `tape.load`.
 fn build_labelled_tape(tmp: &std::path::Path, label: Option<&str>, name: &str) -> std::path::PathBuf {
+    // `Session::start` already injects the task event at step 1 — appending
+    // another `Kind::Task` here would produce a tape with two task events,
+    // which now fails SPEC §5.4 cardinality (#86). Just start; that's
+    // enough to make a verify-clean source tape.
     let session = Session::start("label preservation source", "test/0.0.1");
-    session.append(Kind::Task, json!({"prompt": "label preservation source"}));
 
     let out = tmp.join(name);
     eject(

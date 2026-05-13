@@ -43,6 +43,8 @@ fn main() -> anyhow::Result<()> {
     malformed_leaked_email(&malformed_dir)?;
     malformed_reserved_kind_fork(&malformed_dir)?;
     malformed_reserved_kind_splice(&malformed_dir)?;
+    malformed_duplicate_task(&malformed_dir)?;
+    malformed_duplicate_eject(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -617,6 +619,73 @@ fn malformed_reserved_kind_splice(out: &Path) -> anyhow::Result<()> {
     write_expected(
         &out.join("reserved-kind-splice.expected.json"),
         &["RESERVED_KIND"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4: exactly one `task` event per tape. This fixture has two.
+/// Verify must emit `MISSING_TASK_EVENT` for the cardinality violation
+/// (the diagnostic code is reused for both "missing" and "too many" —
+/// the message names the actual count). See issue #86.
+fn malformed_duplicate_task(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010f",
+        "Duplicate task event",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"first"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"task","ts":"2026-05-06T10:00:01Z","payload":{"prompt":"second"}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("duplicate-task.tape"))?;
+    write_expected(
+        &out.join("duplicate-task.expected.json"),
+        &["MISSING_TASK_EVENT"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4: exactly one `eject` event per tape. The existing
+/// `EjectNotLast` check fires for any non-final eject; this fixture has
+/// two ejects where the final one is the second. The non-final eject
+/// also trips `EjectNotLast`, but the duplicate-count check makes the
+/// cardinality violation explicit. See issue #86.
+fn malformed_duplicate_eject(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000110",
+        "Duplicate eject event",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:10Z","payload":{"outcome":"success"}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("duplicate-eject.tape"))?;
+    write_expected(
+        &out.join("duplicate-eject.expected.json"),
+        &["EJECT_NOT_LAST"],
     )?;
     Ok(())
 }
