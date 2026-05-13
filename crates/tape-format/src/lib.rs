@@ -8,6 +8,7 @@ pub mod redactions;
 pub mod reader;
 pub mod writer;
 pub mod verify;
+pub mod secret_scan;
 
 pub use meta::{Meta, Outcome, RedactionSummary, Recorder};
 pub use tracks::{Track, Kind};

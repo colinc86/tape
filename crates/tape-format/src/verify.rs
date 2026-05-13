@@ -431,12 +431,12 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         (None, None) => {}
     }
 
-    // §10.5 defense-in-depth — cheap built-in pattern scan over meta + liner.
-    // We delegate the actual rule definitions to the redact crate later; for now,
-    // do a minimal in-tree scan for the lowest-friction cases: anthropic key prefix
-    // and bare emails. The full scan moves to tape-redact once that crate exists.
-    minimal_secret_scan(meta_yaml, DiagnosticCode::LeakedSecretInMeta, &mut report);
-    minimal_secret_scan(liner_md, DiagnosticCode::LeakedSecretInLiner, &mut report);
+    // §10.5 defense-in-depth — full default-enabled rule set over meta +
+    // liner. Mirrors `tape_redact::rules::built_in()`'s default-enabled
+    // patterns; see `crate::secret_scan` for the rationale on duplication.
+    // (Issue #33.)
+    full_secret_scan(meta_yaml, DiagnosticCode::LeakedSecretInMeta, &mut report);
+    full_secret_scan(liner_md, DiagnosticCode::LeakedSecretInLiner, &mut report);
 
     report
 }
@@ -516,18 +516,17 @@ fn check_field_size(v: &serde_json::Value, step: u64, report: &mut VerifyReport)
     }
 }
 
-/// Minimal in-tree secret scan for §10.5 defense-in-depth. The full rule
-/// engine lives in `tape-redact`; this is the floor enforced even without it.
-fn minimal_secret_scan(text: &str, code: DiagnosticCode, report: &mut VerifyReport) {
-    if text.contains("sk-ant-") {
+/// §10.5 defense-in-depth scan: runs every default-enabled built-in rule
+/// from `crate::secret_scan` against `text` and pushes one diagnostic per
+/// matching rule. SPEC §3.3 / §4.3 / §10.5 require `tape verify` to be a
+/// portable backstop against tapes whose producer didn't run redaction.
+fn full_secret_scan(text: &str, code: DiagnosticCode, report: &mut VerifyReport) {
+    for rule_id in crate::secret_scan::scan(text) {
         report.push(Diagnostic::error(
             code,
-            "contains an Anthropic API key prefix (`sk-ant-`)",
+            format!("contains match for built-in rule {rule_id:?}"),
         ));
     }
-    // Don't scan for emails here — many tape contents legitimately contain
-    // things that look like emails (e.g. URLs with `@` in commit hashes).
-    // The full engine in tape-redact runs at eject time and catches these.
 }
 
 #[cfg(test)]
