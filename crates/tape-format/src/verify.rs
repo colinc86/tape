@@ -192,6 +192,20 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         ));
     }
 
+    // SPEC §3.1: `created_at` MUST be lexicographically ≤ `ejected_at`.
+    // ISO-8601 UTC strings (the format SPEC §3.1 requires) sort the same
+    // way as the underlying instant, so we don't need to parse to
+    // DateTime for the comparison. (Issue #68.)
+    if meta.created_at > meta.ejected_at {
+        report.push(Diagnostic::error(
+            DiagnosticCode::InvalidMetaYaml,
+            format!(
+                "created_at {:?} is after ejected_at {:?} (SPEC §3.1)",
+                meta.created_at, meta.ejected_at
+            ),
+        ));
+    }
+
     // §10.2 — liner notes structure
     {
         let missing = liner::missing_or_empty_sections(liner_md);
