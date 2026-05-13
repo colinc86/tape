@@ -356,3 +356,125 @@ async fn read_hook_hashes_from_disk_when_response_omits_content() {
 
     handle.shutdown().await;
 }
+
+/// #43 regression — the Read fallback must stream-hash so a multi-MiB file
+/// doesn't get slurped into RAM. We can't observe RSS reliably on CI, but
+/// we can prove the streaming hasher produces a hash identical to a
+/// one-shot `blake3::hash` over the same bytes. A 1 MiB sparse zero file
+/// (created via `File::set_len`) costs no real disk and forces the read
+/// loop to cross several `HASH_CHUNK` (64 KiB) boundaries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_hook_streaming_hash_matches_one_shot_on_large_sparse_file() {
+    const SIZE: usize = 1024 * 1024; // 1 MiB — ~16 chunks at 64 KiB
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("sparse.bin");
+    let f = std::fs::File::create(&file_path).unwrap();
+    f.set_len(SIZE as u64).unwrap();
+    drop(f);
+
+    let event = serde_json::json!({
+        "tool_name": "Read",
+        "tool_input": {"file_path": file_path.to_str().unwrap()},
+        "tool_response": {}
+    });
+
+    let (snap, handle, _session) = run_hook_and_snapshot(event).await;
+    let reads: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileRead).collect();
+    assert_eq!(reads.len(), 1);
+    let h = reads[0].payload["content_hash"]
+        .as_str()
+        .expect("content_hash always present");
+
+    // The expected hash is blake3 of SIZE all-zero bytes (sparse-file
+    // semantics on every UNIX filesystem of interest). Build it via a
+    // one-shot `blake3::hash` so the test independently exercises the
+    // streaming-vs-one-shot equivalence.
+    let zeros = vec![0u8; SIZE];
+    let expected = format!("blake3:{}", blake3::hash(&zeros).to_hex());
+    assert_eq!(h, expected, "streaming hash must equal one-shot hash");
+
+    handle.shutdown().await;
+}
+
+/// #43 regression — Edit fallback (no `file_content` in response) must
+/// stream-read the post-image into both the diff input and the blake3
+/// hasher in a single pass. Verify that the emitted `after_hash` and
+/// `diff` match what the prior buffer-everything path produced for a
+/// small file: hash equals `blake3(post-image bytes)`, and the diff
+/// header/hunk reflect the substring replacement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_hook_disk_fallback_stream_hashes_and_diffs() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("e.txt");
+    let post = "prefix\nFOO\nsuffix\n";
+    std::fs::write(&file_path, post.as_bytes()).unwrap();
+
+    // No `file_content` in the response → forces the disk fallback path.
+    let event = serde_json::json!({
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "BAR",
+            "new_string": "FOO"
+        },
+        "tool_response": {}
+    });
+
+    let (snap, handle, _session) = run_hook_and_snapshot(event).await;
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+
+    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let expected = format!("blake3:{}", blake3::hash(post.as_bytes()).to_hex());
+    assert_eq!(after, expected, "stream-hash must match one-shot hash of post-image");
+
+    let diff = payload["diff"].as_str().expect("diff always present");
+    assert_unified_diff_shape(diff);
+    assert!(diff.contains("-BAR"), "diff missing pre-image substring: {diff}");
+    assert!(diff.contains("+FOO"), "diff missing post-image substring: {diff}");
+
+    handle.shutdown().await;
+}
+
+/// #43 regression — `MultiEdit` fallback (no `file_content` in response)
+/// must also stream the post-image through both the hasher and the
+/// reverse-apply pre-image reconstruction. Confirms hash byte-identity
+/// against a one-shot blake3 on a small file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multiedit_hook_disk_fallback_stream_hashes_and_diffs() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("m.txt");
+    let post = "ALPHA\nbeta\nGAMMA\n";
+    std::fs::write(&file_path, post.as_bytes()).unwrap();
+
+    let event = serde_json::json!({
+        "tool_name": "MultiEdit",
+        "tool_input": {
+            "file_path": file_path.to_str().unwrap(),
+            "edits": [
+                {"old_string": "alpha", "new_string": "ALPHA"},
+                {"old_string": "gamma", "new_string": "GAMMA"}
+            ]
+        },
+        "tool_response": {}
+    });
+
+    let (snap, handle, _session) = run_hook_and_snapshot(event).await;
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+
+    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let expected = format!("blake3:{}", blake3::hash(post.as_bytes()).to_hex());
+    assert_eq!(after, expected, "stream-hash must match one-shot hash of post-image");
+
+    let diff = payload["diff"].as_str().expect("diff always present");
+    assert_unified_diff_shape(diff);
+    assert!(diff.contains("-alpha"));
+    assert!(diff.contains("+ALPHA"));
+    assert!(diff.contains("-gamma"));
+    assert!(diff.contains("+GAMMA"));
+
+    handle.shutdown().await;
+}

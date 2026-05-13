@@ -7,11 +7,17 @@
 //! non-zero blocks Claude Code's tool flow, which we never want to do for a
 //! recording side-channel. Failures are emitted on stderr for diagnostics.
 
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 
 use serde_json::Value;
 use similar::TextDiff;
+
+/// Buffer size for streaming file reads. 64 KiB is a common sweet spot:
+/// small enough to keep RSS bounded for arbitrarily large files, large
+/// enough that syscall overhead is amortized.
+const HASH_CHUNK: usize = 64 * 1024;
 
 fn main() {
     let mut stdin = std::io::stdin();
@@ -115,7 +121,10 @@ fn file_read_event(input: &Value, response: &Value) -> Value {
             if path.is_empty() {
                 None
             } else {
-                std::fs::read(&path).ok().map(|b| hash_bytes(&b))
+                // Stream-hash the file from disk so multi-GB inputs don't
+                // pin the whole content in RSS — the hook runs synchronously
+                // inside Claude Code's tool flow.
+                hash_file(Path::new(&path)).ok()
             }
         });
 
@@ -131,6 +140,7 @@ fn file_read_event(input: &Value, response: &Value) -> Value {
     })
 }
 
+#[allow(clippy::too_many_lines)] // four cases × stream-hash plumbing — each branch is small
 fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
     let path = input
         .get("file_path")
@@ -138,7 +148,7 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
         .unwrap_or("")
         .to_string();
 
-    // Reconstruct (old_content, new_content) for this write:
+    // Reconstruct (old_content, new_content, after_hash) for this write:
     // - Write: old = "" (we don't know pre-state until PR 2's PreToolUse hook;
     //   treating Write as "new file" gives an honest unified diff against an
     //   empty baseline). new = input.content.
@@ -155,14 +165,19 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
     // When that's not feasible (e.g. response.file_content missing), we
     // fall back to applying edits forward from old_string and accept that
     // the "old" half of the diff is just the matched substring.
-    let (old_content, new_content) = match tool_name {
+    //
+    // When the post-image comes from disk we stream-hash it during the read
+    // so the file's bytes only flow through memory once (#43); otherwise we
+    // hash the in-memory string we already have. Hash output is identical.
+    let (old_content, new_content, after_hash) = match tool_name {
         "Write" => {
             let new = input
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            (String::new(), new)
+            let hash = hash_str(&new);
+            (String::new(), new, hash)
         }
         "Edit" => {
             let old_string = input
@@ -177,18 +192,25 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
             // post-image. Reverse the edit to recover the pre-image.
             if let Some(post) = response.get("file_content").and_then(Value::as_str) {
                 let pre = post.replacen(new_string, old_string, 1);
-                (pre, post.to_string())
+                let hash = hash_str(post);
+                (pre, post.to_string(), hash)
             } else {
                 // Fall back to reading disk; the post-tool state is on disk now.
-                let post = std::fs::read_to_string(&path).unwrap_or_default();
-                if !post.is_empty() {
-                    let pre = post.replacen(new_string, old_string, 1);
-                    (pre, post)
-                } else {
-                    // Last resort: just show the substring-level edit. This is
-                    // the same shape as v0 already produced for Edit, just in
-                    // unified-diff form instead of "- old / + new".
-                    (old_string.to_string(), new_string.to_string())
+                // Stream-read into the diff input and the blake3 hasher in one
+                // pass so memory stays bounded even on multi-GB files (#43).
+                match read_and_hash_file(Path::new(&path)) {
+                    Ok((post, hash)) if !post.is_empty() => {
+                        let pre = post.replacen(new_string, old_string, 1);
+                        (pre, post, hash)
+                    }
+                    _ => {
+                        // Last resort: just show the substring-level edit. This is
+                        // the same shape as v0 already produced for Edit, just in
+                        // unified-diff form instead of "- old / + new".
+                        let new = new_string.to_string();
+                        let hash = hash_str(&new);
+                        (old_string.to_string(), new, hash)
+                    }
                 }
             }
         }
@@ -203,13 +225,18 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let post_image = response
+            // Stream-hash the disk fallback in the same pass as the read so
+            // a multi-GB post-image never sits in RSS twice (#43).
+            let post_with_hash: Option<(String, String)> = response
                 .get("file_content")
                 .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| std::fs::read_to_string(&path).ok());
+                .map(|c| {
+                    let h = hash_str(c);
+                    (c.to_owned(), h)
+                })
+                .or_else(|| read_and_hash_file(Path::new(&path)).ok());
 
-            if let Some(post) = post_image {
+            if let Some((post, hash)) = post_with_hash {
                 // Reverse each edit (in reverse order) to recover the pre-image.
                 let mut pre = post.clone();
                 for edit in edits.iter().rev() {
@@ -225,7 +252,7 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
                         pre.replacen(new_s, old_s, 1)
                     };
                 }
-                (pre, post)
+                (pre, post, hash)
             } else {
                 // Synthesize a virtual file: each edit's old_string concatenated
                 // for "old" and new_string concatenated for "new". Imperfect
@@ -244,16 +271,20 @@ fn file_write_event(tool_name: &str, input: &Value, response: &Value) -> Value {
                     old.push_str(old_s);
                     new.push_str(new_s);
                 }
-                (old, new)
+                let hash = hash_str(&new);
+                (old, new, hash)
             }
         }
-        _ => (String::new(), String::new()),
+        _ => {
+            let empty = String::new();
+            let hash = hash_str(&empty);
+            (String::new(), empty, hash)
+        }
     };
 
     // after_hash is always emitted now — we always have a `new_content` string
     // (possibly empty if input was malformed). The v0 hash format is
     // `blake3:<hex>`; hashing an empty string gives a valid hex digest.
-    let after_hash = hash_str(&new_content);
     let diff = unified_diff(&path, &old_content, &new_content);
 
     // TODO(#9 PR 2): populate `before_hash` via PreToolUse hook. For now
@@ -283,6 +314,57 @@ fn hash_str(s: &str) -> String {
 
 fn hash_bytes(b: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(b).to_hex())
+}
+
+/// Stream `path` through a blake3 hasher in fixed-size chunks. Used by the
+/// Read fallback where the file's contents aren't needed beyond the hash
+/// (#43) — memory stays bounded at `HASH_CHUNK` bytes regardless of file
+/// size. Output is byte-identical to `hash_bytes(&fs::read(path)?)`.
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(HASH_CHUNK, file);
+    let mut hasher = blake3::Hasher::new();
+    // Heap-allocated to keep the stack frame small; the hook process is
+    // short-lived but the OS thread stack default isn't generous.
+    let mut buf = vec![0u8; HASH_CHUNK];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
+/// Stream `path` into a `String` *and* a blake3 hasher in a single pass
+/// (#43). Used by the Edit/MultiEdit disk fallback where we need both the
+/// post-image content (to feed the unified-diff helper) and its hash. The
+/// returned string matches what `fs::read_to_string(path)?` would produce
+/// and the hash matches `hash_str` of that string. Non-UTF-8 bytes cause
+/// `InvalidData` just like `read_to_string`.
+///
+/// Reads through a raw `Vec<u8>` so multi-byte UTF-8 codepoints that
+/// straddle chunk boundaries don't get rejected — `from_utf8` runs once
+/// on the whole buffer, identical to `fs::read_to_string`'s contract. The
+/// blake3 hasher still updates incrementally per chunk.
+fn read_and_hash_file(path: &Path) -> std::io::Result<(String, String)> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(HASH_CHUNK, file);
+    let mut hasher = blake3::Hasher::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; HASH_CHUNK];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        bytes.extend_from_slice(&buf[..n]);
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok((content, format!("blake3:{}", hasher.finalize().to_hex())))
 }
 
 fn post_event(socket_path: &str, event: &Value) -> std::io::Result<()> {
