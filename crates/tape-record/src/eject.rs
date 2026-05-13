@@ -178,31 +178,40 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     // around the inline-redaction path. If a future ordering regression (or
     // an artifact written by some path that doesn't go through Pass 1) leaks
     // a secret, this fail-closed check catches it. (Issue #11.)
+    //
+    // The scan uses the engine's own rule set — symmetric with the rules that
+    // ran in Pass 1. Opt-in rules the user did NOT enable (e.g.
+    // `generic_high_entropy`, `ipv4_private`) are NOT enforced here, so a
+    // legitimate base64 blob or private IP doesn't trip a false-positive hard
+    // failure. If no engine is configured (testing), the scan is skipped — it
+    // can't enforce rules that weren't applied. (Issue #23.)
     let final_meta_yaml = meta.to_yaml()?;
-    let meta_hits = tape_redact::scan_for_secrets(&final_meta_yaml);
-    let liner_hits = tape_redact::scan_for_secrets(&liner_md);
-    if !meta_hits.is_empty() {
-        anyhow::bail!(
-            "defense-in-depth: meta.yaml still matches built-in rules: {:?}",
-            meta_hits
-        );
-    }
-    if !liner_hits.is_empty() {
-        anyhow::bail!(
-            "defense-in-depth: liner-notes.md still matches built-in rules: {:?}",
-            liner_hits
-        );
-    }
-    for (path, bytes) in &artifacts {
-        // Many artifacts are binary; lossy decode is fine for pattern search.
-        // A false-positive on random bytes is extremely unlikely for the
-        // built-in rules (anchored prefixes + entropy thresholds).
-        let text = String::from_utf8_lossy(bytes);
-        let hits = tape_redact::scan_for_secrets(&text);
-        if !hits.is_empty() {
+    if let Some(engine) = &opts.redact_engine {
+        let meta_hits = engine.scan(&final_meta_yaml);
+        if !meta_hits.is_empty() {
             anyhow::bail!(
-                "defense-in-depth: artifact {path} still matches built-in rules: {hits:?}"
+                "defense-in-depth: meta.yaml still matches configured rules: {:?}",
+                meta_hits
             );
+        }
+        let liner_hits = engine.scan(&liner_md);
+        if !liner_hits.is_empty() {
+            anyhow::bail!(
+                "defense-in-depth: liner-notes.md still matches configured rules: {:?}",
+                liner_hits
+            );
+        }
+        for (path, bytes) in &artifacts {
+            // Many artifacts are binary; lossy decode is fine for pattern search.
+            // A false-positive on random bytes is extremely unlikely for the
+            // built-in rules (anchored prefixes + entropy thresholds).
+            let text = String::from_utf8_lossy(bytes);
+            let hits = engine.scan(&text);
+            if !hits.is_empty() {
+                anyhow::bail!(
+                    "defense-in-depth: artifact {path} still matches configured rules: {hits:?}"
+                );
+            }
         }
     }
 
