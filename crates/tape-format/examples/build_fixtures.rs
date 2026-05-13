@@ -41,6 +41,8 @@ fn main() -> anyhow::Result<()> {
     malformed_leaked_jwt(&malformed_dir)?;
     malformed_leaked_aws_access_key(&malformed_dir)?;
     malformed_leaked_email(&malformed_dir)?;
+    malformed_reserved_kind_fork(&malformed_dir)?;
+    malformed_reserved_kind_splice(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -559,6 +561,62 @@ fn malformed_invalid_parent_step(out: &Path) -> anyhow::Result<()> {
     write_expected(
         &out.join("invalid-parent-step.expected.json"),
         &["INVALID_PARENT_STEP"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4 / §11: the event kinds `fork` and `splice` are RESERVED for
+/// future revisions and v0 readers MUST reject them. Serde's closed enum
+/// would otherwise surface a generic `INVALID_TRACKS_JSON`; the verifier
+/// peeks at `kind` and emits `RESERVED_KIND` instead. See issue #60.
+fn malformed_reserved_kind_fork(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010d",
+        "Reserved kind: fork",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("reserved-kind-fork.tape"))?;
+    write_expected(
+        &out.join("reserved-kind-fork.expected.json"),
+        &["RESERVED_KIND"],
+    )?;
+    Ok(())
+}
+
+fn malformed_reserved_kind_splice(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010e",
+        "Reserved kind: splice",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("reserved-kind-splice.tape"))?;
+    write_expected(
+        &out.join("reserved-kind-splice.expected.json"),
+        &["RESERVED_KIND"],
     )?;
     Ok(())
 }

@@ -213,10 +213,46 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
     let tracks = match tracks::parse_jsonl(tracks_jsonl) {
         Ok(t) => t,
         Err(e) => {
-            report.push(Diagnostic::error(
-                DiagnosticCode::InvalidTracksJson,
-                format!("tracks.jsonl: {e}"),
-            ));
+            // SPEC §5.4 / §11: `fork` and `splice` are RESERVED future kinds;
+            // v0 readers MUST reject them with a dedicated code rather than the
+            // generic `INVALID_TRACKS_JSON`. Serde's closed-enum failure looks
+            // identical to any other unknown kind, so when the initial parse
+            // fails we do a line-by-line salvage pass that peeks at `kind` as
+            // a raw string and emits `RESERVED_KIND` for matching lines.
+            // If at least one reserved kind is found we suppress
+            // `INVALID_TRACKS_JSON`, because the reserved-kind diagnostic is
+            // the specific, actionable cause of the parse failure.
+            let mut found_reserved = false;
+            for (i, line) in tracks_jsonl.split('\n').enumerate() {
+                if line.is_empty() || line.bytes().all(|b| b.is_ascii_whitespace()) {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(kind) = v.get("kind").and_then(|k| k.as_str()) else {
+                    continue;
+                };
+                if kind == "fork" || kind == "splice" {
+                    found_reserved = true;
+                    let step = v
+                        .get("step")
+                        .and_then(serde_json::Value::as_u64)
+                        .map_or_else(|| format!("at line {}", i + 1), |n| n.to_string());
+                    report.push(Diagnostic::error(
+                        DiagnosticCode::ReservedKind,
+                        format!(
+                            "step {step} has reserved kind `{kind}`; v0 readers MUST reject (SPEC §5.4)"
+                        ),
+                    ));
+                }
+            }
+            if !found_reserved {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidTracksJson,
+                    format!("tracks.jsonl: {e}"),
+                ));
+            }
             return report;
         }
     };
@@ -599,5 +635,114 @@ mod payload_size_tests {
         let diags = diags_for(payload);
         assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
         assert!(diags[0].message.contains("inline object"));
+    }
+}
+
+#[cfg(test)]
+mod reserved_kind_tests {
+    //! SPEC §5.4 / §11 / issue #60: `fork` and `splice` are RESERVED future
+    //! kinds. v0 readers MUST reject them, and the verifier MUST surface a
+    //! dedicated `RESERVED_KIND` diagnostic rather than the generic
+    //! `INVALID_TRACKS_JSON` that serde's closed-enum failure would otherwise
+    //! yield.
+
+    use super::*;
+    use crate::reader::RawTape;
+    use std::collections::HashMap;
+
+    fn raw_with_tracks(tracks: &str) -> RawTape {
+        let meta = r#"tape_version: "tape/v0"
+id: "01h8xy00-0000-7000-b8aa-000000000999"
+created_at: "2026-05-06T10:00:00Z"
+ejected_at: "2026-05-06T10:00:30Z"
+task: "reserved-kind unit test"
+recorder:
+  agent: "claude-code/2.1.4"
+outcome: success
+"#;
+        let liner = "## What I was asked to do
+x
+
+## What I found
+x
+
+## Suggested next step / fix
+x
+
+## What I'm uncertain about
+x
+";
+        RawTape {
+            meta_yaml: Some(meta.into()),
+            liner_md: Some(liner.into()),
+            tracks_jsonl: Some(tracks.into()),
+            redactions_json: None,
+            artifacts: HashMap::new(),
+            unknown_entries: Vec::new(),
+        }
+    }
+
+    fn error_codes(report: &VerifyReport) -> Vec<&'static str> {
+        report.errors().map(|d| d.code.as_str()).collect()
+    }
+
+    #[test]
+    fn fork_kind_emits_reserved_kind_not_invalid_tracks_json() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(
+            codes.contains(&"RESERVED_KIND"),
+            "expected RESERVED_KIND, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"INVALID_TRACKS_JSON"),
+            "INVALID_TRACKS_JSON must be suppressed when a reserved kind is the cause; got {codes:?}"
+        );
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::ReservedKind)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("fork"), "message should name the kind: {msg}");
+        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+    }
+
+    #[test]
+    fn splice_kind_emits_reserved_kind() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(
+            codes.contains(&"RESERVED_KIND"),
+            "expected RESERVED_KIND, got {codes:?}"
+        );
+        assert!(!codes.contains(&"INVALID_TRACKS_JSON"));
+    }
+
+    /// A non-reserved unknown kind must still surface as `INVALID_TRACKS_JSON`
+    /// — the salvage pass is reserved-kind-specific.
+    #[test]
+    fn unknown_kind_still_surfaces_as_invalid_tracks_json() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"INVALID_TRACKS_JSON"), "got {codes:?}");
+        assert!(!codes.contains(&"RESERVED_KIND"), "got {codes:?}");
     }
 }
