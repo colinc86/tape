@@ -43,14 +43,33 @@ pub struct EjectResult {
 }
 
 pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResult> {
-    // 1-2. Snapshot + spillover.
+    // 1. Snapshot.
     let mut snap = session.snapshot();
+
+    // 2. Redaction Pass 1 — track payloads.
+    //
+    // Redaction MUST run before spillover. If we spilled first, oversize
+    // strings would be `mem::take`n out of the payload and stored in
+    // `artifacts/` before the engine ever saw them, so any secret embedded in
+    // a >4 KiB value would land on disk unredacted. (Issue #11.)
+    let mut redactions: Vec<Redaction> = Vec::new();
+    if let Some(engine) = &opts.redact_engine {
+        for t in &mut snap.tracks {
+            let path = format!("$.tracks[{}].payload", t.step - 1);
+            let recs = engine.redact_value(&mut t.payload, t.step, &path);
+            redactions.extend(recs);
+        }
+    }
+
+    // 3. Spillover — operates on already-redacted payload bytes.
     let mut artifacts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for t in &mut snap.tracks {
         spill_oversize_in_value(&mut t.payload, &mut t.refs, &mut artifacts);
     }
 
-    // 3. Append eject event.
+    // 4. Append eject event. The payload is a small, agent-built constant
+    // (`{"outcome": ...}`) with no user-derived strings, so it bypasses the
+    // redaction pass above without risk.
     let now = chrono::Utc::now();
     let ejected_at = format_ts(now);
     let next_step = (snap.tracks.len() as u64) + 1;
@@ -64,24 +83,17 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         annotations: vec![],
     });
 
-    // 4. liner-notes.md (stub for now — real generation lands in step 10).
+    // 5. liner-notes.md (stub for now — real generation lands in step 10).
     let mut liner_md = stub_liner(&snap);
 
-    // 5. Redaction Pass 1 — pattern apply over track payloads + meta + liner.
-    let mut redactions: Vec<Redaction> = Vec::new();
+    // 6. Redaction Pass 2 — liner notes (text-only).
     if let Some(engine) = &opts.redact_engine {
-        for t in &mut snap.tracks {
-            let path = format!("$.tracks[{}].payload", t.step - 1);
-            let recs = engine.redact_value(&mut t.payload, t.step, &path);
-            redactions.extend(recs);
-        }
-        // Liner notes — text redaction.
         let (redacted, recs) = engine.redact_text(&liner_md, 0, "$.liner_notes");
         liner_md = redacted;
         redactions.extend(recs);
     }
 
-    // 6. tracks.jsonl (rebuild after redaction).
+    // 7. tracks.jsonl (rebuild after redaction + spillover).
     let mut tracks_jsonl = String::new();
     for t in &snap.tracks {
         let line = t.to_line()?;
@@ -89,7 +101,7 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         tracks_jsonl.push('\n');
     }
 
-    // 7. meta.yaml.
+    // 8. meta.yaml.
     let id = uuid::Uuid::now_v7().to_string();
     let redaction_summary = if redactions.is_empty() {
         None
@@ -120,7 +132,7 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         redaction_summary,
     };
 
-    // 8. Redact meta.yaml itself (defense-in-depth: the task string and
+    // 9. Redact meta.yaml itself (defense-in-depth: the task string and
     // recorder.user can carry secrets too). We redact the individual fields
     // we know about (task, recorder.user) instead of redacting the whole
     // serialized YAML as text, so that a redaction insertion that contains
@@ -160,7 +172,12 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         }
     }
 
-    // 9. Defense-in-depth scan over meta.yaml + liner-notes.md.
+    // 10. Defense-in-depth scan over meta.yaml + liner-notes.md + artifacts.
+    //
+    // Artifacts are scanned because spillover routes oversize payload values
+    // around the inline-redaction path. If a future ordering regression (or
+    // an artifact written by some path that doesn't go through Pass 1) leaks
+    // a secret, this fail-closed check catches it. (Issue #11.)
     let final_meta_yaml = meta.to_yaml()?;
     let meta_hits = tape_redact::scan_for_secrets(&final_meta_yaml);
     let liner_hits = tape_redact::scan_for_secrets(&liner_md);
@@ -175,6 +192,18 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
             "defense-in-depth: liner-notes.md still matches built-in rules: {:?}",
             liner_hits
         );
+    }
+    for (path, bytes) in &artifacts {
+        // Many artifacts are binary; lossy decode is fine for pattern search.
+        // A false-positive on random bytes is extremely unlikely for the
+        // built-in rules (anchored prefixes + entropy thresholds).
+        let text = String::from_utf8_lossy(bytes);
+        let hits = tape_redact::scan_for_secrets(&text);
+        if !hits.is_empty() {
+            anyhow::bail!(
+                "defense-in-depth: artifact {path} still matches built-in rules: {hits:?}"
+            );
+        }
     }
 
     let redactions_json = if redactions.is_empty() {
