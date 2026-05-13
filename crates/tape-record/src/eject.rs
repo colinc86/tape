@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use tape_format::artifact::{artifact_path, blake3_hex};
-use tape_format::meta::{Meta, Outcome, Recorder};
 use tape_format::meta::RedactionSummary;
+use tape_format::meta::{Meta, Outcome, Recorder};
 use tape_format::tracks::{Kind, Track};
 use tape_format::writer::PendingTape;
 use tape_format::PAYLOAD_INLINE_MAX;
@@ -94,8 +94,7 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     let redaction_summary = if redactions.is_empty() {
         None
     } else {
-        let mut rules_applied: Vec<String> =
-            redactions.iter().map(|r| r.rule_id.clone()).collect();
+        let mut rules_applied: Vec<String> = redactions.iter().map(|r| r.rule_id.clone()).collect();
         rules_applied.sort();
         rules_applied.dedup();
         Some(RedactionSummary {
@@ -143,7 +142,8 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         }
 
         // recorder.agent — usually our own string but redact for safety.
-        let (redacted_agent, recs) = engine.redact_text(&meta.recorder.agent, 0, "$.meta.recorder.agent");
+        let (redacted_agent, recs) =
+            engine.redact_text(&meta.recorder.agent, 0, "$.meta.recorder.agent");
         meta.recorder.agent = redacted_agent;
         meta_recs.extend(recs);
 
@@ -255,8 +255,18 @@ fn summarize_models(snap: &SessionSnapshot) -> Vec<tape_format::meta::ModelSumma
         if t.kind != Kind::ModelCall {
             continue;
         }
-        let vendor = t.payload.get("vendor").and_then(Value::as_str).unwrap_or("?").to_owned();
-        let model = t.payload.get("model").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let vendor = t
+            .payload
+            .get("vendor")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned();
+        let model = t
+            .payload
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned();
         *map.entry((vendor, model)).or_insert(0) += 1;
     }
     map.into_iter()
@@ -275,7 +285,11 @@ fn summarize_tools(snap: &SessionSnapshot) -> Vec<tape_format::meta::ToolSummary
         if t.kind != Kind::McpCall {
             continue;
         }
-        let server = t.payload.get("server").and_then(Value::as_str).map(str::to_owned);
+        let server = t
+            .payload
+            .get("server")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         *map.entry(("mcp".to_owned(), server)).or_insert(0) += 1;
     }
     map.into_iter()
@@ -288,52 +302,86 @@ fn summarize_tools(snap: &SessionSnapshot) -> Vec<tape_format::meta::ToolSummary
         .collect()
 }
 
-/// Walk a JSON value; for any string field whose JSON-serialized length
-/// exceeds `PAYLOAD_INLINE_MAX`, hash the bytes, place them in `artifacts`,
-/// and replace the value in-place with `{"ref": "sha:<hex>"}`. Add the ref to
-/// the enclosing event's `refs` array.
+/// Walk a payload value and spill any field whose JSON-serialized length
+/// exceeds `PAYLOAD_INLINE_MAX`. The field is hashed, written to `artifacts`,
+/// and replaced in-place with `{"ref": "sha:<hex>"}`. The ref is added to the
+/// enclosing event's `refs` array.
 ///
-/// SPEC §5.6 measures the JSON-encoded value, which adds quotes plus
-/// any required escapes. A 4096-byte raw string serializes to ≥4098 bytes
-/// JSON-encoded and thus belongs in artifacts.
+/// SPEC §5.6: the top-level payload wrapper is itself not eligible — only its
+/// fields are. Strings spill by their JSON-encoded length (quotes + escapes);
+/// containers (Object/Array) spill wholesale when their full encoded form
+/// exceeds the threshold. When a parent is spilled wholesale, its children
+/// are not also spilled — the artifact captures the complete subtree.
 fn spill_oversize_in_value(
     v: &mut Value,
     refs: &mut Vec<String>,
     artifacts: &mut BTreeMap<String, Vec<u8>>,
 ) {
     match v {
-        Value::String(s) if json_encoded_len(s) > PAYLOAD_INLINE_MAX => {
-            let bytes = std::mem::take(s).into_bytes();
-            let hex = blake3_hex(&bytes);
-            artifacts.insert(artifact_path(&hex), bytes);
-            let ref_id = format!("sha:{hex}");
-            if !refs.iter().any(|r| r == &ref_id) {
-                refs.push(ref_id.clone());
-            }
-            *v = serde_json::json!({"ref": ref_id});
-        }
         Value::Object(map) => {
-            // skip if it's already a ref stub
-            if map.len() == 1 && map.contains_key("ref") {
+            if is_ref_stub_map(map) {
                 return;
             }
-            for v in map.values_mut() {
-                spill_oversize_in_value(v, refs, artifacts);
+            for child in map.values_mut() {
+                spill_field(child, refs, artifacts);
             }
         }
         Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                spill_oversize_in_value(v, refs, artifacts);
+            for child in arr.iter_mut() {
+                spill_field(child, refs, artifacts);
             }
         }
         _ => {}
     }
 }
 
-/// Length of `s` as it would appear JSON-encoded (quotes + escapes).
+/// Decide whether a single field (direct child of a payload container) should
+/// be spilled wholesale or descended into to find smaller oversize fields.
+fn spill_field(v: &mut Value, refs: &mut Vec<String>, artifacts: &mut BTreeMap<String, Vec<u8>>) {
+    if let Value::Object(map) = v {
+        if is_ref_stub_map(map) {
+            return;
+        }
+    }
+    if encoded_len(v) > PAYLOAD_INLINE_MAX {
+        spill_whole(v, refs, artifacts);
+    } else if matches!(v, Value::Object(_) | Value::Array(_)) {
+        // The field fits but is a container — keep walking so nested oversize
+        // siblings within it still get caught. (A fitting container can't have
+        // an oversize descendant strictly larger than itself, but a nested
+        // sibling can still exceed the threshold if it serialises with escapes
+        // that the parent's other children don't share. Cheap to check.)
+        spill_oversize_in_value(v, refs, artifacts);
+    }
+}
+
+/// Spill a value's complete JSON-encoded bytes to artifacts and replace it
+/// in-place with a ref stub. Strings spill as raw UTF-8 bytes (without the
+/// surrounding JSON quotes); other values spill as their canonical JSON.
+fn spill_whole(v: &mut Value, refs: &mut Vec<String>, artifacts: &mut BTreeMap<String, Vec<u8>>) {
+    let bytes = match v {
+        Value::String(s) => std::mem::take(s).into_bytes(),
+        _ => serde_json::to_vec(v).unwrap_or_default(),
+    };
+    let hex = blake3_hex(&bytes);
+    artifacts.insert(artifact_path(&hex), bytes);
+    let ref_id = format!("sha:{hex}");
+    if !refs.iter().any(|r| r == &ref_id) {
+        refs.push(ref_id.clone());
+    }
+    *v = serde_json::json!({"ref": ref_id});
+}
+
+fn is_ref_stub_map(map: &serde_json::Map<String, Value>) -> bool {
+    map.len() == 1 && map.contains_key("ref")
+}
+
+/// Length of `v` as it would appear JSON-encoded.
 /// Used to enforce SPEC §5.6's spillover threshold against the encoded form.
-fn json_encoded_len(s: &str) -> usize {
-    serde_json::to_string(s).map(|v| v.len()).unwrap_or(usize::MAX)
+fn encoded_len(v: &Value) -> usize {
+    serde_json::to_string(v)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -352,5 +400,99 @@ mod tests {
         // The "big" field is now a ref stub
         assert!(v["big"].get("ref").is_some());
         assert_eq!(v["small"], serde_json::json!("ok"));
+    }
+
+    /// SPEC §5.6: a large array of small strings still belongs in artifacts.
+    /// Regression test for the reproduction in issue #1.
+    #[test]
+    fn spill_misses_large_arrays() {
+        let arr: Vec<serde_json::Value> = (0..500)
+            .map(|i| serde_json::Value::String(format!("item-with-id-{i:04}")))
+            .collect();
+        let mut v = serde_json::json!({"choices": arr});
+        let encoded = serde_json::to_string(&v).unwrap();
+        let len = encoded.len();
+        assert!(
+            len > PAYLOAD_INLINE_MAX,
+            "fixture is {len} bytes — exceeds threshold"
+        );
+
+        let mut refs = Vec::new();
+        let mut artifacts = BTreeMap::new();
+        spill_oversize_in_value(&mut v, &mut refs, &mut artifacts);
+
+        assert_eq!(refs.len(), 1, "oversize array should have been spilled");
+        assert_eq!(artifacts.len(), 1);
+        assert!(v["choices"].get("ref").is_some());
+    }
+
+    /// Same shape as `spill_misses_large_arrays`, but with an oversize object
+    /// of small string values rather than an array. Both shapes are normative.
+    #[test]
+    fn spill_catches_large_objects() {
+        let mut map = serde_json::Map::new();
+        for i in 0..500 {
+            map.insert(
+                format!("k{i:04}"),
+                serde_json::Value::String(format!("v{i:04}")),
+            );
+        }
+        let mut v = serde_json::json!({"response": serde_json::Value::Object(map)});
+        let encoded = serde_json::to_string(&v).unwrap();
+        assert!(encoded.len() > PAYLOAD_INLINE_MAX);
+
+        let mut refs = Vec::new();
+        let mut artifacts = BTreeMap::new();
+        spill_oversize_in_value(&mut v, &mut refs, &mut artifacts);
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(artifacts.len(), 1);
+        assert!(v["response"].get("ref").is_some());
+    }
+
+    /// A small fitting container next to an oversize sibling should not be
+    /// spilled — only the oversize one is moved to artifacts.
+    #[test]
+    fn spill_preserves_small_siblings() {
+        let arr: Vec<serde_json::Value> = (0..500)
+            .map(|i| serde_json::Value::String(format!("item-with-id-{i:04}")))
+            .collect();
+        let mut v = serde_json::json!({
+            "choices": arr,
+            "small_list": ["a", "b", "c"],
+            "scalar": 42,
+            "stub": {"ref": "sha:deadbeef"},
+        });
+
+        let mut refs = Vec::new();
+        let mut artifacts = BTreeMap::new();
+        spill_oversize_in_value(&mut v, &mut refs, &mut artifacts);
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(artifacts.len(), 1);
+        assert!(v["choices"].get("ref").is_some());
+        assert_eq!(v["small_list"], serde_json::json!(["a", "b", "c"]));
+        assert_eq!(v["scalar"], serde_json::json!(42));
+        // Pre-existing stub left untouched.
+        assert_eq!(v["stub"]["ref"], serde_json::json!("sha:deadbeef"));
+    }
+
+    /// Wholesale spillover should not also spill children of the spilled
+    /// subtree (the artifact already contains them verbatim).
+    #[test]
+    fn spill_wholesale_does_not_double_spill_children() {
+        let inner_big = "X".repeat(8_000);
+        let mut v = serde_json::json!({
+            "outer": {"inner": inner_big, "tag": "ok"},
+        });
+        let mut refs = Vec::new();
+        let mut artifacts = BTreeMap::new();
+        spill_oversize_in_value(&mut v, &mut refs, &mut artifacts);
+
+        // The outer object is oversize as a whole, so it spills wholesale.
+        // Only one artifact + one ref should result.
+        assert_eq!(refs.len(), 1, "expected exactly one ref, got {refs:?}");
+        assert_eq!(artifacts.len(), 1);
+        assert!(v["outer"].get("ref").is_some());
     }
 }
