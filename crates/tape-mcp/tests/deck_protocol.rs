@@ -328,3 +328,107 @@ fn record_annotate_eject_round_trip() {
         report.errors().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
+
+/// Helper: spin up a recording, append one annotation, eject to `out` with
+/// the given JSON `eject_args` (which must include "handle" and "out").
+/// Returns the eject response and the contents of meta.yaml.
+fn record_and_eject_with(eject_args: Value) -> (Value, String) {
+    let deck = tape_mcp::Deck::new();
+
+    // Phase 1: record.
+    let line = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "tape.record", "arguments": {"task": "outcome test"}}
+    })
+    .to_string()
+        + "\n";
+    let mut buf = Vec::<u8>::new();
+    tape_mcp::server::run(line.as_bytes(), &mut buf, deck.clone()).unwrap();
+    let resp: Value =
+        serde_json::from_str(String::from_utf8(buf).unwrap().lines().next().unwrap()).unwrap();
+    let handle = resp["result"]["structuredContent"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Phase 2: one annotation + eject with the supplied args.
+    let mut args = eject_args;
+    args["handle"] = json!(handle);
+    let calls = [
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "tape.annotate", "arguments": {"handle": handle, "note": "n"}}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "tape.eject", "arguments": args}}),
+    ];
+    let mut input = String::new();
+    for c in &calls {
+        input.push_str(&c.to_string());
+        input.push('\n');
+    }
+    let mut buf2 = Vec::<u8>::new();
+    tape_mcp::server::run(input.as_bytes(), &mut buf2, deck.clone()).unwrap();
+    let lines: Vec<Value> = String::from_utf8(buf2)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let eject_resp = lines[1]["result"].clone();
+    let path = eject_resp["structuredContent"]["path"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let meta = if path.exists() {
+        let raw = tape_format::reader::RawTape::open(&path).unwrap();
+        raw.meta_yaml.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    (eject_resp, meta)
+}
+
+/// Issue #30: a tape.eject call that omits `outcome` should produce a tape
+/// whose meta.outcome is `unknown` — not the old hardcoded `success`.
+#[test]
+fn eject_without_outcome_defaults_to_unknown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("unknown.tape");
+    let (resp, meta) = record_and_eject_with(json!({"out": out_path.to_str().unwrap()}));
+    assert_eq!(
+        resp["isError"].as_bool().unwrap_or(false),
+        false,
+        "eject should succeed; got {resp}"
+    );
+    assert!(
+        meta.contains("outcome: unknown"),
+        "expected meta.outcome=unknown by default; got:\n{meta}"
+    );
+}
+
+#[test]
+fn eject_with_outcome_failure_records_failure_in_meta() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("failure.tape");
+    let (resp, meta) = record_and_eject_with(json!({
+        "out": out_path.to_str().unwrap(),
+        "outcome": "failure",
+    }));
+    assert_eq!(resp["isError"].as_bool().unwrap_or(false), false);
+    assert!(
+        meta.contains("outcome: failure"),
+        "expected meta.outcome=failure; got:\n{meta}"
+    );
+}
+
+#[test]
+fn eject_with_invalid_outcome_returns_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("bad.tape");
+    let (resp, _meta) = record_and_eject_with(json!({
+        "out": out_path.to_str().unwrap(),
+        "outcome": "in_progress",
+    }));
+    assert!(
+        resp["isError"].as_bool().unwrap_or(false),
+        "expected error for invalid outcome; got {resp}"
+    );
+}
