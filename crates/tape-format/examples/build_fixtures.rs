@@ -46,6 +46,7 @@ fn main() -> anyhow::Result<()> {
     malformed_duplicate_task(&malformed_dir)?;
     malformed_duplicate_eject(&malformed_dir)?;
     malformed_empty_task_prompt(&malformed_dir)?;
+    malformed_meta_timestamps_inverted(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -717,6 +718,41 @@ fn malformed_empty_task_prompt(out: &Path) -> anyhow::Result<()> {
     write_expected(
         &out.join("empty-task-prompt.expected.json"),
         &["INVALID_PAYLOAD"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §3.1 / issue #68: `created_at` MUST be lexicographically ≤
+/// `ejected_at`. This fixture inverts them. The track timestamps remain
+/// monotonic so the meta-level check is isolated; verify must emit
+/// `BAD_TIMESTAMP`.
+fn malformed_meta_timestamps_inverted(out: &Path) -> anyhow::Result<()> {
+    // Hand-rolled meta — `std_meta` hardcodes a valid (created < ejected)
+    // pair, so we write the YAML directly here.
+    let meta = r#"tape_version: "tape/v0"
+id: "01h8xy00-0000-7000-b8aa-000000000112"
+created_at: "2026-05-06T10:00:30Z"
+ejected_at: "2026-05-06T10:00:00Z"
+task: "Inverted meta timestamps"
+recorder:
+  agent: "claude-code/2.1.4"
+outcome: success
+"#;
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:01Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta.into(),
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("meta-timestamps-inverted.tape"))?;
+    write_expected(
+        &out.join("meta-timestamps-inverted.expected.json"),
+        &["BAD_TIMESTAMP"],
     )?;
     Ok(())
 }
