@@ -793,6 +793,16 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
+    // Issue #80: `eject::eject` builds a fresh Meta from `opts.label`, so
+    // the source tape's label is dropped on round-trip unless we thread it
+    // through here. `tape.eject`'s JSON schema doesn't take a label arg yet
+    // (the deck has no record-time UI to set one), so we inherit silently
+    // from the loaded tape's meta.yaml. A malformed source meta.yaml falls
+    // back to `None`.
+    let inherited_label = serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
+        .ok()
+        .and_then(|m| m.label);
+
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -803,11 +813,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             out_path: out.clone().into(),
             redact_engine: Some(redact_engine),
             inherited_artifacts,
-            // tape.eject doesn't accept a label arg yet — the deck has no
-            // record-time UI to take one. The label field on a loaded tape
-            // already lives in `loaded.meta_yaml`, so a re-eject preserves
-            // it indirectly. Future: surface --label on tape.eject too.
-            label: None,
+            label: inherited_label,
         },
     )
     .map_err(|e| ToolErr {
