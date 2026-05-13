@@ -96,6 +96,9 @@ tool_budget:                       # OPTIONAL — summary
 redaction_summary:                 # REQUIRED iff redactions.json exists
   rules_applied: ["email", "anthropic_api_key", "custom:pii"]
   redaction_count: 47
+label: "investigating-payments-bug"  # OPTIONAL — caller-supplied tag for
+                                     # filing / categorising cassettes.
+                                     # `tape record --label X` writes it.
 ```
 
 If `redaction_summary` is present, `redactions.json` MUST exist, and the count and rule list MUST agree (same set of rule_ids; total entry count equals `redaction_count`).

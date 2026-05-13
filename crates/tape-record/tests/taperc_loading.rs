@@ -81,6 +81,7 @@ fn eject_with_engine(
             out_path: out.to_path_buf(),
             redact_engine: Some(engine),
             inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
         },
     )
     .expect("eject succeeded")
