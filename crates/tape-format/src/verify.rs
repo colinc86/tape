@@ -275,10 +275,7 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
                 if t.ts.as_str() < p {
                     report.push(Diagnostic::error(
                         DiagnosticCode::TsNotMonotonic,
-                        format!(
-                            "step {} ts={} earlier than previous {}",
-                            t.step, t.ts, p
-                        ),
+                        format!("step {} ts={} earlier than previous {}", t.step, t.ts, p),
                     ));
                 }
             }
@@ -429,44 +426,61 @@ fn looks_like_iso8601(s: &str) -> bool {
     has_t && timezone_ok
 }
 
-/// Walk a JSON value; for any string field whose JSON-encoded form exceeds
-/// PAYLOAD_INLINE_MAX, emit OversizedInlinePayload. Stub `{ref: ...}` objects
-/// are exempt (they're already spilled).
+/// Walk a payload value; for any field whose JSON-encoded form exceeds
+/// `PAYLOAD_INLINE_MAX`, emit `OversizedInlinePayload`. Stub `{ref: ...}`
+/// objects are exempt (they're already spilled). Mirrors
+/// `spill_oversize_in_value` in `tape-record::eject`: the top-level payload
+/// wrapper is itself not eligible — only its fields are, and a container
+/// field that exceeds the threshold as a whole is flagged without recursing
+/// into it.
 fn check_payload_size(v: &serde_json::Value, step: u64, report: &mut VerifyReport) {
     use serde_json::Value;
     match v {
-        Value::String(s) => {
-            // SPEC §5.6 measures JSON-encoded length, including quotes/escapes.
-            let encoded_len = serde_json::to_string(s)
-                .map(|v| v.len())
-                .unwrap_or(usize::MAX);
-            if encoded_len > crate::PAYLOAD_INLINE_MAX {
-                report.push(Diagnostic::error(
-                    DiagnosticCode::OversizedInlinePayload,
-                    format!(
-                        "step {} has an inline string of {} encoded bytes (max {})",
-                        step,
-                        encoded_len,
-                        crate::PAYLOAD_INLINE_MAX
-                    ),
-                ));
-            }
-        }
         Value::Object(map) => {
-            // A `{"ref": "sha:..."}` stub is exempt.
             if map.len() == 1 && map.contains_key("ref") {
                 return;
             }
-            for v in map.values() {
-                check_payload_size(v, step, report);
+            for child in map.values() {
+                check_field_size(child, step, report);
             }
         }
         Value::Array(arr) => {
-            for v in arr {
-                check_payload_size(v, step, report);
+            for child in arr {
+                check_field_size(child, step, report);
             }
         }
         _ => {}
+    }
+}
+
+fn check_field_size(v: &serde_json::Value, step: u64, report: &mut VerifyReport) {
+    use serde_json::Value;
+    if let Value::Object(map) = v {
+        if map.len() == 1 && map.contains_key("ref") {
+            return;
+        }
+    }
+    let encoded_len = serde_json::to_string(v)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
+    if encoded_len > crate::PAYLOAD_INLINE_MAX {
+        let kind = match v {
+            Value::String(_) => "string",
+            Value::Object(_) => "object",
+            Value::Array(_) => "array",
+            _ => "value",
+        };
+        report.push(Diagnostic::error(
+            DiagnosticCode::OversizedInlinePayload,
+            format!(
+                "step {step} has an inline {kind} of {encoded_len} encoded bytes (max {})",
+                crate::PAYLOAD_INLINE_MAX
+            ),
+        ));
+        return;
+    }
+    if matches!(v, Value::Object(_) | Value::Array(_)) {
+        check_payload_size(v, step, report);
     }
 }
 
@@ -482,4 +496,77 @@ fn minimal_secret_scan(text: &str, code: DiagnosticCode, report: &mut VerifyRepo
     // Don't scan for emails here — many tape contents legitimately contain
     // things that look like emails (e.g. URLs with `@` in commit hashes).
     // The full engine in tape-redact runs at eject time and catches these.
+}
+
+#[cfg(test)]
+mod payload_size_tests {
+    use super::*;
+
+    fn diags_for(payload: serde_json::Value) -> Vec<Diagnostic> {
+        let mut report = VerifyReport::default();
+        check_payload_size(&payload, 1, &mut report);
+        report.diagnostics
+    }
+
+    #[test]
+    fn flags_oversize_string() {
+        let big = "x".repeat(crate::PAYLOAD_INLINE_MAX + 100);
+        let diags = diags_for(serde_json::json!({"text": big}));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline string"));
+    }
+
+    /// Regression test for issue #1: an array of small strings whose
+    /// JSON-encoded form exceeds 4 KiB must be flagged.
+    #[test]
+    fn flags_oversize_array() {
+        let arr: Vec<serde_json::Value> = (0..500)
+            .map(|i| serde_json::Value::String(format!("item-with-id-{i:04}")))
+            .collect();
+        let payload = serde_json::json!({"choices": arr});
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline array"));
+    }
+
+    #[test]
+    fn flags_oversize_object() {
+        let mut map = serde_json::Map::new();
+        for i in 0..500 {
+            map.insert(
+                format!("k{i:04}"),
+                serde_json::Value::String(format!("v{i:04}")),
+            );
+        }
+        let payload = serde_json::json!({"response": serde_json::Value::Object(map)});
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline object"));
+    }
+
+    #[test]
+    fn ignores_ref_stubs_and_small_payloads() {
+        let payload = serde_json::json!({
+            "stub": {"ref": "sha:deadbeef"},
+            "small": "ok",
+            "nums": [1, 2, 3],
+        });
+        assert!(diags_for(payload).is_empty());
+    }
+
+    /// When a parent container is oversize, we flag the parent once — we
+    /// don't also descend and flag every inner field.
+    #[test]
+    fn flags_parent_once_not_children() {
+        let inner_big = "X".repeat(crate::PAYLOAD_INLINE_MAX + 100);
+        let payload = serde_json::json!({
+            "outer": {"inner": inner_big, "tag": "ok"},
+        });
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+        assert!(diags[0].message.contains("inline object"));
+    }
 }

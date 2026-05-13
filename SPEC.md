@@ -286,6 +286,10 @@ Any payload field whose serialized JSON encoding (the field's value, not the who
 {"ref": "sha:<blake3-hex>"}
 ```
 
+"Field" includes any JSON value reachable from the payload — strings, objects, arrays, numbers. For string fields the encoded length includes the surrounding quotes and any required escapes; for object and array fields it is the value's complete canonical JSON serialization. The top-level payload wrapper is itself not eligible for spillover; only the values reachable beneath it are.
+
+When an object or array field exceeds the threshold as a whole, the entire subtree MUST be spilled as one artifact — implementations MUST NOT spill the parent's children individually in addition to the parent. The artifact bytes for a string field are the raw UTF-8 bytes of the string (without surrounding quotes); for other types they are the value's canonical JSON encoding.
+
 The enclosing event's `refs` array MUST include `"sha:<blake3-hex>"` for every artifact it references. Implementations MUST verify on read that:
 
 1. Each `refs` entry corresponds to an actual artifact file.
