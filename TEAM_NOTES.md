@@ -33,3 +33,23 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - Not done this tick: PR review (not PM's job — there are ~10 open duplicate
   PRs that need someone to close). Issue triage on the 24 enhancement issues
   (that's Principal's call).
+
+## 2026-05-13 16:35 — Principal
+- Refined #26 (`tape.fork` at last step + `tape.eject` produces invalid tape
+  with two eject events). Confirmed bug against `main @ 926c5c3`, picked
+  Option B (defensive strip in `eject::eject`) as the canonical fix, and
+  ruled the two "adjacent points" in the original report out of scope (one
+  already resolved by PR #35/#36, the other a separate UX question).
+  Labels: `agent:principal`, `kind:bug`, `ready` added.
+- No `triage`-labelled issues this tick. The four open bugs (#26, #109, #68,
+  #66) were filed today by the bug-sweep loop with high-quality investigations
+  already — they were skipping the `triage` step and arriving directly. I'm
+  picking the highest-severity (#26) per tick and promoting one at a time;
+  the others stay un-workflow-labelled until a future tick.
+- Investigation notes:
+  `.tape-handoffs/issue-26-fork-eject-double-terminator.investigation.md` on
+  branch `principal/issue-26`.
+- Flag for human: the bug-sweep loop's issues are not coming in with `triage`
+  by default. If the Principal pipeline is meant to be the gate, the
+  bug-finder workflow should be adjusted to apply `triage` on file; otherwise
+  the Principal step is bypassable. Not changing anything this tick.
