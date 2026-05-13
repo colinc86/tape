@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use tape_format::artifact::{artifact_path, blake3_hex};
 use tape_format::meta::RedactionSummary;
-use tape_format::meta::{Meta, Outcome, Recorder};
+use tape_format::meta::{Meta, Outcome, Recorder, ToolBudget};
 use tape_format::tracks::{Kind, Track};
 use tape_format::writer::PendingTape;
 use tape_format::PAYLOAD_INLINE_MAX;
@@ -96,6 +96,7 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     // (`{"outcome": ...}`) with no user-derived strings, so it bypasses the
     // redaction pass above without risk.
     let now = chrono::Utc::now();
+    let wall_clock_ms = (now - snap.created_at).num_milliseconds().max(0) as u64;
     let ejected_at = format_ts(now);
     let next_step = (snap.tracks.len() as u64) + 1;
     snap.tracks.push(Track {
@@ -153,7 +154,14 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         outcome: opts.outcome,
         models: summarize_models(&snap),
         tools: summarize_tools(&snap),
-        tool_budget: None,
+        // Issue #109: SPEC §3.2's optional `tool_budget` was always `None`, which
+        // silently broke `tape diff`'s Latency summary (it always reported
+        // 0 ms / 0 ms / Δ0%). We now always populate the field — including when
+        // call counts or token totals are zero — so consumers see honest data
+        // for any real recording. `wall_clock_ms` is computed from the in-flight
+        // `created_at` / eject `now` `DateTime<Utc>` values directly (no
+        // RFC3339 round-trip), clamped at zero.
+        tool_budget: Some(summarize_budget(&snap, wall_clock_ms)),
         redaction_summary,
         // Issue #72: `tape record --label X` used to populate the default
         // filename and nothing else. Now lands in meta.yaml as well so
@@ -350,6 +358,47 @@ fn summarize_models(snap: &SessionSnapshot) -> Vec<tape_format::meta::ModelSumma
             calls,
         })
         .collect()
+}
+
+/// Summarise the work that went into a recording. SPEC §3.2's `tool_budget`:
+///
+/// - `total_calls` — the count of `model_call` + `mcp_call` + `shell` tracks.
+///   The `Eject` track itself is not a tool call and is excluded by the filter.
+/// - `total_tokens_in` / `total_tokens_out` — sum of `payload.tokens_in` /
+///   `payload.tokens_out` on `model_call` events; missing or non-integer keys
+///   contribute zero (the proxy may not have extracted them for streamed
+///   responses or errors). Zero totals are honest and still emitted.
+/// - `wall_clock_ms` — computed by the caller from `now - snap.created_at`,
+///   clamped at zero, passed in so this helper stays pure.
+///
+/// We always emit a `ToolBudget`, even when every field is zero (e.g. a
+/// task-only recording). A non-zero `wall_clock_ms` alone is enough for
+/// `tape diff`'s Latency summary to do something useful, which is the
+/// motivation for issue #109.
+fn summarize_budget(snap: &SessionSnapshot, wall_clock_ms: u64) -> ToolBudget {
+    let total_calls = snap
+        .tracks
+        .iter()
+        .filter(|t| matches!(t.kind, Kind::ModelCall | Kind::McpCall | Kind::Shell))
+        .count() as u64;
+    let total_tokens_in: u64 = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::ModelCall)
+        .filter_map(|t| t.payload.get("tokens_in").and_then(Value::as_u64))
+        .sum();
+    let total_tokens_out: u64 = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::ModelCall)
+        .filter_map(|t| t.payload.get("tokens_out").and_then(Value::as_u64))
+        .sum();
+    ToolBudget {
+        total_calls,
+        total_tokens_in,
+        total_tokens_out,
+        wall_clock_ms,
+    }
 }
 
 fn summarize_tools(snap: &SessionSnapshot) -> Vec<tape_format::meta::ToolSummary> {
