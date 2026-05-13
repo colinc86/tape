@@ -25,9 +25,10 @@ pub fn stdio_loop() -> std::io::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let resp = handle_line(&deck, &line);
-        let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
-        let _ = out.flush();
+        if let Some(resp) = handle_line(&deck, &line) {
+            let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
+            let _ = out.flush();
+        }
     }
     Ok(())
 }
@@ -40,27 +41,48 @@ pub fn run<R: Read, W: Write>(reader: R, mut writer: W, deck: Deck) -> std::io::
         if line.trim().is_empty() {
             continue;
         }
-        let resp = handle_line(&deck, &line);
-        writeln!(writer, "{}", serde_json::to_string(&resp).unwrap())?;
-        writer.flush()?;
+        if let Some(resp) = handle_line(&deck, &line) {
+            writeln!(writer, "{}", serde_json::to_string(&resp).unwrap())?;
+            writer.flush()?;
+        }
     }
     Ok(())
 }
 
-fn handle_line(deck: &Deck, line: &str) -> Response {
+/// Process one JSON-RPC line. Returns `None` for notifications — requests
+/// with no `id` member — because JSON-RPC 2.0 §4.1 forbids replying to
+/// them. (Issue #56.) Everything else returns the response the caller
+/// must serialize and flush.
+fn handle_line(deck: &Deck, line: &str) -> Option<Response> {
     let req: Request = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return Response::err(None, PARSE_ERROR, format!("parse error: {e}"));
+            // Parse failure: we can't tell whether the message was a
+            // Request or a Notification. JSON-RPC §4.2 allows id=null
+            // here; we still emit the error so a strict client at least
+            // learns that its line was unparsable.
+            return Some(Response::err(None, PARSE_ERROR, format!("parse error: {e}")));
         }
     };
     if req.jsonrpc != "2.0" {
-        return Response::err(req.id, INVALID_REQUEST, "jsonrpc must be '2.0'");
+        return Some(Response::err(
+            req.id,
+            INVALID_REQUEST,
+            "jsonrpc must be '2.0'",
+        ));
+    }
+
+    // Notification — fire-and-forget. We dispatch the side-effect-free
+    // standard MCP notifications (`notifications/initialized`,
+    // `notifications/cancelled`, etc.) only by parsing them; the deck
+    // has no notification state machine yet, so nothing else to do.
+    if req.id.is_none() {
+        return None;
     }
 
     let id = req.id.clone();
 
-    match req.method.as_str() {
+    Some(match req.method.as_str() {
         "initialize" => Response::ok(
             id,
             json!({
@@ -91,7 +113,7 @@ fn handle_line(deck: &Deck, line: &str) -> Response {
             let name = match params.get("name").and_then(Value::as_str) {
                 Some(n) => n,
                 None => {
-                    return Response::err(id, INVALID_PARAMS, "missing `name`");
+                    return Some(Response::err(id, INVALID_PARAMS, "missing `name`"));
                 }
             };
             let args = params
@@ -120,5 +142,5 @@ fn handle_line(deck: &Deck, line: &str) -> Response {
             }
         }
         _ => Response::err(id, METHOD_NOT_FOUND, format!("unknown method: {}", req.method)),
-    }
+    })
 }
