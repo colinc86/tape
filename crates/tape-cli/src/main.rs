@@ -99,8 +99,18 @@ fn main() -> Result<()> {
             b,
             all,
             format,
-            judge: _,
-        } => cmd_diff(&a, &b, all, &format),
+            judge,
+        } => {
+            if let Some(j) = judge {
+                anyhow::bail!(
+                    "tape diff --judge is not yet implemented (got: {j}). \
+                     The judge-narrated alignment is on the roadmap; until then, \
+                     tape diff produces structural alignment only. \
+                     Re-run without --judge to get the structural diff."
+                );
+            }
+            cmd_diff(&a, &b, all, &format)
+        }
         Cmd::Record {
             label,
             out,
