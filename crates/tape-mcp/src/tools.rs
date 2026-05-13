@@ -707,14 +707,16 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // two terminators and fails verify with EJECT_NOT_LAST. The pipeline-
     // level backstop landing in #26's PR handles the same case for forked
     // handles; this deck-level skip handles tool_eject specifically.
+    //
+    // Use `append_track` (issue #49) so `parent_step`, `refs`, and
+    // `annotations` survive the replay. The previous `append_at(kind,
+    // payload, ts)` call silently dropped those three fields — for refs
+    // specifically that produced orphan artifact references after #41.
     for t in loaded.tracks.iter().skip(1) {
         if t.kind == Kind::Eject {
             continue;
         }
-        let ts = chrono::DateTime::parse_from_rfc3339(&t.ts)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now());
-        session.append_at(t.kind, t.payload.clone(), ts);
+        session.append_track(t.clone());
     }
 
     // Issue #17: load `.taperc` from the current workspace so custom rules,
@@ -950,16 +952,14 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // and append the rest so we don't duplicate.
     //
     // Each converted track already carries the timestamp of when that event
-    // really happened (per the transcript JSONL). Use `append_at` to preserve
-    // it; calling `append` here would replace every per-event ts with "now"
-    // and collapse the entire conversation into a single instant. (Issue #5.)
+    // really happened (per the transcript JSONL). Use `append_track` so the
+    // per-event ts survives (issue #5) along with `parent_step`, `refs`, and
+    // `annotations` (issue #49); the previous `append_at(kind, payload, ts)`
+    // call silently dropped those three fields.
     let skip_first = tracks.first().is_some_and(|t| t.kind == Kind::Task);
     let to_replay: &[_] = if skip_first { &tracks[1..] } else { &tracks[..] };
     for t in to_replay {
-        let ts = chrono::DateTime::parse_from_rfc3339(&t.ts)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now());
-        session.append_at(t.kind, t.payload.clone(), ts);
+        session.append_track(t.clone());
     }
 
     let out_path = std::path::PathBuf::from(&out);

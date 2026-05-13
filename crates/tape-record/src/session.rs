@@ -91,6 +91,26 @@ impl Session {
         step
     }
 
+    /// Replay-path entry point. Append a fully-formed `Track`, preserving
+    /// every field on it (`kind`, `ts`, `payload`, `parent_step`, `refs`,
+    /// `annotations`) and only reassigning `step` to match the session's
+    /// current position.
+    ///
+    /// Used by `tape.eject` and `tape.snapshot` when copying loaded/converted
+    /// tracks into a fresh `Session`. The live-recording paths (`append` /
+    /// `append_at`) only have a kind/payload/ts at the call site and would
+    /// strand `parent_step` / `refs` / `annotations` as their defaults, which
+    /// silently drops e.g. `refs` -> orphan artifacts on round-trip (issue
+    /// #49) and `parent_step` -> lost annotation linkage. Use this method
+    /// whenever the caller already has a `Track`.
+    pub fn append_track(&self, mut track: Track) -> u64 {
+        let mut g = self.inner.lock().expect("session mutex poisoned");
+        let step = (g.tracks.len() as u64) + 1;
+        track.step = step;
+        g.tracks.push(track);
+        step
+    }
+
     /// Append an annotation. Convenience over `append`.
     pub fn annotate(&self, by: &str, note: impl Into<String>) -> u64 {
         self.append(
