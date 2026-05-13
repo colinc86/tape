@@ -63,7 +63,17 @@ impl TapeRcConfig {
     /// Apply this config to an engine: enable opt-in built-ins, disable
     /// defaults, append custom rules.
     pub fn apply(&self, engine: &mut crate::Engine) -> anyhow::Result<()> {
+        // SPEC §9.2: `disable_default` only targets the built-in rule set.
+        // Unknown ids were a silent no-op (issue #45) — symmetric with
+        // `enable_optional` below, which already rejects them.
+        let known_ids: std::collections::HashSet<String> = crate::rules::built_in()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         for id in &self.redact.disable_default {
+            if !known_ids.contains(id) {
+                anyhow::bail!("disable_default references unknown rule: {id}");
+            }
             engine.remove_rule(id);
         }
         // For each enable_optional, find its definition in built_in() and add.
@@ -292,6 +302,47 @@ redact:
 "#;
         let cfg = TapeRcConfig::parse(yaml).expect("top-level forward-compat");
         assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    /// Issue #45: `disable_default` used to silently accept unknown rule
+    /// names. Now it rejects them at apply time, matching `enable_optional`.
+    #[test]
+    fn disable_default_rejects_unknown_rule_name() {
+        let yaml = r#"
+redact:
+  disable_default: ["emial"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        let mut engine = crate::Engine::with_default_rules();
+        let err = cfg.apply(&mut engine).unwrap_err();
+        assert!(
+            err.to_string().contains("disable_default references unknown rule"),
+            "expected unknown-rule error; got: {err}"
+        );
+        // The `email` rule must still be enabled, since the typo'd disable
+        // never took effect.
+        let mut s = "alice@example.com".to_string();
+        engine.redact_string(&mut s);
+        assert_eq!(s, "<EMAIL>");
+    }
+
+    /// Both list fields should reject unknown ids identically. Symmetric
+    /// contract test alongside #36's `typo_under_redact_rejects`.
+    #[test]
+    fn enable_optional_and_disable_default_have_symmetric_error_shape() {
+        let cases = [
+            ("enable_optional", "redact:\n  enable_optional: [\"nope\"]\n"),
+            ("disable_default", "redact:\n  disable_default: [\"nope\"]\n"),
+        ];
+        for (field, yaml) in cases {
+            let cfg = TapeRcConfig::parse(yaml).unwrap();
+            let mut engine = crate::Engine::with_default_rules();
+            let err = cfg.apply(&mut engine).unwrap_err();
+            assert!(
+                err.to_string().contains(field) && err.to_string().contains("nope"),
+                "{field}: expected error to mention field and id; got: {err}"
+            );
+        }
     }
 
     /// Regression: a well-formed config with all three documented keys still
