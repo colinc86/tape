@@ -45,6 +45,7 @@ fn main() -> anyhow::Result<()> {
     malformed_reserved_kind_splice(&malformed_dir)?;
     malformed_duplicate_task(&malformed_dir)?;
     malformed_duplicate_eject(&malformed_dir)?;
+    malformed_empty_task_prompt(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -686,6 +687,36 @@ fn malformed_duplicate_eject(out: &Path) -> anyhow::Result<()> {
     write_expected(
         &out.join("duplicate-eject.expected.json"),
         &["EJECT_NOT_LAST"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.5.1 / issue #96: the `task` event's payload MUST carry a
+/// non-empty `prompt`. This fixture's step-1 task event has an explicit
+/// empty `prompt`; verify must emit `INVALID_PAYLOAD`.
+fn malformed_empty_task_prompt(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000111",
+        "Empty task prompt",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":""}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("empty-task-prompt.tape"))?;
+    write_expected(
+        &out.join("empty-task-prompt.expected.json"),
+        &["INVALID_PAYLOAD"],
     )?;
     Ok(())
 }
