@@ -478,3 +478,329 @@ async fn multiedit_hook_disk_fallback_stream_hashes_and_diffs() {
 
     handle.shutdown().await;
 }
+
+// --- PR 2 (#9): PreToolUse + PostToolUse before_hash flow -----------------
+
+/// Helper: drive a single hook invocation against the recorder socket,
+/// supplying an isolated `TAPE_BEFORE_DIR` so concurrent tests don't see
+/// each other's buffered entries.
+fn drive_hook(
+    sock: &std::path::Path,
+    before_dir: &std::path::Path,
+    event: &serde_json::Value,
+) -> std::process::Output {
+    let mut child = Command::new(hook_bin())
+        .env("TAPE_RECORDER_SOCKET", sock)
+        .env("TAPE_BEFORE_DIR", before_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(event.to_string().as_bytes())
+        .unwrap();
+    drop(child.stdin.take());
+    child.wait_with_output().unwrap()
+}
+
+/// Test scaffold for the Pre/Post hook flow. Holds the recorder socket and
+/// a per-test `TAPE_BEFORE_DIR` so concurrent tests don't collide.
+struct HookRig {
+    sock: std::path::PathBuf,
+    before_dir: std::path::PathBuf,
+    handle: tape_record::socket::SocketHandle,
+    session: Session,
+    _dir: tempfile::TempDir,
+}
+
+async fn hook_rig() -> HookRig {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("rec.sock");
+    let before_dir = dir.path().join("before");
+    std::fs::create_dir_all(&before_dir).unwrap();
+    let session = Session::start("hook test", "test/0.0.1");
+    let handle = socket::spawn(sock.clone(), session.clone()).await.unwrap();
+    HookRig {
+        sock,
+        before_dir,
+        handle,
+        session,
+        _dir: dir,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_new_file_before_hash_is_null_after_pretooluse_pair() {
+    let work = tempfile::tempdir().unwrap();
+    let file_path = work.path().join("brand-new.txt");
+    let path_s = file_path.to_str().unwrap().to_string();
+    // PRECONDITION: file does NOT exist before the PreToolUse hook fires.
+    assert!(!file_path.exists());
+
+    let rig = hook_rig().await;
+
+    let pre = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_use_id": "tu_write_new_1",
+        "tool_name": "Write",
+        "tool_input": {"file_path": path_s, "content": "hi\n"}
+    });
+    let pre_out = drive_hook(&rig.sock, &rig.before_dir, &pre);
+    assert!(pre_out.status.success());
+
+    // Simulate Claude Code actually performing the write between Pre and Post.
+    std::fs::write(&file_path, b"hi\n").unwrap();
+
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_write_new_1",
+        "tool_name": "Write",
+        "tool_input": {"file_path": path_s, "content": "hi\n"},
+        "tool_response": {}
+    });
+    let post_out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    assert!(post_out.status.success());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+    assert!(
+        payload["before_hash"].is_null(),
+        "new file → before_hash MUST be null (SPEC §5.5.6), got {:?}",
+        payload["before_hash"]
+    );
+    let after = payload["after_hash"].as_str().expect("after_hash present");
+    assert!(after.starts_with("blake3:"));
+
+    rig.handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_existing_file_before_and_after_hashes_differ() {
+    let work = tempfile::tempdir().unwrap();
+    let file_path = work.path().join("exists.txt");
+    std::fs::write(&file_path, b"old contents\n").unwrap();
+    let path_s = file_path.to_str().unwrap().to_string();
+
+    let rig = hook_rig().await;
+
+    let pre = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_use_id": "tu_write_existing_1",
+        "tool_name": "Write",
+        "tool_input": {"file_path": path_s, "content": "new contents\n"}
+    });
+    let pre_out = drive_hook(&rig.sock, &rig.before_dir, &pre);
+    assert!(pre_out.status.success());
+
+    // Simulate the Write tool actually mutating the file.
+    std::fs::write(&file_path, b"new contents\n").unwrap();
+
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_write_existing_1",
+        "tool_name": "Write",
+        "tool_input": {"file_path": path_s, "content": "new contents\n"},
+        "tool_response": {}
+    });
+    let post_out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    assert!(post_out.status.success());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+    let before = payload["before_hash"].as_str().expect("before_hash present for existing file");
+    let after = payload["after_hash"].as_str().expect("after_hash present");
+    assert_eq!(
+        before,
+        format!("blake3:{}", blake3::hash(b"old contents\n").to_hex())
+    );
+    assert_eq!(
+        after,
+        format!("blake3:{}", blake3::hash(b"new contents\n").to_hex())
+    );
+    assert_ne!(before, after);
+
+    rig.handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_existing_file_before_after_differ_and_diff_is_unified() {
+    let work = tempfile::tempdir().unwrap();
+    let file_path = work.path().join("edit.txt");
+    std::fs::write(&file_path, b"prefix\nfoo\nsuffix\n").unwrap();
+    let path_s = file_path.to_str().unwrap().to_string();
+
+    let rig = hook_rig().await;
+
+    let pre = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_use_id": "tu_edit_1",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": path_s,
+            "old_string": "foo",
+            "new_string": "BAR"
+        }
+    });
+    let pre_out = drive_hook(&rig.sock, &rig.before_dir, &pre);
+    assert!(pre_out.status.success());
+
+    // Simulate the Edit tool's mutation.
+    std::fs::write(&file_path, b"prefix\nBAR\nsuffix\n").unwrap();
+
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_edit_1",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": path_s,
+            "old_string": "foo",
+            "new_string": "BAR"
+        },
+        "tool_response": {"file_content": "prefix\nBAR\nsuffix\n"}
+    });
+    let post_out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    assert!(post_out.status.success());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+    let before = payload["before_hash"].as_str().expect("before_hash present");
+    let after = payload["after_hash"].as_str().expect("after_hash present");
+    assert_eq!(
+        before,
+        format!("blake3:{}", blake3::hash(b"prefix\nfoo\nsuffix\n").to_hex())
+    );
+    assert_eq!(
+        after,
+        format!("blake3:{}", blake3::hash(b"prefix\nBAR\nsuffix\n").to_hex())
+    );
+    assert_ne!(before, after);
+    let diff = payload["diff"].as_str().expect("diff present");
+    assert_unified_diff_shape(diff);
+    assert!(diff.contains("-foo"));
+    assert!(diff.contains("+BAR"));
+
+    rig.handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multiedit_existing_file_before_after_differ_and_diff_is_unified() {
+    let work = tempfile::tempdir().unwrap();
+    let file_path = work.path().join("multi.txt");
+    std::fs::write(&file_path, b"alpha\nbeta\ngamma\n").unwrap();
+    let path_s = file_path.to_str().unwrap().to_string();
+
+    let rig = hook_rig().await;
+
+    let pre = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_use_id": "tu_multi_1",
+        "tool_name": "MultiEdit",
+        "tool_input": {
+            "file_path": path_s,
+            "edits": [
+                {"old_string": "alpha", "new_string": "ALPHA"},
+                {"old_string": "gamma", "new_string": "GAMMA"}
+            ]
+        }
+    });
+    let pre_out = drive_hook(&rig.sock, &rig.before_dir, &pre);
+    assert!(pre_out.status.success());
+
+    std::fs::write(&file_path, b"ALPHA\nbeta\nGAMMA\n").unwrap();
+
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_multi_1",
+        "tool_name": "MultiEdit",
+        "tool_input": {
+            "file_path": path_s,
+            "edits": [
+                {"old_string": "alpha", "new_string": "ALPHA"},
+                {"old_string": "gamma", "new_string": "GAMMA"}
+            ]
+        },
+        "tool_response": {"file_content": "ALPHA\nbeta\nGAMMA\n"}
+    });
+    let post_out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    assert!(post_out.status.success());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+    let before = payload["before_hash"].as_str().expect("before_hash present");
+    let after = payload["after_hash"].as_str().expect("after_hash present");
+    assert_eq!(
+        before,
+        format!("blake3:{}", blake3::hash(b"alpha\nbeta\ngamma\n").to_hex())
+    );
+    assert_eq!(
+        after,
+        format!("blake3:{}", blake3::hash(b"ALPHA\nbeta\nGAMMA\n").to_hex())
+    );
+    assert_ne!(before, after);
+    let diff = payload["diff"].as_str().expect("diff present");
+    assert_unified_diff_shape(diff);
+    assert!(diff.contains("-alpha"));
+    assert!(diff.contains("+ALPHA"));
+    assert!(diff.contains("-gamma"));
+    assert!(diff.contains("+GAMMA"));
+
+    rig.handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn posttooluse_only_falls_back_to_null_before_hash_with_stderr_warning() {
+    let work = tempfile::tempdir().unwrap();
+    let file_path = work.path().join("only-post.txt");
+    let path_s = file_path.to_str().unwrap().to_string();
+
+    let rig = hook_rig().await;
+
+    // No PreToolUse ran. Drive only the PostToolUse.
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_orphan_post",
+        "tool_name": "Write",
+        "tool_input": {"file_path": path_s, "content": "x\n"},
+        "tool_response": {}
+    });
+    let out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    assert!(out.status.success(), "PostToolUse hook should not crash without a preceding PreToolUse");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no buffered before_hash"),
+        "expected diagnostic warning on stderr, got: {stderr}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(writes.len(), 1);
+    let payload = &writes[0].payload;
+    assert!(
+        payload["before_hash"].is_null(),
+        "orphan PostToolUse → before_hash falls back to null"
+    );
+    assert!(
+        payload["after_hash"].as_str().unwrap().starts_with("blake3:"),
+        "after_hash still populated"
+    );
+
+    rig.handle.shutdown().await;
+}
+
