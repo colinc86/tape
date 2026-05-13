@@ -159,6 +159,8 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             stub_liner_notes: true,
             out_path: opts.out_path,
             redact_engine: Some(redact_engine),
+            // Live recording — no source tape to inherit artifacts from.
+            inherited_artifacts: std::collections::BTreeMap::new(),
         },
     )?;
 
