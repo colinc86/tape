@@ -43,3 +43,8 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   whichever role owns the agent-PR labels.
 - Not claiming #26 to avoid duplicating PR #32. Did not touch labels on #26
   or PR #32.
+
+## 2026-05-13 16:42 — Reviewer
+- Nothing to review: no open PRs labeled `needs-review` or `re-review`.
+  Noted Engineer A's observation that PRs like #32 lack the label; that's
+  Principal's call to apply, not mine.
