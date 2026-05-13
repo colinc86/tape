@@ -430,12 +430,7 @@ fn tool_seek(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         let snippet = if in_label {
             lbl.clone()
         } else {
-            // Pull a 80-char window around first hit in payload.
-            let s = t.payload.to_string();
-            let lo = s.to_lowercase().find(&q_lower).unwrap_or(0);
-            let start = lo.saturating_sub(40);
-            let end = (lo + q_lower.len() + 40).min(s.len());
-            s[start..end].to_string()
+            payload_snippet(&t.payload.to_string(), &q_lower)
         };
         hits.push(json!({
             "step": t.step,
@@ -448,6 +443,24 @@ fn tool_seek(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         }
     }
     Ok(json!({"hits": hits}))
+}
+
+/// Pull an ~80-byte window of `s` around the first case-insensitive match of
+/// `q_lower` (which the caller has already lowercased). Both endpoints are
+/// nudged outward to the nearest UTF-8 char boundary so the returned slice
+/// never bisects a multi-byte character — slicing on a non-boundary byte
+/// would panic and take down the deck.
+fn payload_snippet(s: &str, q_lower: &str) -> String {
+    let lo = s.to_lowercase().find(q_lower).unwrap_or(0);
+    let mut start = lo.saturating_sub(40);
+    let mut end = (lo + q_lower.len() + 40).min(s.len());
+    while start > 0 && !s.is_char_boundary(start) {
+        start -= 1;
+    }
+    while end < s.len() && !s.is_char_boundary(end) {
+        end += 1;
+    }
+    s[start..end].to_string()
 }
 
 fn tool_tools(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
@@ -713,6 +726,54 @@ mod task_summary_tests {
     #[test]
     fn one_line_passes_through_short_input() {
         assert_eq!(one_line_summary("short prompt"), "short prompt");
+    }
+}
+
+#[cfg(test)]
+mod payload_snippet_tests {
+    use super::payload_snippet;
+
+    /// Regression for issue #7 — the original byte-index slice panicked at
+    /// `byte index 30 is not a char boundary`.
+    #[test]
+    fn does_not_panic_on_multibyte_payload() {
+        let s = format!("{}{}{}", "a".repeat(10), "日本".repeat(10), "b".repeat(10));
+        let out = payload_snippet(&s, "b");
+        assert!(out.is_char_boundary(0) && out.is_char_boundary(out.len()));
+        assert!(out.contains('b'));
+    }
+
+    #[test]
+    fn keeps_emoji_intact() {
+        // A 40-byte window on either side of "match" reaches past the emoji,
+        // so we expect the snippet to include it whole. The act of returning
+        // a String already proves the slice landed on char boundaries (Rust
+        // would have panicked otherwise).
+        let s = "foo 🎯 bar match here baz";
+        let out = payload_snippet(s, "match");
+        assert!(out.contains("match"));
+        assert!(out.contains('🎯'));
+    }
+
+    #[test]
+    fn boundary_walk_never_panics_on_short_input() {
+        // Short input where the window extends past both ends.
+        let out = payload_snippet("é", "é");
+        assert_eq!(out, "é");
+    }
+
+    #[test]
+    fn handles_query_at_string_end() {
+        let s = "padding 日本語 match";
+        let out = payload_snippet(s, "match");
+        assert!(out.ends_with("match"));
+    }
+
+    #[test]
+    fn empty_match_does_not_panic() {
+        // `find("")` returns Some(0); make sure that path is also safe.
+        let s = "日本語日本語";
+        let _ = payload_snippet(s, "");
     }
 }
 
