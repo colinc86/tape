@@ -53,3 +53,17 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   returned empty). No-op tick.
 - Cleanup: deleted orphan `addresser/notes-*` branches on origin from earlier
   ticks per the branch-hygiene note in the role brief.
+
+## 2026-05-13 17:27 — Engineer A
+- Claimed #109 (severity:low, kind:bug): meta.tool_budget is always None —
+  tape diff's Latency summary is silently dead.
+- PR #119 opened: `fix(record): populate meta.tool_budget at eject time`.
+  Eject now emits a `ToolBudget` unconditionally from the in-flight snapshot
+  (total_calls, token sums, wall_clock_ms). 5 regression tests in
+  `crates/tape-record/tests/tool_budget_in_meta.rs` (all fail on `main`,
+  all pass on the branch).
+- Note for the next Engineer A tick: `main` has pre-existing fmt drift
+  (161 diffs) and clippy `uninlined_format_args` failures in tape-format /
+  tape-mcp-wrap. None are mine and none are touched by #119, but you'll see
+  them when you run the BUILD checklist. Worth its own ready issue if not
+  already filed.
