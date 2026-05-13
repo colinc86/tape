@@ -77,3 +77,40 @@ fn diff_self_is_all_identical() {
     }
     assert_eq!(v["summary"]["answers_equivalent"], true);
 }
+
+/// Issue #62: `--judge` was accepted by clap but silently ignored. Until
+/// narration ships, reject it with a clear error so users get a real
+/// signal instead of a no-op flag.
+#[test]
+fn diff_judge_flag_returns_clear_error() {
+    let out = Command::new(binary_path())
+        .args([
+            "diff",
+            "--judge",
+            "claude-haiku-4-5",
+            fixture("minimal-success.tape").to_str().unwrap(),
+            fixture("killer-scenario-a.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "expected non-zero exit; got {:?}", out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--judge") && stderr.contains("not yet implemented"),
+        "expected helpful error mentioning --judge; got:\n{stderr}"
+    );
+}
+
+/// Regression: omitting `--judge` still works exactly as before.
+#[test]
+fn diff_without_judge_still_succeeds() {
+    let out = Command::new(binary_path())
+        .args([
+            "diff",
+            fixture("minimal-success.tape").to_str().unwrap(),
+            fixture("killer-scenario-a.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "no-flag baseline broke: {:?}", out);
+}

@@ -99,8 +99,21 @@ fn main() -> Result<()> {
             b,
             all,
             format,
-            judge: _,
-        } => cmd_diff(&a, &b, all, &format),
+            judge,
+        } => {
+            // Issue #62: clap accepts `--judge <model>` because the help
+            // surface advertises it, but per-pair narration isn't
+            // implemented yet (DECISIONS.md flags it as v0.1 work). Reject
+            // the flag with a clear error rather than silently ignoring it
+            // — a "no-op flag" is worse than no flag at all.
+            if judge.is_some() {
+                anyhow::bail!(
+                    "--judge is not yet implemented (narration ships in v0.1); \
+                     rerun without --judge to get the structural diff"
+                );
+            }
+            cmd_diff(&a, &b, all, &format)
+        }
         Cmd::Record {
             label,
             out,
