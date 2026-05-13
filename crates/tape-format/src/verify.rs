@@ -394,6 +394,20 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         // No payload field can exceed PAYLOAD_INLINE_MAX as serialized JSON
         check_payload_size(&t.payload, t.step, &mut report);
 
+        // SPEC §5.5.1: the `task` event's payload MUST carry a non-empty
+        // `prompt`. A missing field and a present-but-empty string are both
+        // rejected — there's no meaningful tape without a real prompt to
+        // anchor it. See issue #96.
+        if t.kind == Kind::Task {
+            let prompt = t.payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+            if prompt.is_empty() {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidPayload,
+                    format!("step {} task event has empty prompt (SPEC §5.5.1)", t.step),
+                ));
+            }
+        }
+
         for r in &t.refs {
             let Some(hex) = r.strip_prefix("sha:") else {
                 report.push(Diagnostic::error(
@@ -834,6 +848,66 @@ x
             unknown_count, 2,
             "expected one UNKNOWN_KIND per offending step; got {unknown_count}"
         );
+    }
+
+    /// SPEC §5.5.1 / issue #96: the `task` event's payload MUST carry a
+    /// non-empty `prompt`. A present-but-empty string is rejected with
+    /// `INVALID_PAYLOAD`.
+    #[test]
+    fn empty_task_prompt_emits_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":""}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"INVALID_PAYLOAD"), "got {codes:?}");
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::InvalidPayload)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("empty prompt"), "message should explain the cause: {msg}");
+        assert!(msg.contains("step 1"), "message should name the step: {msg}");
+    }
+
+    /// A `task` event with no `prompt` field at all is treated the same as
+    /// `prompt: ""` — `INVALID_PAYLOAD` per SPEC §5.5.1.
+    #[test]
+    fn missing_task_prompt_emits_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"INVALID_PAYLOAD"), "got {codes:?}");
+    }
+
+    /// A `task` event with a non-empty prompt does NOT trip the new check.
+    /// Guards against false positives from a future refactor.
+    #[test]
+    fn non_empty_task_prompt_does_not_emit_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"hi"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let prompt_errs = report
+            .errors()
+            .filter(|d| d.code == DiagnosticCode::InvalidPayload
+                && d.message.contains("empty prompt"))
+            .count();
+        assert_eq!(prompt_errs, 0, "non-empty prompt should not fire INVALID_PAYLOAD");
     }
 
     /// A tape mixing a reserved kind AND an unknown kind should emit BOTH
