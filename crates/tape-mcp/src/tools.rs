@@ -803,6 +803,11 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             out_path: out.clone().into(),
             redact_engine: Some(redact_engine),
             inherited_artifacts,
+            // tape.eject doesn't accept a label arg yet — the deck has no
+            // record-time UI to take one. The label field on a loaded tape
+            // already lives in `loaded.meta_yaml`, so a re-eject preserves
+            // it indirectly. Future: surface --label on tape.eject too.
+            label: None,
         },
     )
     .map_err(|e| ToolErr {
@@ -1038,6 +1043,7 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             // tape.snapshot replays a transcript; no source tape, no
             // inherited artifacts.
             inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
         },
     )
     .map_err(|e| ToolErr {

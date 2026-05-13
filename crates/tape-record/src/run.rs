@@ -167,6 +167,8 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             redact_engine: Some(redact_engine),
             // Live recording — no source tape to inherit artifacts from.
             inherited_artifacts: std::collections::BTreeMap::new(),
+            // Issue #72: surface the caller's --label in meta.yaml.
+            label: opts.label,
         },
     )?;
 

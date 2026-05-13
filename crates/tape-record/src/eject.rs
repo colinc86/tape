@@ -37,6 +37,9 @@ pub struct EjectOptions {
     /// bytes that the loaded tracks already reference via `{"ref": ...}`
     /// stubs. (Issue #41.) Live recordings leave this empty.
     pub inherited_artifacts: BTreeMap<String, Vec<u8>>,
+    /// Caller-supplied label that lands in `meta.label`. `tape record --label`
+    /// populates this; everything else passes `None`. SPEC §3.2. (Issue #72.)
+    pub label: Option<String>,
 }
 
 /// Final-shape result of an eject.
@@ -152,6 +155,10 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         tools: summarize_tools(&snap),
         tool_budget: None,
         redaction_summary,
+        // Issue #72: `tape record --label X` used to populate the default
+        // filename and nothing else. Now lands in meta.yaml as well so
+        // downstream tooling can group cassettes by label.
+        label: opts.label.clone(),
     };
 
     // 9. Redact meta.yaml itself (defense-in-depth: the task string and
