@@ -56,6 +56,10 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
         .prefix("tape-")
         .tempdir()?;
     let recorder_socket_path = temp_dir.path().join("recorder.sock");
+    // Per-recording dir for the PreToolUse hook to buffer before-hashes.
+    // Lives inside `temp_dir` so it's cleaned up automatically on drop.
+    let before_dir = temp_dir.path().join("before-hashes");
+    std::fs::create_dir_all(&before_dir)?;
 
     let socket_handle = socket::spawn(recorder_socket_path.clone(), session.clone()).await?;
 
@@ -115,6 +119,7 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     cmd.env("TAPE_RECORDER_SOCKET", &recorder_socket_path);
     cmd.env("TAPE_OVERLAY_SETTINGS", &settings_path);
     cmd.env("TAPE_OVERLAY_MCP_CONFIG", &mcp_path);
+    cmd.env("TAPE_BEFORE_DIR", &before_dir);
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }
