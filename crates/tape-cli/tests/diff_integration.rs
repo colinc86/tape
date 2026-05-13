@@ -53,6 +53,51 @@ fn diff_json_output_parses() {
 }
 
 #[test]
+fn diff_judge_flag_is_rejected_not_silently_ignored() {
+    // Issue #62: --judge was destructured as `judge: _` and silently dropped.
+    // Until judge-narration ships, the flag must fail loudly rather than
+    // pretend to work.
+    let out = Command::new(binary_path())
+        .args([
+            "diff",
+            "--judge",
+            "claude-haiku-4-5",
+            fixture("minimal-success.tape").to_str().unwrap(),
+            fixture("killer-scenario-a.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "tape diff --judge should exit non-zero, got success: {:?}",
+        out
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("judge") && stderr.contains("not yet implemented"),
+        "stderr should mention 'judge' and 'not yet implemented'; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn diff_without_judge_still_succeeds() {
+    // Pass-through guard for #62: the no-flag case must keep working.
+    let out = Command::new(binary_path())
+        .args([
+            "diff",
+            fixture("minimal-success.tape").to_str().unwrap(),
+            fixture("killer-scenario-a.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tape diff (no --judge) should succeed: {:?}",
+        out
+    );
+}
+
+#[test]
 fn diff_self_is_all_identical() {
     let out = Command::new(binary_path())
         .args([

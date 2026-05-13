@@ -120,8 +120,16 @@ struct PendingCall {
 }
 
 /// Maximum age for a pending tool_use entry before it's evicted as stale.
-/// Bounds memory if the server never replies to a request.
-const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+///
+/// Bounds memory if the server never replies to a request. Set to 1 hour
+/// (well past any realistic single MCP tool call) so that slow tools — e.g.
+/// long-running shell commands, large model inferences, network requests
+/// with deep retries — don't get their pending entries evicted before the
+/// response arrives, which would silently drop the `mcp_call` event from
+/// the recording. The wrap process is short-lived (exits with its parent
+/// Claude Code session), so the real memory ceiling is the process
+/// lifetime, not this TTL. See issue #53.
+const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 async fn client_to_server<R>(
     client_stdin: R,
@@ -259,4 +267,61 @@ async fn post_event(recorder: &Arc<Mutex<UnixStream>>, event: &Value) -> Result<
     g.write_all(b"\n").await?;
     g.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for issue #53.
+    ///
+    /// The wrap evicts pending tools/call entries older than PENDING_TTL when a
+    /// new tools/call arrives. With the old 5-minute TTL, slow tools (>5 min)
+    /// had their pending entries evicted before the response arrived, so the
+    /// response could not be paired with its request — the `mcp_call` event was
+    /// silently dropped from the recording. The TTL must be large enough to
+    /// survive any realistic single MCP tool call.
+    #[test]
+    fn pending_ttl_is_at_least_one_hour() {
+        assert!(
+            PENDING_TTL >= std::time::Duration::from_secs(3600),
+            "PENDING_TTL ({:?}) must be ≥ 1h to avoid evicting in-flight slow MCP \
+             tool calls (issue #53). Lowering this risks silently dropping \
+             mcp_call events for tools that take longer than the TTL to reply.",
+            PENDING_TTL,
+        );
+    }
+
+    /// Exercise the same eviction-cutoff math the c2s loop uses to confirm
+    /// that, under the new TTL, a 10-minute-old pending entry would survive
+    /// (the old 5-min TTL would have evicted it and dropped its response),
+    /// while a 2-hour-old entry would still be reaped.
+    #[test]
+    fn eviction_cutoff_keeps_ten_minute_old_entries_drops_two_hour_old() {
+        let now = Instant::now();
+        // Reproduce the c2s eviction expression verbatim.
+        let cutoff = now.checked_sub(PENDING_TTL).unwrap_or(now);
+
+        // 10 minutes old — the canonical "slow tool" case that the old
+        // 5-minute TTL dropped. Under the 1-hour TTL it must survive.
+        let ten_min_old = now
+            .checked_sub(std::time::Duration::from_secs(10 * 60))
+            .expect("Instant arithmetic");
+        assert!(
+            ten_min_old >= cutoff,
+            "10-minute-old pending entry must survive eviction under PENDING_TTL={:?}",
+            PENDING_TTL,
+        );
+
+        // 2 hours old — well past any sane MCP tool call. Should still be
+        // reaped so an unresponsive server can't leak memory forever.
+        let two_hours_old = now
+            .checked_sub(std::time::Duration::from_secs(2 * 3600))
+            .expect("Instant arithmetic");
+        assert!(
+            two_hours_old < cutoff,
+            "2-hour-old pending entry must be evicted under PENDING_TTL={:?}",
+            PENDING_TTL,
+        );
+    }
 }

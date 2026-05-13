@@ -238,21 +238,24 @@ async fn forward(state: &AppState, req: Request<Body>, record: bool) -> Response
             let req_json = req_json.clone();
             let model = model.clone();
             let vendor = vendor.clone();
+            let status_code = status.as_u16();
             tokio::spawn(async move {
                 let assembled = drain(rx).await;
                 let response_view = parse_sse_to_value(&assembled);
                 let chunk_count = count_sse_chunks(&assembled);
-                session.append(
-                    Kind::ModelCall,
-                    serde_json::json!({
-                        "vendor": vendor,
-                        "model": model,
-                        "request": req_json.unwrap_or(Value::Null),
-                        "response": response_view,
-                        "stream_chunks": chunk_count,
-                        "duration_ms": started.elapsed().as_millis() as u64,
-                    }),
-                );
+                // Streaming branch is gated on status.is_success() above, so
+                // no `error` field is needed here. `status_code` is included
+                // for diagnostics, mirroring the non-streaming branch.
+                let payload = serde_json::json!({
+                    "vendor": vendor,
+                    "model": model,
+                    "request": req_json.unwrap_or(Value::Null),
+                    "response": response_view,
+                    "stream_chunks": chunk_count,
+                    "status_code": status_code,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                });
+                session.append(Kind::ModelCall, payload);
             });
         }
 
@@ -268,16 +271,23 @@ async fn forward(state: &AppState, req: Request<Body>, record: bool) -> Response
                 serde_json::from_slice(&resp_bytes).unwrap_or_else(|_| {
                     Value::String(String::from_utf8_lossy(&resp_bytes).into_owned())
                 });
-            state.session.append(
-                Kind::ModelCall,
-                serde_json::json!({
-                    "vendor": vendor,
-                    "model": model,
-                    "request": req_json.unwrap_or(Value::Null),
-                    "response": resp_json,
-                    "duration_ms": started.elapsed().as_millis() as u64,
-                }),
-            );
+            let mut payload = serde_json::json!({
+                "vendor": vendor,
+                "model": model,
+                "request": req_json.unwrap_or(Value::Null),
+                "response": resp_json,
+                "status_code": status.as_u16(),
+                "duration_ms": started.elapsed().as_millis() as u64,
+            });
+            // SPEC §5.5.2: `error` MUST be present on failure. HTTP 4xx/5xx
+            // is a failure even though the network round-trip succeeded.
+            if !status.is_success() {
+                payload["error"] = serde_json::json!({
+                    "code": format!("HTTP_{}", status.as_u16()),
+                    "message": status.canonical_reason().unwrap_or("upstream error").to_string(),
+                });
+            }
+            state.session.append(Kind::ModelCall, payload);
         }
 
         let body = Body::from(resp_bytes);

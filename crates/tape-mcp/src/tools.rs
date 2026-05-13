@@ -150,7 +150,12 @@ pub fn definitions() -> Vec<ToolDef> {
                 "required": ["handle", "out"],
                 "properties": {
                     "handle": {"type": "string"},
-                    "out": {"type": "string"}
+                    "out": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["success", "failure", "abandoned", "unknown"],
+                        "description": "Recording outcome to record in meta.yaml. Defaults to 'unknown' — the deck doesn't know what happened, so callers should supply this when they do."
+                    }
                 }
             }),
         },
@@ -351,6 +356,50 @@ fn tool_tracks(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     Ok(json!({"tracks": out}))
 }
 
+/// Walk a JSON value and replace every `{"ref": "sha:<hex>"}` stub with the
+/// corresponding artifact's bytes (decoded as UTF-8 with `from_utf8_lossy`).
+///
+/// Recurses into objects and arrays; leaves scalars and non-stub objects
+/// alone. A ref pointing at a missing artifact (corrupt tape) is left as
+/// the stub — the caller can still see what was *supposed* to be there.
+/// (Issue #44.)
+fn resolve_artifact_refs(
+    value: &mut Value,
+    artifacts: &std::collections::HashMap<String, Vec<u8>>,
+) {
+    match value {
+        Value::Object(map) => {
+            // Detect a ref stub: 1-element object with key "ref" mapping to
+            // "sha:<hex>". Anything else is a regular object we recurse into.
+            if map.len() == 1 {
+                if let Some(Value::String(s)) = map.get("ref") {
+                    if let Some(hex) = s.strip_prefix("sha:") {
+                        let path = tape_format::artifact::artifact_path(hex);
+                        if let Some(bytes) = artifacts.get(&path) {
+                            *value = Value::String(
+                                String::from_utf8_lossy(bytes).into_owned(),
+                            );
+                            return;
+                        }
+                        // Artifact missing — leave the stub for the caller
+                        // to notice rather than panicking.
+                        return;
+                    }
+                }
+            }
+            for v in map.values_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let step = args.get("step").and_then(Value::as_u64);
@@ -378,13 +427,21 @@ fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         if !include {
             continue;
         }
-        // Resolve any artifact refs to full bytes if present.
-        let track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        // Resolve any `{"ref": "sha:<hex>"}` stubs against the loaded
+        // tape's artifacts so callers see the actual content. Without
+        // this, every spilled payload comes back as an opaque hash and
+        // the agent has no way to inspect what was recorded. (Issue #44.)
+        let mut track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        resolve_artifact_refs(&mut track_value, &loaded.raw.artifacts);
         let serialized = track_value.to_string();
         if total_bytes + serialized.len() > CAP {
             return Err(ToolErr {
                 code: "OUT_OF_RANGE",
-                message: format!("response exceeds 200 KB cap; narrow the range"),
+                message: format!(
+                    "step {} alone is {} bytes after resolving artifact refs; narrow the range",
+                    t.step,
+                    serialized.len()
+                ),
             });
         }
         total_bytes += serialized.len();
@@ -605,7 +662,17 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let loaded = state.get_mut(&handle).ok_or_else(ToolErr::invalid_handle)?;
 
     let next_step = (loaded.tracks.len() as u64) + 1;
-    let target_step = step_arg.unwrap_or(next_step);
+    // SPEC §5.3 — `parent_step`, when present, MUST be in [1, step). The new
+    // annotation event has `step == next_step`, so `step_arg` (which becomes
+    // its `parent_step`) must satisfy `1 <= step_arg < next_step`. Reject
+    // early so the deck never produces a non-conforming tape. (Issue #3.)
+    if let Some(s) = step_arg {
+        if s == 0 || s >= next_step {
+            return Err(ToolErr::params(format!(
+                "step must be in [1, {next_step}); got {s}"
+            )));
+        }
+    }
     let new_track = tape_format::tracks::Track {
         step: next_step,
         kind: Kind::Annotation,
@@ -613,11 +680,7 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string(),
         payload: json!({"by": by, "note": note}),
-        parent_step: if step_arg.is_some() {
-            Some(target_step)
-        } else {
-            None
-        },
+        parent_step: step_arg,
         refs: vec![],
         annotations: vec![],
     };
@@ -625,9 +688,31 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     Ok(json!({"step": next_step}))
 }
 
+/// Parse `args.outcome` into a `meta::Outcome`. Missing → `Unknown` (the
+/// honest default — the deck doesn't know what happened during recording).
+/// Unknown enum value → `params` error.
+fn parse_outcome_arg(args: &Value) -> Result<tape_format::meta::Outcome, ToolErr> {
+    use tape_format::meta::Outcome;
+    match args.get("outcome").and_then(Value::as_str) {
+        None => Ok(Outcome::Unknown),
+        Some("success") => Ok(Outcome::Success),
+        Some("failure") => Ok(Outcome::Failure),
+        Some("abandoned") => Ok(Outcome::Abandoned),
+        Some("unknown") => Ok(Outcome::Unknown),
+        Some(other) => Err(ToolErr::params(format!(
+            "outcome must be success|failure|abandoned|unknown; got {other:?}"
+        ))),
+    }
+}
+
 fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let out = handle_arg(args, "out")?;
+    // SPEC §3.1 defines `success | failure | abandoned | unknown`. The deck
+    // has no way to know which one applies, so the caller may supply it.
+    // Default to `unknown` (matching `tool_snapshot`) rather than the old
+    // hardcoded `success`, which silently lied about every recording. (#30.)
+    let outcome = parse_outcome_arg(args)?;
 
     let mut state = deck.state.lock().unwrap();
     let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?.clone();
@@ -647,24 +732,88 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 
     // Build a session-shape struct in-memory and reuse the eject pipeline.
     // We do this by constructing a Session and replaying tracks into it.
-    let session = tape_record::session::Session::start(
-        &extract_task(&loaded),
+    //
+    // Mirror tool_snapshot (issue #5 / PR #16): use `start_at` + `append_at`
+    // so per-event timestamps from the loaded tape survive the round-trip
+    // instead of being clobbered with "now". The source-of-truth created_at
+    // is `meta.yaml`'s `created_at` field; fall back to now if it won't parse.
+    let task_text = extract_task(&loaded);
+    let original_created_at =
+        serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
+            .ok()
+            .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.created_at).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+
+    let session = tape_record::session::Session::start_at(
+        &task_text,
         format!("tape-mcp/{}", env!("CARGO_PKG_VERSION")),
+        original_created_at,
     );
-    // Skip the auto-injected step 1 (task) and replay the rest.
+    // Skip the auto-injected step 1 (task) and replay the rest, preserving
+    // each event's original ts. (Issue #20.)
+    //
+    // Also drop any trailing/embedded `eject` events from the source tape —
+    // the eject pipeline appends its own at the end, and SPEC §5.4 says
+    // there's exactly one. Without this filter, re-ejecting a tape produces
+    // two terminators and fails verify with EJECT_NOT_LAST. The pipeline-
+    // level backstop landing in #26's PR handles the same case for forked
+    // handles; this deck-level skip handles tool_eject specifically.
+    //
+    // Use `append_track` (issue #49) so `parent_step`, `refs`, and
+    // `annotations` survive the replay. The previous `append_at(kind,
+    // payload, ts)` call silently dropped those three fields — for refs
+    // specifically that produced orphan artifact references after #41.
     for t in loaded.tracks.iter().skip(1) {
-        session.append(t.kind, t.payload.clone());
+        if t.kind == Kind::Eject {
+            continue;
+        }
+        session.append_track(t.clone());
     }
+
+    // Issue #17: load `.taperc` from the current workspace so custom rules,
+    // enable_optional, and disable_default take effect on MCP-driven ejects.
+    let cwd = std::env::current_dir().map_err(|e| ToolErr {
+        code: "INTERNAL_ERROR",
+        message: format!("cwd: {e}"),
+    })?;
+    let redact_engine = tape_redact::engine_with_taperc(&cwd).map_err(|e| ToolErr {
+        code: "TAPERC_INVALID",
+        message: format!("failed to load .taperc: {e}"),
+    })?;
+    // Issue #41: carry the loaded tape's spilled artifacts into the new
+    // tape. Track payloads can already contain `{"ref": "sha:<hex>"}` stubs
+    // from the source tape's spillover; without these bytes, the re-ejected
+    // tape would fail `tape verify` with MISSING_ARTIFACT. Recordings (where
+    // `raw` is an empty stub from `tape.record`) contribute no entries here.
+    let inherited_artifacts: std::collections::BTreeMap<String, Vec<u8>> = loaded
+        .raw
+        .artifacts
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Issue #80: `eject::eject` builds a fresh Meta from `opts.label`, so
+    // the source tape's label is dropped on round-trip unless we thread it
+    // through here. `tape.eject`'s JSON schema doesn't take a label arg yet
+    // (the deck has no record-time UI to set one), so we inherit silently
+    // from the loaded tape's meta.yaml. A malformed source meta.yaml falls
+    // back to `None`.
+    let inherited_label = serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
+        .ok()
+        .and_then(|m| m.label);
 
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
             task: extract_task(&loaded),
             recorder_agent: format!("tape-mcp/{}", env!("CARGO_PKG_VERSION")),
-            outcome: tape_format::meta::Outcome::Success,
+            outcome,
             stub_liner_notes: true,
             out_path: out.clone().into(),
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
+            inherited_artifacts,
+            label: inherited_label,
         },
     )
     .map_err(|e| ToolErr {
@@ -864,18 +1013,30 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // Convert produces a Task event as track 1; the session's start_at
     // injection already placed a task at step 1. Skip the converted Task
     // and append the rest so we don't duplicate.
+    //
+    // Each converted track already carries the timestamp of when that event
+    // really happened (per the transcript JSONL). Use `append_track` so the
+    // per-event ts survives (issue #5) along with `parent_step`, `refs`, and
+    // `annotations` (issue #49); the previous `append_at(kind, payload, ts)`
+    // call silently dropped those three fields.
     let skip_first = tracks.first().is_some_and(|t| t.kind == Kind::Task);
-    if skip_first {
-        for t in tracks.iter().skip(1) {
-            session.append(t.kind, t.payload.clone());
-        }
-    } else {
-        for t in &tracks {
-            session.append(t.kind, t.payload.clone());
-        }
+    let to_replay: &[_] = if skip_first { &tracks[1..] } else { &tracks[..] };
+    for t in to_replay {
+        session.append_track(t.clone());
     }
 
     let out_path = std::path::PathBuf::from(&out);
+    // Issue #17: load `.taperc` so a user's custom rules + enable/disable
+    // settings apply to snapshots, not just default built-ins.
+    let snapshot_cwd = std::env::current_dir().map_err(|e| ToolErr {
+        code: "INTERNAL_ERROR",
+        message: format!("cwd: {e}"),
+    })?;
+    let redact_engine =
+        tape_redact::engine_with_taperc(&snapshot_cwd).map_err(|e| ToolErr {
+            code: "TAPERC_INVALID",
+            message: format!("failed to load .taperc: {e}"),
+        })?;
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -884,7 +1045,11 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             outcome: tape_format::meta::Outcome::Unknown,
             stub_liner_notes: true,
             out_path: out_path.clone(),
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
+            // tape.snapshot replays a transcript; no source tape, no
+            // inherited artifacts.
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
         },
     )
     .map_err(|e| ToolErr {

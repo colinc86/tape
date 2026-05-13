@@ -37,6 +37,15 @@ fn main() -> anyhow::Result<()> {
     malformed_oversized_inline(&malformed_dir)?;
     malformed_leaked_anthropic_key(&malformed_dir)?;
     malformed_wrong_tape_version(&malformed_dir)?;
+    malformed_invalid_parent_step(&malformed_dir)?;
+    malformed_leaked_jwt(&malformed_dir)?;
+    malformed_leaked_aws_access_key(&malformed_dir)?;
+    malformed_leaked_email(&malformed_dir)?;
+    malformed_reserved_kind_fork(&malformed_dir)?;
+    malformed_reserved_kind_splice(&malformed_dir)?;
+    malformed_duplicate_task(&malformed_dir)?;
+    malformed_duplicate_eject(&malformed_dir)?;
+    malformed_empty_task_prompt(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -57,7 +66,7 @@ Nothing material.
 
 fn minimal_success(out_dir: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000001"
+id: "01h8xy00-0000-7000-b8aa-000000000001"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Say hello"
@@ -98,7 +107,7 @@ fn oversized_payload(out_dir: &Path) -> anyhow::Result<()> {
     let path = artifact_path(&hex);
 
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000002"
+id: "01h8xy00-0000-7000-b8aa-000000000002"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Read a large log"
@@ -132,7 +141,7 @@ outcome: success
 
 fn with_mcp_calls(out_dir: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v0"
-id: "01h8xy00-0000-7000-8000-000000000003"
+id: "01h8xy00-0000-7000-b8aa-000000000003"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:01:00Z"
 task: "Investigate payment failures for customer 4471"
@@ -191,7 +200,7 @@ fn write_expected(path: &Path, codes: &[&str]) -> anyhow::Result<()> {
 }
 
 fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000101", "Missing eject", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000101", "Missing eject", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:05Z","payload":{"vendor":"anthropic","model":"x","request":{},"response":{}}}"#, "\n",
@@ -209,7 +218,7 @@ fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000102", "Step gap", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000102", "Step gap", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
@@ -227,7 +236,7 @@ fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000103", "Unknown kind", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000103", "Unknown kind", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
@@ -241,12 +250,12 @@ fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
         artifacts: BTreeMap::new(),
     };
     pending.write_to(out.join("unknown-kind.tape"))?;
-    write_expected(&out.join("unknown-kind.expected.json"), &["INVALID_TRACKS_JSON"])?;
+    write_expected(&out.join("unknown-kind.expected.json"), &["UNKNOWN_KIND"])?;
     Ok(())
 }
 
 fn malformed_outcome_mismatch(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-8000-000000000104", "Outcome mismatch", "success");
+    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000104", "Outcome mismatch", "success");
     let tracks = concat!(
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
         r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"failure"}}"#, "\n",
@@ -273,7 +282,7 @@ fn malformed_artifact_hash_mismatch(out: &Path) -> anyhow::Result<()> {
     let claimed_path = artifact_path(&claimed_hex);
 
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000105",
+        "01h8xy00-0000-7000-b8aa-000000000105",
         "Artifact hash mismatch",
         "success",
     );
@@ -309,7 +318,7 @@ fn malformed_oversized_inline(out: &Path) -> anyhow::Result<()> {
     // An inline string > 4 KiB that is NOT a `{ref: ...}` stub.
     let big: String = "Y".repeat(8_000);
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000106",
+        "01h8xy00-0000-7000-b8aa-000000000106",
         "Oversized inline payload",
         "success",
     );
@@ -353,7 +362,7 @@ Flag this fixture as malformed.
 Nothing.
 ");
     let meta = std_meta(
-        "01h8xy00-0000-7000-8000-000000000107",
+        "01h8xy00-0000-7000-b8aa-000000000107",
         "Leaked anthropic key in liner",
         "success",
     );
@@ -378,7 +387,7 @@ Nothing.
 
 fn malformed_wrong_tape_version(out: &Path) -> anyhow::Result<()> {
     let meta = r#"tape_version: "tape/v9"
-id: "01h8xy00-0000-7000-8000-000000000108"
+id: "01h8xy00-0000-7000-b8aa-000000000108"
 created_at: "2026-05-06T10:00:00Z"
 ejected_at: "2026-05-06T10:00:30Z"
 task: "Future version"
@@ -401,6 +410,313 @@ outcome: success
     write_expected(
         &out.join("wrong-tape-version.expected.json"),
         &["WRONG_TAPE_VERSION"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §3.3 / §4.3 / §10.5: every default-enabled built-in rule must be
+/// flagged by `tape verify`'s defense-in-depth scan. Three fixtures clone
+/// the `leaked-anthropic-key` template for `jwt`, `aws_access_key`, and
+/// `email` — the rules that pre-#33 `tape verify` silently let through.
+fn malformed_leaked_jwt(out: &Path) -> anyhow::Result<()> {
+    let leak = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let liner = format!("## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+A leaked JWT was somehow embedded: {leak} (synthetic test value).
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010a",
+        "Leaked JWT in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner,
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-jwt.tape"))?;
+    write_expected(
+        &out.join("leaked-jwt.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
+fn malformed_leaked_aws_access_key(out: &Path) -> anyhow::Result<()> {
+    let leak = "AKIA1234567890ABCDEF";
+    let liner = format!("## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+A leaked AWS access key id: {leak} (synthetic test value).
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010b",
+        "Leaked AWS access key in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner,
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-aws-access-key.tape"))?;
+    write_expected(
+        &out.join("leaked-aws-access-key.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
+fn malformed_leaked_email(out: &Path) -> anyhow::Result<()> {
+    let liner = "## What I was asked to do
+Demonstrate the defense-in-depth scan.
+
+## What I found
+Ping the team at alice@example.com for follow-up.
+
+## Suggested next step / fix
+Flag this fixture as malformed.
+
+## What I'm uncertain about
+Nothing.
+";
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010c",
+        "Leaked email in liner",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: liner.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("leaked-email.tape"))?;
+    write_expected(
+        &out.join("leaked-email.expected.json"),
+        &["LEAKED_SECRET_IN_LINER"],
+    )?;
+    Ok(())
+}
+
+/// Three back-to-back `parent_step` violations on one tape: an out-of-range
+/// reference, a `parent_step == step` (violates the `< step` rule), and a
+/// `parent_step == 0` (out of the `[1, step)` range). All three must fire
+/// `INVALID_PARENT_STEP`. See SPEC §5.3 and issue #3.
+fn malformed_invalid_parent_step(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000109",
+        "Invalid parent_step",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"annotation","ts":"2026-05-06T10:00:01Z","payload":{"by":"agent","note":"out of range"},"parent_step":9999}"#,
+        "\n",
+        r#"{"step":3,"kind":"annotation","ts":"2026-05-06T10:00:02Z","payload":{"by":"agent","note":"self-ref"},"parent_step":3}"#,
+        "\n",
+        r#"{"step":4,"kind":"annotation","ts":"2026-05-06T10:00:03Z","payload":{"by":"agent","note":"zero"},"parent_step":0}"#,
+        "\n",
+        r#"{"step":5,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("invalid-parent-step.tape"))?;
+    write_expected(
+        &out.join("invalid-parent-step.expected.json"),
+        &["INVALID_PARENT_STEP"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4 / §11: the event kinds `fork` and `splice` are RESERVED for
+/// future revisions and v0 readers MUST reject them. Serde's closed enum
+/// would otherwise surface a generic `INVALID_TRACKS_JSON`; the verifier
+/// peeks at `kind` and emits `RESERVED_KIND` instead. See issue #60.
+fn malformed_reserved_kind_fork(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010d",
+        "Reserved kind: fork",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("reserved-kind-fork.tape"))?;
+    write_expected(
+        &out.join("reserved-kind-fork.expected.json"),
+        &["RESERVED_KIND"],
+    )?;
+    Ok(())
+}
+
+fn malformed_reserved_kind_splice(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010e",
+        "Reserved kind: splice",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("reserved-kind-splice.tape"))?;
+    write_expected(
+        &out.join("reserved-kind-splice.expected.json"),
+        &["RESERVED_KIND"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4: exactly one `task` event per tape. This fixture has two.
+/// Verify must emit `MISSING_TASK_EVENT` for the cardinality violation
+/// (the diagnostic code is reused for both "missing" and "too many" —
+/// the message names the actual count). See issue #86.
+fn malformed_duplicate_task(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-00000000010f",
+        "Duplicate task event",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"first"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"task","ts":"2026-05-06T10:00:01Z","payload":{"prompt":"second"}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("duplicate-task.tape"))?;
+    write_expected(
+        &out.join("duplicate-task.expected.json"),
+        &["MISSING_TASK_EVENT"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.4: exactly one `eject` event per tape. The existing
+/// `EjectNotLast` check fires for any non-final eject; this fixture has
+/// two ejects where the final one is the second. The non-final eject
+/// also trips `EjectNotLast`, but the duplicate-count check makes the
+/// cardinality violation explicit. See issue #86.
+fn malformed_duplicate_eject(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000110",
+        "Duplicate eject event",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:10Z","payload":{"outcome":"success"}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("duplicate-eject.tape"))?;
+    write_expected(
+        &out.join("duplicate-eject.expected.json"),
+        &["EJECT_NOT_LAST"],
+    )?;
+    Ok(())
+}
+
+/// SPEC §5.5.1 / issue #96: the `task` event's payload MUST carry a
+/// non-empty `prompt`. This fixture's step-1 task event has an explicit
+/// empty `prompt`; verify must emit `INVALID_PAYLOAD`.
+fn malformed_empty_task_prompt(out: &Path) -> anyhow::Result<()> {
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000111",
+        "Empty task prompt",
+        "success",
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":""}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("empty-task-prompt.tape"))?;
+    write_expected(
+        &out.join("empty-task-prompt.expected.json"),
+        &["INVALID_PAYLOAD"],
     )?;
     Ok(())
 }

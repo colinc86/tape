@@ -56,6 +56,11 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
         .prefix("tape-")
         .tempdir()?;
     let recorder_socket_path = temp_dir.path().join("recorder.sock");
+    // Per-recording dir for the PreToolUse hook to buffer before-hashes
+    // (#9 PR 2). Lives inside `temp_dir` so it's cleaned up automatically
+    // when the TempDir is dropped.
+    let before_dir = temp_dir.path().join("before-hashes");
+    std::fs::create_dir_all(&before_dir)?;
 
     let socket_handle = socket::spawn(recorder_socket_path.clone(), session.clone()).await?;
 
@@ -115,6 +120,7 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     cmd.env("TAPE_RECORDER_SOCKET", &recorder_socket_path);
     cmd.env("TAPE_OVERLAY_SETTINGS", &settings_path);
     cmd.env("TAPE_OVERLAY_MCP_CONFIG", &mcp_path);
+    cmd.env("TAPE_BEFORE_DIR", &before_dir);
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }
@@ -144,6 +150,12 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
         Outcome::Failure
     };
 
+    // Issue #17: load `.taperc` (workspace ancestor walk → $HOME) so custom
+    // rules, enable_optional, and disable_default actually take effect.
+    // Bad config aborts the eject — better to fail loudly than silently
+    // drop a user's intended redactions.
+    let cwd = std::env::current_dir()?;
+    let redact_engine = tape_redact::engine_with_taperc(&cwd)?;
     let eject_result = eject(
         &session,
         &EjectOptions {
@@ -152,7 +164,11 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             outcome,
             stub_liner_notes: true,
             out_path: opts.out_path,
-            redact_engine: Some(tape_redact::Engine::with_default_rules()),
+            redact_engine: Some(redact_engine),
+            // Live recording — no source tape to inherit artifacts from.
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            // Issue #72: surface the caller's --label in meta.yaml.
+            label: opts.label,
         },
     )?;
 

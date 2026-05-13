@@ -8,7 +8,12 @@ pub struct TapeRcConfig {
     pub redact: RedactConfig,
 }
 
+/// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
+/// `TapeRcConfig` stays permissive at the top level (forward-compat) but this
+/// struct denies typos so users learn fast when `disable_default` becomes
+/// `disabled_default`. (Issue #36.)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedactConfig {
     #[serde(default)]
     pub custom: Vec<CustomRule>,
@@ -58,7 +63,17 @@ impl TapeRcConfig {
     /// Apply this config to an engine: enable opt-in built-ins, disable
     /// defaults, append custom rules.
     pub fn apply(&self, engine: &mut crate::Engine) -> anyhow::Result<()> {
+        // SPEC §9.2: `disable_default` only targets the built-in rule set.
+        // Unknown ids were a silent no-op (issue #45) — symmetric with
+        // `enable_optional` below, which already rejects them.
+        let known_ids: std::collections::HashSet<String> = crate::rules::built_in()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         for id in &self.redact.disable_default {
+            if !known_ids.contains(id) {
+                anyhow::bail!("disable_default references unknown rule: {id}");
+            }
             engine.remove_rule(id);
         }
         // For each enable_optional, find its definition in built_in() and add.
@@ -116,6 +131,31 @@ fn is_typed_placeholder(s: &str) -> bool {
 
 fn dirs_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Build a redaction engine seeded with default rules, with `.taperc` overlay
+/// applied if present. Search order (SPEC §9): walk from `cwd` up to `$HOME`,
+/// then `$HOME/.taperc` as fallback. CWD wins — no merge.
+///
+/// If a `.taperc` is found but fails to read, parse, or apply, the error is
+/// returned. The caller MUST abort the recording rather than silently fall
+/// back to defaults — otherwise a user's custom redaction rules would be
+/// invisibly skipped.
+pub fn engine_with_taperc(cwd: &std::path::Path) -> anyhow::Result<crate::Engine> {
+    let mut engine = crate::Engine::with_default_rules();
+    let path = TapeRcConfig::locate_workspace(cwd).or_else(TapeRcConfig::locate_user);
+    if let Some(p) = path {
+        let yaml = std::fs::read_to_string(&p).map_err(|e| {
+            anyhow::anyhow!("failed to read {}: {e}", p.display())
+        })?;
+        let cfg = TapeRcConfig::parse(&yaml).map_err(|e| {
+            anyhow::anyhow!("failed to parse {}: {e}", p.display())
+        })?;
+        cfg.apply(&mut engine).map_err(|e| {
+            anyhow::anyhow!("failed to apply {}: {e}", p.display())
+        })?;
+    }
+    Ok(engine)
 }
 
 #[cfg(test)]
@@ -225,5 +265,102 @@ redact:
         let mut s = "alice@example.com".to_string();
         engine.redact_string(&mut s);
         assert_eq!(s, "alice@example.com", "email should NOT be redacted");
+    }
+
+    /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load
+    /// failure. Each entry below is a realistic typo the user might make.
+    /// (Issue #36.)
+    #[test]
+    fn typo_under_redact_rejects() {
+        for bad in [
+            // wrong key entirely
+            "redact:\n  customs:\n    - id: x\n      pattern: 'y'\n",
+            // plural / case typos for the documented fields
+            "redact:\n  disabled_default: [\"email\"]\n",
+            "redact:\n  enable_optionals: [\"ipv4_private\"]\n",
+            "redact:\n  enableOptional: [\"ipv4_private\"]\n",
+            // entirely made-up section
+            "redact:\n  disable: [\"email\"]\n",
+        ] {
+            let err = TapeRcConfig::parse(bad).err();
+            assert!(
+                err.is_some(),
+                "expected typo to fail config-load; parsed clean: {bad}"
+            );
+        }
+    }
+
+    /// SPEC §9.1: unknown TOP-LEVEL keys are ignored for forward-compat.
+    /// Make sure the new `deny_unknown_fields` attribute didn't leak up.
+    #[test]
+    fn unknown_top_level_key_still_accepted() {
+        let yaml = r#"
+some_future_section:
+  foo: bar
+redact:
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).expect("top-level forward-compat");
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    /// Issue #45: `disable_default` used to silently accept unknown rule
+    /// names. Now it rejects them at apply time, matching `enable_optional`.
+    #[test]
+    fn disable_default_rejects_unknown_rule_name() {
+        let yaml = r#"
+redact:
+  disable_default: ["emial"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        let mut engine = crate::Engine::with_default_rules();
+        let err = cfg.apply(&mut engine).unwrap_err();
+        assert!(
+            err.to_string().contains("disable_default references unknown rule"),
+            "expected unknown-rule error; got: {err}"
+        );
+        // The `email` rule must still be enabled, since the typo'd disable
+        // never took effect.
+        let mut s = "alice@example.com".to_string();
+        engine.redact_string(&mut s);
+        assert_eq!(s, "<EMAIL>");
+    }
+
+    /// Both list fields should reject unknown ids identically. Symmetric
+    /// contract test alongside #36's `typo_under_redact_rejects`.
+    #[test]
+    fn enable_optional_and_disable_default_have_symmetric_error_shape() {
+        let cases = [
+            ("enable_optional", "redact:\n  enable_optional: [\"nope\"]\n"),
+            ("disable_default", "redact:\n  disable_default: [\"nope\"]\n"),
+        ];
+        for (field, yaml) in cases {
+            let cfg = TapeRcConfig::parse(yaml).unwrap();
+            let mut engine = crate::Engine::with_default_rules();
+            let err = cfg.apply(&mut engine).unwrap_err();
+            assert!(
+                err.to_string().contains(field) && err.to_string().contains("nope"),
+                "{field}: expected error to mention field and id; got: {err}"
+            );
+        }
+    }
+
+    /// Regression: a well-formed config with all three documented keys still
+    /// parses without complaint.
+    #[test]
+    fn all_documented_keys_still_parse() {
+        let yaml = r#"
+redact:
+  custom:
+    - id: cust_id
+      pattern: 'CUST-\d{6}'
+      replacement: '<CUST_ID>'
+  enable_optional: ["ipv4_private"]
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.redact.custom.len(), 1);
+        assert_eq!(cfg.redact.enable_optional, vec!["ipv4_private"]);
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
     }
 }

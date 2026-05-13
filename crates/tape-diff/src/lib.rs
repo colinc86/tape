@@ -308,12 +308,15 @@ fn pct_delta(a: u64, b: u64) -> Option<i64> {
 }
 
 fn last_answer(tracks: &[Track]) -> Option<String> {
-    // Prefer the last annotation noted by the agent as the canonical answer.
-    if let Some(t) = tracks
-        .iter()
-        .rev()
-        .find(|t| t.kind == Kind::Annotation)
-    {
+    // Prefer the last annotation whose `by` field is exactly "agent" as the
+    // canonical answer. Parser warnings (`by: "tape:transcript-parser"`) and
+    // user notes (`by: "user"`) are explicitly skipped — they are not answers.
+    // If no agent annotation exists, fall through to the last model_call.
+    let agent_note = tracks.iter().rev().find(|t| {
+        t.kind == Kind::Annotation
+            && t.payload.get("by").and_then(Value::as_str) == Some("agent")
+    });
+    if let Some(t) = agent_note {
         return t.payload.get("note").and_then(Value::as_str).map(String::from);
     }
     // Else, last model_call response text.
@@ -502,5 +505,91 @@ mod tests {
         // P3 #17: 0 → 5 has no meaningful percent delta. Returns None.
         assert_eq!(pct_delta(0, 5), None);
         assert_eq!(pct_delta(0, 1), None);
+    }
+
+    fn model_call_with_text(step: u64, text: &str) -> Track {
+        t(
+            step,
+            Kind::ModelCall,
+            json!({
+                "response": {
+                    "content": [{"type": "text", "text": text}]
+                }
+            }),
+        )
+    }
+
+    #[test]
+    fn last_answer_skips_parser_warning_at_end() {
+        // Issue #15: parser-warning annotation at end must not be picked as the
+        // canonical answer — last_answer should fall through to model_call text.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            model_call_with_text(2, "the real model answer"),
+            t(
+                3,
+                Kind::Annotation,
+                json!({
+                    "by": "tape:transcript-parser",
+                    "note": "parse warnings: 1 unknown event types, 0 malformed lines",
+                }),
+            ),
+        ];
+        assert_eq!(
+            last_answer(&tracks),
+            Some("the real model answer".to_string())
+        );
+    }
+
+    #[test]
+    fn last_answer_prefers_agent_annotation_over_later_parser_warning() {
+        // Agent annotation at step 5, parser annotation at step 9 — agent wins
+        // even though it's not the last annotation chronologically.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            model_call_with_text(2, "intermediate model text"),
+            t(
+                5,
+                Kind::Annotation,
+                json!({"by": "agent", "note": "agent's canonical answer"}),
+            ),
+            t(
+                9,
+                Kind::Annotation,
+                json!({
+                    "by": "tape:transcript-parser",
+                    "note": "parse warnings: 2 unknown event types",
+                }),
+            ),
+        ];
+        assert_eq!(
+            last_answer(&tracks),
+            Some("agent's canonical answer".to_string())
+        );
+    }
+
+    #[test]
+    fn last_answer_falls_through_when_only_user_annotations() {
+        // Only user annotations, no agent — must fall through to model_call.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            model_call_with_text(2, "model text wins"),
+            t(
+                3,
+                Kind::Annotation,
+                json!({"by": "user", "note": "looks good, ship it"}),
+            ),
+        ];
+        assert_eq!(last_answer(&tracks), Some("model text wins".to_string()));
+    }
+
+    #[test]
+    fn last_answer_no_annotations_returns_model_call_text() {
+        // No annotations at all — behavior unchanged: returns last model_call.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            model_call_with_text(2, "only model answer"),
+        ];
+        assert_eq!(last_answer(&tracks), Some("only model answer".to_string()));
     }
 }

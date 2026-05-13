@@ -32,6 +32,7 @@ pub enum DiagnosticCode {
     MissingArtifact,
     ArtifactHashMismatch,
     OversizedInlinePayload,
+    InvalidParentStep,
     OutcomeMismatch,
     RedactionSummaryMismatch,
     LeakedSecretInMeta,
@@ -64,6 +65,7 @@ impl DiagnosticCode {
             MissingArtifact => "MISSING_ARTIFACT",
             ArtifactHashMismatch => "ARTIFACT_HASH_MISMATCH",
             OversizedInlinePayload => "OVERSIZED_INLINE_PAYLOAD",
+            InvalidParentStep => "INVALID_PARENT_STEP",
             OutcomeMismatch => "OUTCOME_MISMATCH",
             RedactionSummaryMismatch => "REDACTION_SUMMARY_MISMATCH",
             LeakedSecretInMeta => "LEAKED_SECRET_IN_META",
@@ -211,10 +213,55 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
     let tracks = match tracks::parse_jsonl(tracks_jsonl) {
         Ok(t) => t,
         Err(e) => {
-            report.push(Diagnostic::error(
-                DiagnosticCode::InvalidTracksJson,
-                format!("tracks.jsonl: {e}"),
-            ));
+            // SPEC §5.4 / §11: `fork` and `splice` are RESERVED future kinds;
+            // v0 readers MUST reject them with a dedicated code rather than
+            // the generic `INVALID_TRACKS_JSON`. Other unknown kinds
+            // ("bogus", "future-thing", typos) get their own `UNKNOWN_KIND`
+            // code per SPEC §10.6.
+            //
+            // Serde's closed-enum failure looks identical for both — when
+            // the initial parse fails we do a line-by-line salvage pass
+            // that peeks at `kind` as a raw string and emits the precise
+            // diagnostic. If at least one such typed diagnostic fires we
+            // suppress the generic `INVALID_TRACKS_JSON` fallback, because
+            // the typed code is the specific actionable cause. (Issue #91.)
+            let mut suppress_generic = false;
+            for (i, line) in tracks_jsonl.split('\n').enumerate() {
+                if line.is_empty() || line.bytes().all(|b| b.is_ascii_whitespace()) {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(kind) = v.get("kind").and_then(|k| k.as_str()) else {
+                    continue;
+                };
+                let step = v
+                    .get("step")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or_else(|| format!("at line {}", i + 1), |n| n.to_string());
+                if kind == "fork" || kind == "splice" {
+                    suppress_generic = true;
+                    report.push(Diagnostic::error(
+                        DiagnosticCode::ReservedKind,
+                        format!(
+                            "step {step} has reserved kind `{kind}`; v0 readers MUST reject (SPEC §5.4)"
+                        ),
+                    ));
+                } else if !is_known_kind(kind) {
+                    suppress_generic = true;
+                    report.push(Diagnostic::error(
+                        DiagnosticCode::UnknownKind,
+                        format!("step {step} has unknown kind {kind:?}"),
+                    ));
+                }
+            }
+            if !suppress_generic {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidTracksJson,
+                    format!("tracks.jsonl: {e}"),
+                ));
+            }
             return report;
         }
     };
@@ -243,6 +290,36 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         }
     }
 
+    // SPEC §5.3 — when parent_step is present, it MUST be in `[1, step)` and
+    // MUST reference a step that exists in this tape. Because `step` is
+    // contiguous from 1 (checked above), an existing step is exactly any
+    // value in `[1, tracks.len()]`; the stricter `< step` rule subsumes the
+    // upper bound for any well-numbered tape, but we still report both forms
+    // so a tape that fails BOTH StepGap and InvalidParentStep at once gets
+    // both errors.
+    let max_step = tracks.len() as u64;
+    for t in &tracks {
+        if let Some(p) = t.parent_step {
+            if p == 0 || p >= t.step {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidParentStep,
+                    format!(
+                        "step {} has parent_step={}, must be in [1, {})",
+                        t.step, p, t.step
+                    ),
+                ));
+            } else if p > max_step {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidParentStep,
+                    format!(
+                        "step {} parent_step={} references nonexistent step",
+                        t.step, p
+                    ),
+                ));
+            }
+        }
+    }
+
     // first must be task, last must be eject
     if tracks.first().map(|t| t.kind) != Some(Kind::Task) {
         report.push(Diagnostic::error(
@@ -267,6 +344,28 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         }
     }
 
+    // SPEC §5.4 cardinality: exactly one `task` event, exactly one `eject`
+    // event. The first/last checks above don't catch duplicates anywhere
+    // else in the tape (a tape with `[task, task, ..., eject]` passes the
+    // first-is-task check, and `[task, ..., eject, eject]` passes the
+    // last-is-eject check while the EjectNotLast check fires only once
+    // for the non-final eject). Count explicitly so the cardinality
+    // violation is named precisely. (Issue #86.)
+    let task_count = tracks.iter().filter(|t| t.kind == Kind::Task).count();
+    if task_count > 1 {
+        report.push(Diagnostic::error(
+            DiagnosticCode::MissingTaskEvent,
+            format!("tape contains {task_count} task events; SPEC §5.4 requires exactly one"),
+        ));
+    }
+    let eject_count = tracks.iter().filter(|t| t.kind == Kind::Eject).count();
+    if eject_count > 1 {
+        report.push(Diagnostic::error(
+            DiagnosticCode::EjectNotLast,
+            format!("tape contains {eject_count} eject events; SPEC §5.4 requires exactly one"),
+        ));
+    }
+
     // ts monotonic
     {
         let mut prev: Option<&str> = None;
@@ -275,10 +374,7 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
                 if t.ts.as_str() < p {
                     report.push(Diagnostic::error(
                         DiagnosticCode::TsNotMonotonic,
-                        format!(
-                            "step {} ts={} earlier than previous {}",
-                            t.step, t.ts, p
-                        ),
+                        format!("step {} ts={} earlier than previous {}", t.step, t.ts, p),
                     ));
                 }
             }
@@ -297,6 +393,20 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
     for t in &tracks {
         // No payload field can exceed PAYLOAD_INLINE_MAX as serialized JSON
         check_payload_size(&t.payload, t.step, &mut report);
+
+        // SPEC §5.5.1: the `task` event's payload MUST carry a non-empty
+        // `prompt`. A missing field and a present-but-empty string are both
+        // rejected — there's no meaningful tape without a real prompt to
+        // anchor it. See issue #96.
+        if t.kind == Kind::Task {
+            let prompt = t.payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+            if prompt.is_empty() {
+                report.push(Diagnostic::error(
+                    DiagnosticCode::InvalidPayload,
+                    format!("step {} task event has empty prompt (SPEC §5.5.1)", t.step),
+                ));
+            }
+        }
 
         for r in &t.refs {
             let Some(hex) = r.strip_prefix("sha:") else {
@@ -402,14 +512,32 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         (None, None) => {}
     }
 
-    // §10.5 defense-in-depth — cheap built-in pattern scan over meta + liner.
-    // We delegate the actual rule definitions to the redact crate later; for now,
-    // do a minimal in-tree scan for the lowest-friction cases: anthropic key prefix
-    // and bare emails. The full scan moves to tape-redact once that crate exists.
-    minimal_secret_scan(meta_yaml, DiagnosticCode::LeakedSecretInMeta, &mut report);
-    minimal_secret_scan(liner_md, DiagnosticCode::LeakedSecretInLiner, &mut report);
+    // §10.5 defense-in-depth — full default-enabled rule set over meta +
+    // liner. Mirrors `tape_redact::rules::built_in()`'s default-enabled
+    // patterns; see `crate::secret_scan` for the rationale on duplication.
+    // (Issue #33.)
+    full_secret_scan(meta_yaml, DiagnosticCode::LeakedSecretInMeta, &mut report);
+    full_secret_scan(liner_md, DiagnosticCode::LeakedSecretInLiner, &mut report);
 
     report
+}
+
+/// Returns true if `kind` is one of the SPEC §5.4 v0 closed-set kind strings.
+/// Used by the salvage pass to distinguish "this kind is a reserved future
+/// value" from "this kind is an unknown / typo'd value" from "this kind is
+/// fine and something else in the line failed serde". (Issue #91.)
+fn is_known_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "task"
+            | "model_call"
+            | "mcp_call"
+            | "shell"
+            | "file_read"
+            | "file_write"
+            | "annotation"
+            | "eject"
+    )
 }
 
 /// Cheap ISO-8601 sniff: looks like `YYYY-MM-DDTHH:MM:SS(.fff)?(Z|+HH:MM|-HH:MM)`.
@@ -429,57 +557,381 @@ fn looks_like_iso8601(s: &str) -> bool {
     has_t && timezone_ok
 }
 
-/// Walk a JSON value; for any string field whose JSON-encoded form exceeds
-/// PAYLOAD_INLINE_MAX, emit OversizedInlinePayload. Stub `{ref: ...}` objects
-/// are exempt (they're already spilled).
+/// Walk a payload value; for any field whose JSON-encoded form exceeds
+/// `PAYLOAD_INLINE_MAX`, emit `OversizedInlinePayload`. Stub `{ref: ...}`
+/// objects are exempt (they're already spilled). Mirrors
+/// `spill_oversize_in_value` in `tape-record::eject`: the top-level payload
+/// wrapper is itself not eligible — only its fields are, and a container
+/// field that exceeds the threshold as a whole is flagged without recursing
+/// into it.
 fn check_payload_size(v: &serde_json::Value, step: u64, report: &mut VerifyReport) {
     use serde_json::Value;
     match v {
-        Value::String(s) => {
-            // SPEC §5.6 measures JSON-encoded length, including quotes/escapes.
-            let encoded_len = serde_json::to_string(s)
-                .map(|v| v.len())
-                .unwrap_or(usize::MAX);
-            if encoded_len > crate::PAYLOAD_INLINE_MAX {
-                report.push(Diagnostic::error(
-                    DiagnosticCode::OversizedInlinePayload,
-                    format!(
-                        "step {} has an inline string of {} encoded bytes (max {})",
-                        step,
-                        encoded_len,
-                        crate::PAYLOAD_INLINE_MAX
-                    ),
-                ));
-            }
-        }
         Value::Object(map) => {
-            // A `{"ref": "sha:..."}` stub is exempt.
             if map.len() == 1 && map.contains_key("ref") {
                 return;
             }
-            for v in map.values() {
-                check_payload_size(v, step, report);
+            for child in map.values() {
+                check_field_size(child, step, report);
             }
         }
         Value::Array(arr) => {
-            for v in arr {
-                check_payload_size(v, step, report);
+            for child in arr {
+                check_field_size(child, step, report);
             }
         }
         _ => {}
     }
 }
 
-/// Minimal in-tree secret scan for §10.5 defense-in-depth. The full rule
-/// engine lives in `tape-redact`; this is the floor enforced even without it.
-fn minimal_secret_scan(text: &str, code: DiagnosticCode, report: &mut VerifyReport) {
-    if text.contains("sk-ant-") {
+fn check_field_size(v: &serde_json::Value, step: u64, report: &mut VerifyReport) {
+    use serde_json::Value;
+    if let Value::Object(map) = v {
+        if map.len() == 1 && map.contains_key("ref") {
+            return;
+        }
+    }
+    let encoded_len = serde_json::to_string(v)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
+    if encoded_len > crate::PAYLOAD_INLINE_MAX {
+        let kind = match v {
+            Value::String(_) => "string",
+            Value::Object(_) => "object",
+            Value::Array(_) => "array",
+            _ => "value",
+        };
+        report.push(Diagnostic::error(
+            DiagnosticCode::OversizedInlinePayload,
+            format!(
+                "step {step} has an inline {kind} of {encoded_len} encoded bytes (max {})",
+                crate::PAYLOAD_INLINE_MAX
+            ),
+        ));
+        return;
+    }
+    if matches!(v, Value::Object(_) | Value::Array(_)) {
+        check_payload_size(v, step, report);
+    }
+}
+
+/// §10.5 defense-in-depth scan: runs every default-enabled built-in rule
+/// from `crate::secret_scan` against `text` and pushes one diagnostic per
+/// matching rule. SPEC §3.3 / §4.3 / §10.5 require `tape verify` to be a
+/// portable backstop against tapes whose producer didn't run redaction.
+fn full_secret_scan(text: &str, code: DiagnosticCode, report: &mut VerifyReport) {
+    for rule_id in crate::secret_scan::scan(text) {
         report.push(Diagnostic::error(
             code,
-            "contains an Anthropic API key prefix (`sk-ant-`)",
+            format!("contains match for built-in rule {rule_id:?}"),
         ));
     }
-    // Don't scan for emails here — many tape contents legitimately contain
-    // things that look like emails (e.g. URLs with `@` in commit hashes).
-    // The full engine in tape-redact runs at eject time and catches these.
+}
+
+#[cfg(test)]
+mod payload_size_tests {
+    use super::*;
+
+    fn diags_for(payload: serde_json::Value) -> Vec<Diagnostic> {
+        let mut report = VerifyReport::default();
+        check_payload_size(&payload, 1, &mut report);
+        report.diagnostics
+    }
+
+    #[test]
+    fn flags_oversize_string() {
+        let big = "x".repeat(crate::PAYLOAD_INLINE_MAX + 100);
+        let diags = diags_for(serde_json::json!({"text": big}));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline string"));
+    }
+
+    /// Regression test for issue #1: an array of small strings whose
+    /// JSON-encoded form exceeds 4 KiB must be flagged.
+    #[test]
+    fn flags_oversize_array() {
+        let arr: Vec<serde_json::Value> = (0..500)
+            .map(|i| serde_json::Value::String(format!("item-with-id-{i:04}")))
+            .collect();
+        let payload = serde_json::json!({"choices": arr});
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline array"));
+    }
+
+    #[test]
+    fn flags_oversize_object() {
+        let mut map = serde_json::Map::new();
+        for i in 0..500 {
+            map.insert(
+                format!("k{i:04}"),
+                serde_json::Value::String(format!("v{i:04}")),
+            );
+        }
+        let payload = serde_json::json!({"response": serde_json::Value::Object(map)});
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::OversizedInlinePayload);
+        assert!(diags[0].message.contains("inline object"));
+    }
+
+    #[test]
+    fn ignores_ref_stubs_and_small_payloads() {
+        let payload = serde_json::json!({
+            "stub": {"ref": "sha:deadbeef"},
+            "small": "ok",
+            "nums": [1, 2, 3],
+        });
+        assert!(diags_for(payload).is_empty());
+    }
+
+    /// When a parent container is oversize, we flag the parent once — we
+    /// don't also descend and flag every inner field.
+    #[test]
+    fn flags_parent_once_not_children() {
+        let inner_big = "X".repeat(crate::PAYLOAD_INLINE_MAX + 100);
+        let payload = serde_json::json!({
+            "outer": {"inner": inner_big, "tag": "ok"},
+        });
+        let diags = diags_for(payload);
+        assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+        assert!(diags[0].message.contains("inline object"));
+    }
+}
+
+#[cfg(test)]
+mod reserved_kind_tests {
+    //! SPEC §5.4 / §11 / issue #60: `fork` and `splice` are RESERVED future
+    //! kinds. v0 readers MUST reject them, and the verifier MUST surface a
+    //! dedicated `RESERVED_KIND` diagnostic rather than the generic
+    //! `INVALID_TRACKS_JSON` that serde's closed-enum failure would otherwise
+    //! yield.
+
+    use super::*;
+    use crate::reader::RawTape;
+    use std::collections::HashMap;
+
+    fn raw_with_tracks(tracks: &str) -> RawTape {
+        let meta = r#"tape_version: "tape/v0"
+id: "01h8xy00-0000-7000-b8aa-000000000999"
+created_at: "2026-05-06T10:00:00Z"
+ejected_at: "2026-05-06T10:00:30Z"
+task: "reserved-kind unit test"
+recorder:
+  agent: "claude-code/2.1.4"
+outcome: success
+"#;
+        let liner = "## What I was asked to do
+x
+
+## What I found
+x
+
+## Suggested next step / fix
+x
+
+## What I'm uncertain about
+x
+";
+        RawTape {
+            meta_yaml: Some(meta.into()),
+            liner_md: Some(liner.into()),
+            tracks_jsonl: Some(tracks.into()),
+            redactions_json: None,
+            artifacts: HashMap::new(),
+            unknown_entries: Vec::new(),
+        }
+    }
+
+    fn error_codes(report: &VerifyReport) -> Vec<&'static str> {
+        report.errors().map(|d| d.code.as_str()).collect()
+    }
+
+    #[test]
+    fn fork_kind_emits_reserved_kind_not_invalid_tracks_json() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(
+            codes.contains(&"RESERVED_KIND"),
+            "expected RESERVED_KIND, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"INVALID_TRACKS_JSON"),
+            "INVALID_TRACKS_JSON must be suppressed when a reserved kind is the cause; got {codes:?}"
+        );
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::ReservedKind)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("fork"), "message should name the kind: {msg}");
+        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+    }
+
+    #[test]
+    fn splice_kind_emits_reserved_kind() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(
+            codes.contains(&"RESERVED_KIND"),
+            "expected RESERVED_KIND, got {codes:?}"
+        );
+        assert!(!codes.contains(&"INVALID_TRACKS_JSON"));
+    }
+
+    /// Issue #91: a non-fork/non-splice unknown kind (typo, third-party
+    /// extension) MUST emit `UNKNOWN_KIND`, not the generic
+    /// `INVALID_TRACKS_JSON`. SPEC §10.6 lists `UNKNOWN_KIND` for exactly
+    /// this case.
+    #[test]
+    fn bogus_kind_emits_unknown_kind_not_invalid_tracks_json() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"bogus","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+            "\n",
+            r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"UNKNOWN_KIND"), "got {codes:?}");
+        assert!(
+            !codes.contains(&"INVALID_TRACKS_JSON"),
+            "INVALID_TRACKS_JSON must be suppressed when an unknown kind is the cause; got {codes:?}"
+        );
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::UnknownKind)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("bogus"), "message should name the kind: {msg}");
+        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+    }
+
+    /// Multiple unknown kinds on the same tape should each get their own
+    /// diagnostic so callers can see precisely what's wrong.
+    #[test]
+    fn multiple_unknown_kinds_each_get_their_own_diagnostic() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+            "\n",
+            r#"{"step":3,"kind":"cough","ts":"2026-05-06T10:00:06Z","payload":{}}"#,
+            "\n",
+            r#"{"step":4,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let unknown_count = report
+            .errors()
+            .filter(|d| d.code == DiagnosticCode::UnknownKind)
+            .count();
+        assert_eq!(
+            unknown_count, 2,
+            "expected one UNKNOWN_KIND per offending step; got {unknown_count}"
+        );
+    }
+
+    /// SPEC §5.5.1 / issue #96: the `task` event's payload MUST carry a
+    /// non-empty `prompt`. A present-but-empty string is rejected with
+    /// `INVALID_PAYLOAD`.
+    #[test]
+    fn empty_task_prompt_emits_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":""}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"INVALID_PAYLOAD"), "got {codes:?}");
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::InvalidPayload)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("empty prompt"), "message should explain the cause: {msg}");
+        assert!(msg.contains("step 1"), "message should name the step: {msg}");
+    }
+
+    /// A `task` event with no `prompt` field at all is treated the same as
+    /// `prompt: ""` — `INVALID_PAYLOAD` per SPEC §5.5.1.
+    #[test]
+    fn missing_task_prompt_emits_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"INVALID_PAYLOAD"), "got {codes:?}");
+    }
+
+    /// A `task` event with a non-empty prompt does NOT trip the new check.
+    /// Guards against false positives from a future refactor.
+    #[test]
+    fn non_empty_task_prompt_does_not_emit_invalid_payload() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"hi"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let prompt_errs = report
+            .errors()
+            .filter(|d| d.code == DiagnosticCode::InvalidPayload
+                && d.message.contains("empty prompt"))
+            .count();
+        assert_eq!(prompt_errs, 0, "non-empty prompt should not fire INVALID_PAYLOAD");
+    }
+
+    /// A tape mixing a reserved kind AND an unknown kind should emit BOTH
+    /// typed diagnostics, with `INVALID_TRACKS_JSON` suppressed.
+    #[test]
+    fn reserved_and_unknown_kinds_both_surface_typed_diagnostics() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+            "\n",
+            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+            "\n",
+            r#"{"step":3,"kind":"bogus","ts":"2026-05-06T10:00:06Z","payload":{}}"#,
+            "\n",
+            r#"{"step":4,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+            "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"RESERVED_KIND"), "got {codes:?}");
+        assert!(codes.contains(&"UNKNOWN_KIND"), "got {codes:?}");
+        assert!(
+            !codes.contains(&"INVALID_TRACKS_JSON"),
+            "either typed diagnostic suppresses the generic; got {codes:?}"
+        );
+    }
 }

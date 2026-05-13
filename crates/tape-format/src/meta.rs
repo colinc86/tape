@@ -23,6 +23,12 @@ pub struct Meta {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redaction_summary: Option<RedactionSummary>,
+
+    /// Caller-supplied free-form label for filing / categorisation.
+    /// `tape record --label X` populates this; readers can group cassettes
+    /// by label without parsing `task`. SPEC §3.2. (Issue #72.)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -96,6 +96,9 @@ tool_budget:                       # OPTIONAL — summary
 redaction_summary:                 # REQUIRED iff redactions.json exists
   rules_applied: ["email", "anthropic_api_key", "custom:pii"]
   redaction_count: 47
+label: "investigating-payments-bug"  # OPTIONAL — caller-supplied tag for
+                                     # filing / categorising cassettes.
+                                     # `tape record --label X` writes it.
 ```
 
 If `redaction_summary` is present, `redactions.json` MUST exist, and the count and rule list MUST agree (same set of rule_ids; total entry count equals `redaction_count`).
@@ -286,6 +289,10 @@ Any payload field whose serialized JSON encoding (the field's value, not the who
 {"ref": "sha:<blake3-hex>"}
 ```
 
+"Field" includes any JSON value reachable from the payload — strings, objects, arrays, numbers. For string fields the encoded length includes the surrounding quotes and any required escapes; for object and array fields it is the value's complete canonical JSON serialization. The top-level payload wrapper is itself not eligible for spillover; only the values reachable beneath it are.
+
+When an object or array field exceeds the threshold as a whole, the entire subtree MUST be spilled as one artifact — implementations MUST NOT spill the parent's children individually in addition to the parent. The artifact bytes for a string field are the raw UTF-8 bytes of the string (without surrounding quotes); for other types they are the value's canonical JSON encoding.
+
 The enclosing event's `refs` array MUST include `"sha:<blake3-hex>"` for every artifact it references. Implementations MUST verify on read that:
 
 1. Each `refs` entry corresponds to an actual artifact file.
@@ -463,7 +470,7 @@ Conforming readers SHOULD provide a verification operation. The reference implem
 
 Validators that fail SHOULD emit one or more structured diagnostics with these stable codes:
 
-`MALFORMED_ZIP`, `MISSING_REQUIRED_ENTRY`, `INVALID_META_YAML`, `WRONG_TAPE_VERSION`, `INVALID_LINER_NOTES`, `MISSING_LINER_SECTION`, `INVALID_TRACKS_JSON`, `STEP_GAP`, `UNKNOWN_KIND`, `MISSING_TASK_EVENT`, `MISSING_EJECT_EVENT`, `EJECT_NOT_LAST`, `BAD_TIMESTAMP`, `TS_NOT_MONOTONIC`, `INVALID_PAYLOAD`, `MISSING_ARTIFACT`, `ARTIFACT_HASH_MISMATCH`, `OVERSIZED_INLINE_PAYLOAD`, `OUTCOME_MISMATCH`, `REDACTION_SUMMARY_MISMATCH`, `LEAKED_SECRET_IN_META`, `LEAKED_SECRET_IN_LINER`.
+`MALFORMED_ZIP`, `MISSING_REQUIRED_ENTRY`, `INVALID_META_YAML`, `WRONG_TAPE_VERSION`, `INVALID_LINER_NOTES`, `MISSING_LINER_SECTION`, `INVALID_TRACKS_JSON`, `STEP_GAP`, `UNKNOWN_KIND`, `RESERVED_KIND`, `MISSING_TASK_EVENT`, `MISSING_EJECT_EVENT`, `EJECT_NOT_LAST`, `BAD_TIMESTAMP`, `TS_NOT_MONOTONIC`, `INVALID_PAYLOAD`, `INVALID_PARENT_STEP`, `MISSING_ARTIFACT`, `ARTIFACT_HASH_MISMATCH`, `OVERSIZED_INLINE_PAYLOAD`, `OUTCOME_MISMATCH`, `REDACTION_SUMMARY_MISMATCH`, `LEAKED_SECRET_IN_META`, `LEAKED_SECRET_IN_LINER`.
 
 ---
 

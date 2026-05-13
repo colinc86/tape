@@ -8,11 +8,14 @@
 //!   - [`Engine::with_default_rules`] — engine seeded with all defaults-on built-ins.
 //!   - [`Engine::redact_value`] — walks a JSON Value, mutates strings, returns records.
 //!   - [`Engine::redact_text`] — operates on a plain string (for meta/liner).
-//!   - [`scan_for_secrets`] — defense-in-depth: returns matches WITHOUT mutating.
+//!   - [`Engine::scan`] — defense-in-depth scan over the engine's own rules.
+//!   - [`scan_for_secrets`] — defense-in-depth scan over ALL built-in rules.
 //!   - [`config::TapeRcConfig`] — loader for `.taperc`.
 
 pub mod config;
 pub mod rules;
+
+pub use config::engine_with_taperc;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -185,6 +188,27 @@ impl Engine {
             }
             _ => {}
         }
+    }
+
+    /// Defense-in-depth scan: returns the rule_ids in this engine's configured
+    /// rule set that would match in `text`, without mutating. Symmetric with
+    /// `redact_*`: only the rules that *could have redacted* get to enforce.
+    ///
+    /// Used by the eject pipeline to verify that meta.yaml, liner-notes.md,
+    /// and spilled artifacts don't carry secrets the engine would have caught.
+    /// Rules the user did NOT opt into are NOT enforced here — see issue #23.
+    pub fn scan(&self, text: &str) -> Vec<String> {
+        let mut hits = Vec::new();
+        for rule in &self.rules {
+            if rule
+                .regex
+                .find_iter(text)
+                .any(|m| rule.validator.is_none_or(|v| v(m.as_str())))
+            {
+                hits.push(rule.id.clone());
+            }
+        }
+        hits
     }
 
     /// Redact a plain text document (e.g. liner-notes.md, meta.yaml). Returns
