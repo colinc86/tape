@@ -70,6 +70,18 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     // 4. Append eject event. The payload is a small, agent-built constant
     // (`{"outcome": ...}`) with no user-derived strings, so it bypasses the
     // redaction pass above without risk.
+    //
+    // Defensive backstop: if the snapshot already ends with an `Eject` track,
+    // drop it before appending the new one. SPEC §5.4 mandates a single eject
+    // as the final track; any input shape that arrives here with a trailing
+    // eject (notably `tape.fork {from_step: source.tracks.len()}`, which
+    // preserves the source's terminator, or future replay paths / a
+    // recorder-socket post that includes a stray eject) would otherwise yield
+    // a tape that fails `EJECT_NOT_LAST` verify. The eject pipeline is the
+    // single durable choke point — normalize here. (Issue #26.)
+    if matches!(snap.tracks.last().map(|t| t.kind), Some(Kind::Eject)) {
+        snap.tracks.pop();
+    }
     let now = chrono::Utc::now();
     let ejected_at = format_ts(now);
     let next_step = (snap.tracks.len() as u64) + 1;

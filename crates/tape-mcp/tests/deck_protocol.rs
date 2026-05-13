@@ -328,3 +328,109 @@ fn record_annotate_eject_round_trip() {
         report.errors().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
+
+/// Regression for issue #26: forking at the source's terminal step inherits
+/// the source's trailing `eject` track. Ejecting that forked handle must
+/// produce a tape with exactly one eject (the new one) and verify clean —
+/// not stack a second eject on top of the inherited terminator.
+#[test]
+fn fork_at_last_step_then_eject_produces_single_eject() {
+    use tape_format::tracks::Kind;
+
+    let source = fixture_path("minimal-success.tape");
+    let source_str = source.to_str().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("forked.tape");
+
+    let deck = tape_mcp::Deck::new();
+
+    // Phase 1: load — learn the handle and the source's track count.
+    let load_req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "tape.load", "arguments": {"path": source_str}}
+    })
+    .to_string()
+        + "\n";
+    let mut buf = Vec::<u8>::new();
+    tape_mcp::server::run(load_req.as_bytes(), &mut buf, deck.clone()).unwrap();
+    let resp: Value =
+        serde_json::from_str(String::from_utf8(buf).unwrap().lines().next().unwrap()).unwrap();
+    let handle = resp["result"]["structuredContent"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source_track_count = resp["result"]["structuredContent"]["summary"]["track_count"]
+        .as_u64()
+        .expect("track_count present");
+    assert!(
+        source_track_count >= 1,
+        "fixture must have at least one track"
+    );
+
+    // Phase 2: fork at the source's last step (preserves the terminal eject)
+    // then eject. The eject pipeline must drop the inherited eject before
+    // appending its own.
+    let calls = [
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "tape.fork", "arguments": {"handle": handle, "from_step": source_track_count}}}),
+    ];
+    let mut input2 = String::new();
+    for c in &calls {
+        input2.push_str(&c.to_string());
+        input2.push('\n');
+    }
+    let mut buf2 = Vec::<u8>::new();
+    tape_mcp::server::run(input2.as_bytes(), &mut buf2, deck.clone()).unwrap();
+    let resp2: Value =
+        serde_json::from_str(String::from_utf8(buf2).unwrap().lines().next().unwrap()).unwrap();
+    let new_handle = resp2["result"]["structuredContent"]["new_handle"]
+        .as_str()
+        .expect("fork returned new_handle")
+        .to_owned();
+
+    // Phase 3: eject the forked handle.
+    let eject_req = json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "tape.eject", "arguments": {
+            "handle": new_handle, "out": out_path.to_str().unwrap()
+        }}
+    })
+    .to_string()
+        + "\n";
+    let mut buf3 = Vec::<u8>::new();
+    tape_mcp::server::run(eject_req.as_bytes(), &mut buf3, deck).unwrap();
+    let resp3: Value =
+        serde_json::from_str(String::from_utf8(buf3).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(
+        resp3["result"]["isError"].as_bool().unwrap_or(false),
+        false,
+        "eject of fork-at-last-step must succeed; got {resp3}"
+    );
+
+    // Verify the produced tape — no EJECT_NOT_LAST, exactly one eject track,
+    // and it's the final line.
+    assert!(out_path.exists(), "tape file written");
+    let raw = tape_format::reader::RawTape::open(&out_path).unwrap();
+    let report = tape_format::verify::verify(&raw);
+    assert!(
+        report.is_valid(),
+        "ejected tape should verify; errors: {:?}",
+        report.errors().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+    let tracks_jsonl = raw.tracks_jsonl.expect("tracks.jsonl present");
+    let kinds: Vec<Kind> = tracks_jsonl
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| tape_format::tracks::Track::from_line(l).unwrap().kind)
+        .collect();
+    let eject_count = kinds.iter().filter(|k| **k == Kind::Eject).count();
+    assert_eq!(
+        eject_count, 1,
+        "expected exactly one eject, found {eject_count}"
+    );
+    assert_eq!(
+        kinds.last(),
+        Some(&Kind::Eject),
+        "the final track must be an eject"
+    );
+}
