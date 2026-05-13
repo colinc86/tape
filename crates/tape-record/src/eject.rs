@@ -31,6 +31,12 @@ pub struct EjectOptions {
     pub out_path: std::path::PathBuf,
     /// Redaction engine. `None` disables redaction (for testing only).
     pub redact_engine: Option<Engine>,
+    /// Pre-existing artifacts to carry through into the new tape. The deck's
+    /// `tool_eject` populates this from a loaded tape's `RawTape.artifacts`
+    /// so that re-ejecting (or forking + ejecting) doesn't drop the spilled
+    /// bytes that the loaded tracks already reference via `{"ref": ...}`
+    /// stubs. (Issue #41.) Live recordings leave this empty.
+    pub inherited_artifacts: BTreeMap<String, Vec<u8>>,
 }
 
 /// Final-shape result of an eject.
@@ -65,6 +71,22 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     let mut artifacts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for t in &mut snap.tracks {
         spill_oversize_in_value(&mut t.payload, &mut t.refs, &mut artifacts);
+    }
+
+    // 3a. Carry inherited artifacts (from the source of a re-ejected /
+    // forked tape) into the output. Track payloads can contain pre-existing
+    // `{"ref": ...}` stubs that point at these bytes; without this step the
+    // resulting `artifacts/` directory would be empty and the tape would
+    // fail `tape verify` with MISSING_ARTIFACT. (Issue #41.)
+    //
+    // Content-addressed semantics: if a hash already exists locally (just
+    // spilled), the inherited copy is redundant and we keep the local one.
+    // Same-hash bytes are identical by definition, so the choice is moot,
+    // but `or_insert_with` makes the precedence explicit.
+    for (path, bytes) in &opts.inherited_artifacts {
+        artifacts
+            .entry(path.clone())
+            .or_insert_with(|| bytes.clone());
     }
 
     // 4. Append eject event. The payload is a small, agent-built constant

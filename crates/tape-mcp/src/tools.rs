@@ -356,6 +356,50 @@ fn tool_tracks(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     Ok(json!({"tracks": out}))
 }
 
+/// Walk a JSON value and replace every `{"ref": "sha:<hex>"}` stub with the
+/// corresponding artifact's bytes (decoded as UTF-8 with `from_utf8_lossy`).
+///
+/// Recurses into objects and arrays; leaves scalars and non-stub objects
+/// alone. A ref pointing at a missing artifact (corrupt tape) is left as
+/// the stub — the caller can still see what was *supposed* to be there.
+/// (Issue #44.)
+fn resolve_artifact_refs(
+    value: &mut Value,
+    artifacts: &std::collections::HashMap<String, Vec<u8>>,
+) {
+    match value {
+        Value::Object(map) => {
+            // Detect a ref stub: 1-element object with key "ref" mapping to
+            // "sha:<hex>". Anything else is a regular object we recurse into.
+            if map.len() == 1 {
+                if let Some(Value::String(s)) = map.get("ref") {
+                    if let Some(hex) = s.strip_prefix("sha:") {
+                        let path = tape_format::artifact::artifact_path(hex);
+                        if let Some(bytes) = artifacts.get(&path) {
+                            *value = Value::String(
+                                String::from_utf8_lossy(bytes).into_owned(),
+                            );
+                            return;
+                        }
+                        // Artifact missing — leave the stub for the caller
+                        // to notice rather than panicking.
+                        return;
+                    }
+                }
+            }
+            for v in map.values_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                resolve_artifact_refs(v, artifacts);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let step = args.get("step").and_then(Value::as_u64);
@@ -383,13 +427,21 @@ fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         if !include {
             continue;
         }
-        // Resolve any artifact refs to full bytes if present.
-        let track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        // Resolve any `{"ref": "sha:<hex>"}` stubs against the loaded
+        // tape's artifacts so callers see the actual content. Without
+        // this, every spilled payload comes back as an opaque hash and
+        // the agent has no way to inspect what was recorded. (Issue #44.)
+        let mut track_value = serde_json::to_value(t).unwrap_or(Value::Null);
+        resolve_artifact_refs(&mut track_value, &loaded.raw.artifacts);
         let serialized = track_value.to_string();
         if total_bytes + serialized.len() > CAP {
             return Err(ToolErr {
                 code: "OUT_OF_RANGE",
-                message: format!("response exceeds 200 KB cap; narrow the range"),
+                message: format!(
+                    "step {} alone is {} bytes after resolving artifact refs; narrow the range",
+                    t.step,
+                    serialized.len()
+                ),
             });
         }
         total_bytes += serialized.len();
@@ -700,7 +752,17 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     );
     // Skip the auto-injected step 1 (task) and replay the rest, preserving
     // each event's original ts. (Issue #20.)
+    //
+    // Also drop any trailing/embedded `eject` events from the source tape —
+    // the eject pipeline appends its own at the end, and SPEC §5.4 says
+    // there's exactly one. Without this filter, re-ejecting a tape produces
+    // two terminators and fails verify with EJECT_NOT_LAST. The pipeline-
+    // level backstop landing in #26's PR handles the same case for forked
+    // handles; this deck-level skip handles tool_eject specifically.
     for t in loaded.tracks.iter().skip(1) {
+        if t.kind == Kind::Eject {
+            continue;
+        }
         let ts = chrono::DateTime::parse_from_rfc3339(&t.ts)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now());
@@ -717,6 +779,18 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         code: "TAPERC_INVALID",
         message: format!("failed to load .taperc: {e}"),
     })?;
+    // Issue #41: carry the loaded tape's spilled artifacts into the new
+    // tape. Track payloads can already contain `{"ref": "sha:<hex>"}` stubs
+    // from the source tape's spillover; without these bytes, the re-ejected
+    // tape would fail `tape verify` with MISSING_ARTIFACT. Recordings (where
+    // `raw` is an empty stub from `tape.record`) contribute no entries here.
+    let inherited_artifacts: std::collections::BTreeMap<String, Vec<u8>> = loaded
+        .raw
+        .artifacts
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {
@@ -726,6 +800,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             stub_liner_notes: true,
             out_path: out.clone().into(),
             redact_engine: Some(redact_engine),
+            inherited_artifacts,
         },
     )
     .map_err(|e| ToolErr {
@@ -960,6 +1035,9 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
             stub_liner_notes: true,
             out_path: out_path.clone(),
             redact_engine: Some(redact_engine),
+            // tape.snapshot replays a transcript; no source tape, no
+            // inherited artifacts.
+            inherited_artifacts: std::collections::BTreeMap::new(),
         },
     )
     .map_err(|e| ToolErr {
