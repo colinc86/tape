@@ -150,7 +150,12 @@ pub fn definitions() -> Vec<ToolDef> {
                 "required": ["handle", "out"],
                 "properties": {
                     "handle": {"type": "string"},
-                    "out": {"type": "string"}
+                    "out": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["success", "failure", "abandoned", "unknown"],
+                        "description": "Optional outcome to record in meta.outcome and the eject event. Defaults to `unknown` when omitted — matching `tape.snapshot`."
+                    }
                 }
             }),
         },
@@ -177,6 +182,21 @@ fn handle_arg(args: &Value, key: &str) -> Result<String, ToolErr> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| ToolErr::params(format!("missing or non-string `{key}`")))
+}
+
+/// Parse a user-supplied `outcome` string into `Outcome`. Mirrors the
+/// lowercase serde representation. Returns a params-class `ToolErr` for any
+/// value outside the documented enum. (Issue #30.)
+fn parse_outcome(s: &str) -> Result<tape_format::meta::Outcome, ToolErr> {
+    match s {
+        "success" => Ok(tape_format::meta::Outcome::Success),
+        "failure" => Ok(tape_format::meta::Outcome::Failure),
+        "abandoned" => Ok(tape_format::meta::Outcome::Abandoned),
+        "unknown" => Ok(tape_format::meta::Outcome::Unknown),
+        other => Err(ToolErr::params(format!(
+            "`outcome` must be one of \"success\", \"failure\", \"abandoned\", \"unknown\"; got {other:?}"
+        ))),
+    }
 }
 
 fn build_summary(loaded: &Loaded) -> Value {
@@ -634,6 +654,17 @@ fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let out = handle_arg(args, "out")?;
+    // Issue #30: accept an optional `outcome` arg. Default to `Unknown` when
+    // absent (matches `tape.snapshot` — honest answer when nobody told us).
+    let outcome = match args.get("outcome") {
+        None | Some(Value::Null) => tape_format::meta::Outcome::Unknown,
+        Some(Value::String(s)) => parse_outcome(s)?,
+        Some(other) => {
+            return Err(ToolErr::params(format!(
+                "`outcome` must be a string, got {other}"
+            )));
+        }
+    };
 
     let mut state = deck.state.lock().unwrap();
     let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?.clone();
@@ -695,7 +726,7 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         &tape_record::eject::EjectOptions {
             task: extract_task(&loaded),
             recorder_agent: format!("tape-mcp/{}", env!("CARGO_PKG_VERSION")),
-            outcome: tape_format::meta::Outcome::Success,
+            outcome,
             stub_liner_notes: true,
             out_path: out.clone().into(),
             redact_engine: Some(redact_engine),
