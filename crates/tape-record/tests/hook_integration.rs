@@ -763,6 +763,74 @@ async fn multiedit_existing_file_before_after_differ_and_diff_is_unified() {
     rig.handle.shutdown().await;
 }
 
+/// Issue #83: `NotebookEdit` was missing from both the PreToolUse and
+/// PostToolUse dispatch lists in hook.rs. PreToolUse fell through to the
+/// `return` on line 73 (no before-hash buffered), and PostToolUse fell
+/// through to `None` (no file_write event posted at all). After the fix
+/// both branches accept NotebookEdit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notebook_edit_pre_and_post_dispatch_produce_event_with_before_hash() {
+    let work = tempfile::tempdir().unwrap();
+    let nb_path = work.path().join("foo.ipynb");
+    std::fs::write(&nb_path, "{\"cells\": []}\n").unwrap();
+    let path_s = nb_path.to_str().unwrap().to_string();
+
+    let rig = hook_rig().await;
+
+    // PreToolUse: should buffer the pre-edit hash.
+    let pre = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_use_id": "tu_notebook_pre",
+        "tool_name": "NotebookEdit",
+        "tool_input": {"file_path": path_s, "new_source": "x"},
+        "tool_response": {}
+    });
+    let out = drive_hook(&rig.sock, &rig.before_dir, &pre);
+    assert!(out.status.success(), "NotebookEdit PreToolUse should run");
+
+    // Mutate the file so the PostToolUse "after" content differs.
+    std::fs::write(&nb_path, "{\"cells\": [\"new\"]}\n").unwrap();
+
+    // PostToolUse: should dispatch to file_write_event and emit an event
+    // whose before_hash is the pre-edit hash, not null.
+    let post = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_use_id": "tu_notebook_pre",
+        "tool_name": "NotebookEdit",
+        "tool_input": {"file_path": path_s, "new_source": "x"},
+        "tool_response": {"file_content": "{\"cells\": [\"new\"]}\n"}
+    });
+    let out = drive_hook(&rig.sock, &rig.before_dir, &post);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("no buffered before_hash"),
+        "NotebookEdit before-hash should NOT fall back to null; got stderr:\n{stderr}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let snap = rig.session.snapshot();
+    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    assert_eq!(
+        writes.len(),
+        1,
+        "expected one file_write event from NotebookEdit PostToolUse; got {}",
+        writes.len()
+    );
+    let payload = &writes[0].payload;
+    assert_eq!(payload["path"], path_s);
+    let before = payload["before_hash"].as_str().unwrap_or("");
+    assert!(
+        before.starts_with("blake3:"),
+        "before_hash should be a real blake3 hex (not null); got {before:?}"
+    );
+    assert!(
+        payload["after_hash"].as_str().unwrap().starts_with("blake3:"),
+        "after_hash still populated"
+    );
+
+    rig.handle.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn posttooluse_only_falls_back_to_null_before_hash_with_stderr_warning() {
     let work = tempfile::tempdir().unwrap();
