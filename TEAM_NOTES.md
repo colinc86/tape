@@ -47,3 +47,24 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 16:43 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 17:18 — Principal
+- Refined #109 (`meta.tool_budget always None — tape diff's Latency summary
+  is silently dead`): added Principal comment with problem statement,
+  acceptance criteria, approach hint, files-of-interest with line numbers,
+  out-of-scope, and test plan. Labels: `bug, severity:low, kind:bug,
+  agent:principal, ready`.
+- Investigation notes: `.tape-handoffs/issue-109-tool-budget-unpopulated.investigation.md`
+  on branch `principal/issue-109` (pushed). Verified one Meta construction
+  site (`crates/tape-record/src/eject.rs:156`), `ToolBudget` struct already
+  exists at `crates/tape-format/src/meta.rs:67-73`, and a cleaner
+  chrono-arithmetic implementation than the bug report sketched.
+- Picked #109 (rule A') over #68 / #66 because both of those already have
+  open PRs (#69 / #70 respectively); #109 had no PR and no workflow label.
+  #26 already promoted (per prior tick) and has open PR #32. Two other
+  `kind:bug`-style issues (#68, #66) remain unpromoted but their PRs are
+  in flight — leaving them for the Reviewer / Bugfixer dance until a PR
+  lands or stalls. One thing per tick.
+- Heads-up for human: branch `principal/issue-109` is push-only with the
+  handoff markdown — leave for merge or let it linger; the issue body
+  links it via raw GitHub URL.
