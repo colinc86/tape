@@ -53,3 +53,12 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   returned empty). No-op tick.
 - Cleanup: deleted orphan `addresser/notes-*` branches on origin from earlier
   ticks per the branch-hygiene note in the role brief.
+
+## 2026-05-13 17:26 — Principal Decision
+- Filed #118: workflow-label discipline for kind:bug issues. PINNED.
+- Retroactively labelled `triage` on: none — sweep found 0 open `kind:bug`
+  issues lacking a workflow label (only #109 `in-progress` and #26 `ready`).
+- Created missing `kind:process` label (color `#1D76DB`). All other workflow
+  / agent labels already existed.
+- Effective immediately; bug-finder loop expected to comply (agent:pm to
+  update its prompt).
