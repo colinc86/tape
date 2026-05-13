@@ -62,12 +62,27 @@ impl Session {
     /// Append an event to the session. `step` is assigned automatically.
     /// Returns the assigned step number.
     pub fn append(&self, kind: Kind, payload: Value) -> u64 {
+        self.append_at(kind, payload, chrono::Utc::now())
+    }
+
+    /// Append an event at an explicit timestamp.
+    ///
+    /// Used by replay paths (`tape.snapshot`, future transcript-import) where
+    /// the event's real timestamp is already known from the source data and
+    /// overriding it with `Utc::now()` would collapse the entire conversation
+    /// into a single instant. (Issue #5.)
+    pub fn append_at(
+        &self,
+        kind: Kind,
+        payload: Value,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> u64 {
         let mut g = self.inner.lock().expect("session mutex poisoned");
         let step = (g.tracks.len() as u64) + 1;
         g.tracks.push(Track {
             step,
             kind,
-            ts: format_ts(chrono::Utc::now()),
+            ts: format_ts(ts),
             payload,
             parent_step: None,
             refs: vec![],
@@ -142,5 +157,24 @@ mod tests {
         assert_eq!(a, 2);
         assert_eq!(b, 3);
         assert_eq!(s.track_count(), 3);
+    }
+
+    /// `append_at` must preserve the caller-supplied timestamp verbatim — not
+    /// substitute "now". Regression test for issue #5.
+    #[test]
+    fn append_at_preserves_caller_supplied_ts() {
+        let start = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let later = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:06Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let s = Session::start_at("hi", "test/0.0.1", start);
+        s.append_at(Kind::ModelCall, serde_json::json!({"vendor": "x", "model": "x"}), later);
+
+        let snap = s.snapshot();
+        assert_eq!(snap.tracks[0].ts, format_ts(start));
+        assert_eq!(snap.tracks[1].ts, format_ts(later));
     }
 }
