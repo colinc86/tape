@@ -50,7 +50,8 @@ pub fn settings_overlay(inputs: &OverlayInputs) -> Value {
     json!({
         "hooks": {
             "PreToolUse": [
-                { "matcher": "Bash",            "hooks": [cmd("shell_pre")] }
+                { "matcher": "Bash",            "hooks": [cmd("shell_pre")] },
+                { "matcher": "Write|Edit|MultiEdit", "hooks": [cmd("file_write_pre")] }
             ],
             "PostToolUse": [
                 { "matcher": "Bash",            "hooks": [cmd("shell")] },
@@ -142,7 +143,36 @@ mod tests {
         let post = &s["hooks"]["PostToolUse"];
         assert!(pre.is_array());
         assert!(post.is_array());
+        assert_eq!(
+            pre.as_array().unwrap().len(),
+            2,
+            "Bash (shell_pre) + Write|Edit|MultiEdit (file_write_pre)"
+        );
         assert_eq!(post.as_array().unwrap().len(), 3, "Bash + Read + Write|Edit|MultiEdit");
+    }
+
+    #[test]
+    fn settings_overlay_pre_hook_matches_write_edit_multiedit() {
+        let s = settings_overlay(&inputs());
+        let pre = s["hooks"]["PreToolUse"].as_array().unwrap().clone();
+        let has_bash_pre = pre.iter().any(|h| h["matcher"] == "Bash");
+        let has_write_pre = pre.iter().any(|h| h["matcher"] == "Write|Edit|MultiEdit");
+        assert!(has_bash_pre, "expected a PreToolUse hook matching Bash");
+        assert!(
+            has_write_pre,
+            "expected a PreToolUse hook matching Write|Edit|MultiEdit"
+        );
+        // Confirm the file-write PreToolUse hook carries the `file_write_pre`
+        // discriminator so tape-hook routes it correctly.
+        let write_pre = pre
+            .iter()
+            .find(|h| h["matcher"] == "Write|Edit|MultiEdit")
+            .unwrap();
+        let cmd = write_pre["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            cmd.contains("TAPE_HOOK_KIND=file_write_pre"),
+            "expected file_write_pre kind in command, got: {cmd}"
+        );
     }
 
     #[test]
