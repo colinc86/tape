@@ -214,15 +214,17 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
         Ok(t) => t,
         Err(e) => {
             // SPEC §5.4 / §11: `fork` and `splice` are RESERVED future kinds;
-            // v0 readers MUST reject them with a dedicated code rather than the
-            // generic `INVALID_TRACKS_JSON`. Serde's closed-enum failure looks
-            // identical to any other unknown kind, so when the initial parse
-            // fails we do a line-by-line salvage pass that peeks at `kind` as
-            // a raw string and emits `RESERVED_KIND` for matching lines.
-            // If at least one reserved kind is found we suppress
-            // `INVALID_TRACKS_JSON`, because the reserved-kind diagnostic is
-            // the specific, actionable cause of the parse failure.
-            let mut found_reserved = false;
+            // every other non-closed-set kind is simply unknown. Serde's
+            // closed-enum failure looks identical for both cases, so when the
+            // initial parse fails we do a line-by-line salvage pass that peeks
+            // at `kind` as a raw string and emits the specific diagnostic:
+            //   - `RESERVED_KIND`  for `fork` / `splice`  (SPEC §10.6).
+            //   - `UNKNOWN_KIND`   for any other non-closed-set kind.
+            // If at least one specific diagnostic fires we suppress the
+            // generic `INVALID_TRACKS_JSON` fallback, because the specific
+            // code is the actionable cause of the parse failure. (Issue #91
+            // completes #60 / PR #65 by wiring the `UNKNOWN_KIND` branch.)
+            let mut found_specific = false;
             for (i, line) in tracks_jsonl.split('\n').enumerate() {
                 if line.is_empty() || line.bytes().all(|b| b.is_ascii_whitespace()) {
                     continue;
@@ -233,21 +235,29 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
                 let Some(kind) = v.get("kind").and_then(|k| k.as_str()) else {
                     continue;
                 };
+                let step = v
+                    .get("step")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or_else(|| format!("at line {}", i + 1), |n| n.to_string());
                 if kind == "fork" || kind == "splice" {
-                    found_reserved = true;
-                    let step = v
-                        .get("step")
-                        .and_then(serde_json::Value::as_u64)
-                        .map_or_else(|| format!("at line {}", i + 1), |n| n.to_string());
+                    found_specific = true;
                     report.push(Diagnostic::error(
                         DiagnosticCode::ReservedKind,
                         format!(
                             "step {step} has reserved kind `{kind}`; v0 readers MUST reject (SPEC §5.4)"
                         ),
                     ));
+                } else if !is_known_v0_kind(kind) {
+                    found_specific = true;
+                    report.push(Diagnostic::error(
+                        DiagnosticCode::UnknownKind,
+                        format!(
+                            "step {step} has unknown kind {kind:?}; not in SPEC §5.4 closed set"
+                        ),
+                    ));
                 }
             }
-            if !found_reserved {
+            if !found_specific {
                 report.push(Diagnostic::error(
                     DiagnosticCode::InvalidTracksJson,
                     format!("tracks.jsonl: {e}"),
@@ -497,6 +507,24 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
     full_secret_scan(liner_md, DiagnosticCode::LeakedSecretInLiner, &mut report);
 
     report
+}
+
+/// SPEC §5.4 closed-set kinds for tape/v0. Returns `true` for any kind that
+/// the [`tracks::Kind`] enum accepts. The salvage pass in [`verify`] uses
+/// this to distinguish a truly unknown kind (`UNKNOWN_KIND`) from a reserved
+/// future kind (`RESERVED_KIND`) or a malformed line (`INVALID_TRACKS_JSON`).
+fn is_known_v0_kind(s: &str) -> bool {
+    matches!(
+        s,
+        "task"
+            | "model_call"
+            | "mcp_call"
+            | "shell"
+            | "file_read"
+            | "file_write"
+            | "annotation"
+            | "eject"
+    )
 }
 
 /// Cheap ISO-8601 sniff: looks like `YYYY-MM-DDTHH:MM:SS(.fff)?(Z|+HH:MM|-HH:MM)`.
@@ -752,10 +780,11 @@ x
         assert!(!codes.contains(&"INVALID_TRACKS_JSON"));
     }
 
-    /// A non-reserved unknown kind must still surface as `INVALID_TRACKS_JSON`
-    /// — the salvage pass is reserved-kind-specific.
+    /// Issue #91: a non-reserved unknown kind MUST surface as `UNKNOWN_KIND`
+    /// (SPEC §10.6), not as the generic `INVALID_TRACKS_JSON` that the
+    /// closed-enum parse failure would otherwise yield.
     #[test]
-    fn unknown_kind_still_surfaces_as_invalid_tracks_json() {
+    fn unknown_kind_emits_unknown_kind_not_invalid_tracks_json() {
         let tracks = concat!(
             r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
             r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
@@ -764,7 +793,61 @@ x
         let raw = raw_with_tracks(tracks);
         let report = verify(&raw);
         let codes = error_codes(&report);
-        assert!(codes.contains(&"INVALID_TRACKS_JSON"), "got {codes:?}");
+        assert!(
+            codes.contains(&"UNKNOWN_KIND"),
+            "expected UNKNOWN_KIND, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"INVALID_TRACKS_JSON"),
+            "INVALID_TRACKS_JSON must be suppressed when an unknown kind is the cause; got {codes:?}"
+        );
         assert!(!codes.contains(&"RESERVED_KIND"), "got {codes:?}");
+        let msg = report
+            .errors()
+            .find(|d| d.code == DiagnosticCode::UnknownKind)
+            .map(|d| d.message.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("sneeze"), "message should name the kind: {msg}");
+        assert!(msg.contains("step 2"), "message should name the step: {msg}");
+    }
+
+    /// A line with both a reserved kind and a separate line with an unknown
+    /// kind must emit both diagnostics, and still suppress
+    /// `INVALID_TRACKS_JSON`.
+    #[test]
+    fn mixed_reserved_and_unknown_emit_both() {
+        let tracks = concat!(
+            r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+            r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
+            r#"{"step":3,"kind":"wobble","ts":"2026-05-06T10:00:10Z","payload":{}}"#, "\n",
+            r#"{"step":4,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        );
+        let raw = raw_with_tracks(tracks);
+        let report = verify(&raw);
+        let codes = error_codes(&report);
+        assert!(codes.contains(&"RESERVED_KIND"), "got {codes:?}");
+        assert!(codes.contains(&"UNKNOWN_KIND"), "got {codes:?}");
+        assert!(!codes.contains(&"INVALID_TRACKS_JSON"), "got {codes:?}");
+    }
+
+    /// Every kind in the SPEC §5.4 closed set must be recognized by
+    /// `is_known_v0_kind` — guards against drift if the enum is extended.
+    #[test]
+    fn is_known_v0_kind_covers_closed_set() {
+        for k in [
+            "task",
+            "model_call",
+            "mcp_call",
+            "shell",
+            "file_read",
+            "file_write",
+            "annotation",
+            "eject",
+        ] {
+            assert!(is_known_v0_kind(k), "{k} should be a known v0 kind");
+        }
+        for k in ["fork", "splice", "sneeze", "", "TASK"] {
+            assert!(!is_known_v0_kind(k), "{k:?} should not be a known v0 kind");
+        }
     }
 }

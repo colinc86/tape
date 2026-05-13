@@ -1,5 +1,5 @@
 {
   "expect_codes": [
-    "INVALID_TRACKS_JSON"
+    "UNKNOWN_KIND"
   ]
 }
