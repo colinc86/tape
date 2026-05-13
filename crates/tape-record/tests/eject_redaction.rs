@@ -356,3 +356,128 @@ fn eject_redacts_anthropic_key_in_response() {
     assert!(tracks.contains("<API_KEY:anthropic>"));
     assert!(!tracks.contains(leak));
 }
+
+/// Issue #77: `meta.label` is user-provided and was skipped by the meta
+/// redaction block. A label containing an email (or any default-enabled rule
+/// match) used to crash the defense-in-depth scan. After the fix it is
+/// redacted in-place like meta.task / recorder.user / recorder.agent.
+#[test]
+fn eject_redacts_email_in_meta_label() {
+    let session = Session::start("label leak", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": {"content": [{"type": "text", "text": "ok"}]}
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("label.tape");
+    eject(
+        &session,
+        &EjectOptions {
+            task: "label leak".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: Some("investigating-bug-for-alice@example.com".into()),
+        },
+    )
+    .expect("eject should succeed once the label is redacted before the scan");
+
+    let raw = RawTape::open(&out).unwrap();
+    let meta_yaml = raw.meta_yaml.expect("meta present");
+    assert!(
+        meta_yaml.contains("<EMAIL>"),
+        "expected <EMAIL> in meta.yaml; got: {meta_yaml}"
+    );
+    assert!(
+        !meta_yaml.contains("alice@example.com"),
+        "raw email leaked into meta.yaml: {meta_yaml}"
+    );
+}
+
+/// Negative case: a plain label that matches no rules survives unchanged.
+#[test]
+fn eject_preserves_plain_meta_label() {
+    let session = Session::start("plain label", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": {"content": [{"type": "text", "text": "ok"}]}
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("plain-label.tape");
+    eject(
+        &session,
+        &EjectOptions {
+            task: "plain label".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: Some("plain-text-label".into()),
+        },
+    )
+    .expect("eject should succeed for a non-matching label");
+
+    let raw = RawTape::open(&out).unwrap();
+    let meta_yaml = raw.meta_yaml.expect("meta present");
+    assert!(
+        meta_yaml.contains("plain-text-label"),
+        "label was unexpectedly altered; meta.yaml: {meta_yaml}"
+    );
+}
+
+/// `label: None` must remain a no-op — no panic, no diagnostic, no label key
+/// emitted in meta.yaml (the field is `skip_serializing_if = Option::is_none`).
+#[test]
+fn eject_handles_absent_meta_label() {
+    let session = Session::start("no label", "test/0.0.1");
+    session.append(
+        Kind::ModelCall,
+        json!({
+            "vendor": "anthropic",
+            "model": "claude-opus-4-7",
+            "request": {"messages": [{"role": "user", "content": "x"}]},
+            "response": {"content": [{"type": "text", "text": "ok"}]}
+        }),
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("no-label.tape");
+    eject(
+        &session,
+        &EjectOptions {
+            task: "no label".into(),
+            recorder_agent: "test/0.0.1".into(),
+            outcome: Outcome::Success,
+            stub_liner_notes: true,
+            out_path: out.clone(),
+            redact_engine: Some(Engine::with_default_rules()),
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
+        },
+    )
+    .expect("eject should succeed with no label");
+
+    let raw = RawTape::open(&out).unwrap();
+    let meta_yaml = raw.meta_yaml.expect("meta present");
+    assert!(
+        !meta_yaml.contains("label:"),
+        "meta.yaml should omit label when None; got: {meta_yaml}"
+    );
+}

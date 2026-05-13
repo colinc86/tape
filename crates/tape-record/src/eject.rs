@@ -188,6 +188,13 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         meta.recorder.agent = redacted_agent;
         meta_recs.extend(recs);
 
+        // label — optional, user-provided (#77).
+        if let Some(label) = meta.label.as_ref() {
+            let (redacted_label, recs) = engine.redact_text(label, 0, "$.meta.label");
+            meta.label = Some(redacted_label);
+            meta_recs.extend(recs);
+        }
+
         if !meta_recs.is_empty() {
             redactions.extend(meta_recs);
             let mut rules_applied: Vec<String> =
