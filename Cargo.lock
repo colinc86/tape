@@ -1549,6 +1549,7 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
+ "bitflags",
  "blake3",
  "bytes",
  "chrono",

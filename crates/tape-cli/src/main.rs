@@ -265,6 +265,9 @@ fn cmd_record(
         mcp_servers: vec![],
         tape_hook_bin: None,
         tape_mcp_wrap_bin: None,
+        // #106 step 1: explicit Claude Code adapter. Step 2 will wire
+        // a `--runtime` flag + auto-detection in front of this default.
+        runtime: tape_record::runtime::claude_code_adapter(),
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread()

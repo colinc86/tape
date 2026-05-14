@@ -10,7 +10,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-/// Inputs to overlay generation.
+pub use crate::runtime::McpServerSpec;
+
+/// Inputs to overlay generation. Internal to the Claude Code adapter;
+/// callers in the wider crate consume the vendor-neutral
+/// [`crate::runtime::RecorderContext`] and let the adapter translate.
 #[derive(Debug, Clone)]
 pub struct OverlayInputs {
     pub tape_hook_bin: PathBuf,
@@ -18,14 +22,6 @@ pub struct OverlayInputs {
     pub recorder_socket: PathBuf,
     /// MCP servers to wrap. Map server name → (cmd, args, env).
     pub mcp_servers: Vec<McpServerSpec>,
-}
-
-#[derive(Debug, Clone)]
-pub struct McpServerSpec {
-    pub name: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
 }
 
 /// Produces JSON for a Claude Code settings overlay (passed via the

@@ -24,7 +24,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 use tape_format::tracks::{Kind, Track};
 
-use crate::transcript::parser::{AssistantEntry, ParseReport, RawEntry, UserEntry};
+use super::parser::{AssistantEntry, ParseReport, RawEntry, UserEntry};
 
 #[derive(Debug, Default, Clone)]
 pub struct ConvertReport {
@@ -464,7 +464,7 @@ fn now_ts() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcript::parser::parse_jsonl;
+    use super::super::parser::parse_jsonl;
     use std::io::BufReader;
     use std::path::PathBuf;
 

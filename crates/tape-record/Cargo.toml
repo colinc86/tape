@@ -32,6 +32,7 @@ chrono.workspace = true
 uuid.workspace = true
 blake3.workspace = true
 similar.workspace = true
+bitflags.workspace = true
 tempfile.workspace = true
 tape-format.workspace = true
 tape-redact.workspace = true
