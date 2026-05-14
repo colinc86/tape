@@ -96,6 +96,36 @@ enum Cmd {
         #[arg(long)]
         no_color: bool,
     },
+    /// Manage the `meta.recap` field — a 1–2 sentence summary suitable
+    /// for pasting into Slack / Linear / Jira / PR descriptions.
+    ///
+    /// Phase-1 of issue #105: hand-written recaps only via `--set` /
+    /// `--clear` / `--list`. The LLM-driven `--auto` and template flags
+    /// are deferred to Phase 2 (blocked on the same judge-model wiring
+    /// `tape diff --judge` is waiting on).
+    Recap {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Set `meta.recap` to this text and append a `set` entry to
+        /// `meta.recaps[]`. ≤280 chars, no newline, non-empty. Mutually
+        /// exclusive with `--clear` and `--list`.
+        #[arg(long, conflicts_with_all = ["clear", "list"])]
+        set: Option<String>,
+        /// Clear `meta.recap` and append a `clear` entry to
+        /// `meta.recaps[]`. Mutually exclusive with `--set` and `--list`.
+        #[arg(long, conflicts_with_all = ["set", "list"])]
+        clear: bool,
+        /// Print `meta.recap` to stdout. Exit 4 if the cassette has no
+        /// recap set. Read-only — no output cassette is written.
+        /// Mutually exclusive with `--set` and `--clear`.
+        #[arg(long, conflicts_with_all = ["set", "clear"])]
+        list: bool,
+        /// Output path for `--set` / `--clear`. Default
+        /// `<basename>.recap.tape` next to the input. Refuses if equal
+        /// to the input path.
+        #[arg(short = 'o', long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Append an annotation to an existing tape, writing a new cassette.
     ///
     /// Phase-1 CLI counterpart to the deck's `tape.annotate` tool. See
@@ -209,6 +239,13 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Recap {
+            file,
+            set,
+            clear,
+            list,
+            out,
+        } => cmd_recap(&file, set, clear, list, out),
         Cmd::Annotate {
             file,
             note,
@@ -312,6 +349,177 @@ fn cmd_diff(
 /// passes `tape verify` with the same artifact and label inheritance the
 /// deck's `tool_eject` provides.
 #[allow(clippy::too_many_arguments)]
+/// Phase-1 of issue #105. Hand-managed `meta.recap` via three pairwise
+/// exclusive subflags. Unlike `cmd_annotate`, the write path does **not**
+/// go through the eject pipeline — we're editing only `meta.yaml`, so a
+/// straight zip-rewrite via `PendingTape::write_to` is the smaller
+/// surface (no `EjectOptions` field churn, no `tool_eject` deck
+/// inheritance changes, no risk of perturbing track payloads or
+/// artifacts on round-trip).
+fn cmd_recap(
+    file: &std::path::Path,
+    set: Option<String>,
+    clear: bool,
+    list: bool,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // 1. Verify exactly one mode flag is set. clap's `conflicts_with_all`
+    //    handles the pairwise-exclusion side; this is the
+    //    "at-least-one" half (clap can't model that cleanly when each
+    //    flag also has a default like `bool: false` / `Option: None`).
+    let mode_count = [set.is_some(), clear, list]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if mode_count == 0 {
+        eprintln!(
+            "tape recap: one of --set <text>, --clear, --list is required"
+        );
+        std::process::exit(2);
+    }
+
+    // 2. `--list` is read-only: open meta.yaml, print recap or exit 4.
+    //    Done before any output-path resolution.
+    if list {
+        let raw = open_input(file, "tape recap");
+        let meta = parse_meta(&raw, "tape recap");
+        match meta.recap.as_deref() {
+            Some(r) => {
+                println!("{r}");
+                return Ok(());
+            }
+            None => {
+                eprintln!("tape recap: no recap set on {}", file.display());
+                std::process::exit(4);
+            }
+        }
+    }
+
+    // 3. Mutating modes need an output path. Same shape as `cmd_annotate`.
+    let out_path = match out {
+        Some(p) => p,
+        None => {
+            let stem = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "tape".to_owned());
+            let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+            parent.join(format!("{stem}.recap.tape"))
+        }
+    };
+    if same_path(file, &out_path) {
+        eprintln!("tape recap: --out must differ from <file>");
+        std::process::exit(2);
+    }
+
+    // 4. Load the input cassette and parse meta.
+    let raw = open_input(file, "tape recap");
+    let mut meta = parse_meta(&raw, "tape recap");
+    let prior_recap = meta.recap.clone();
+
+    // 5. Apply the requested edit.
+    let kind: tape_format::meta::RecapKind = if let Some(text) = set.as_deref() {
+        if text.is_empty() {
+            eprintln!("tape recap: --set text must be non-empty");
+            std::process::exit(2);
+        }
+        if let Err(msg) = tape_format::meta::validate_recap_text(text) {
+            eprintln!("tape recap: --set rejected: {msg}");
+            std::process::exit(2);
+        }
+        meta.recap = Some(text.to_owned());
+        tape_format::meta::RecapKind::Set
+    } else {
+        // --clear
+        meta.recap = None;
+        tape_format::meta::RecapKind::Clear
+    };
+
+    let entry = tape_format::meta::RecapEntry {
+        applied_at: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+        kind,
+        prior_recap,
+        new_recap: meta.recap.clone(),
+    };
+    meta.recaps.push(entry);
+
+    // 6. Rewrite the zip. Everything but meta.yaml passes through
+    //    byte-identical so tracks, liner notes, artifacts, and the
+    //    existing redactions.json are preserved.
+    let new_meta_yaml = meta
+        .to_yaml()
+        .map_err(|e| anyhow::anyhow!("re-serialize meta.yaml: {e}"))?;
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml: new_meta_yaml,
+        liner_md: raw.liner_md.clone().unwrap_or_default(),
+        tracks_jsonl: raw.tracks_jsonl.clone().unwrap_or_default(),
+        redactions_json: raw.redactions_json.clone(),
+        artifacts: raw.artifacts.clone().into_iter().collect(),
+    };
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(&out_path)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    // 7. Post-write verify (exit 3 on regression; remove the corrupt
+    //    output so the caller doesn't have to clean up). Same posture
+    //    `cmd_annotate` takes.
+    let written = tape_format::reader::RawTape::open(&out_path)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let _ = std::fs::remove_file(&out_path);
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        eprintln!(
+            "tape recap: output failed tape verify ({}); removed {}",
+            codes.join(","),
+            out_path.display()
+        );
+        std::process::exit(3);
+    }
+
+    let action_label = if set.is_some() { "set" } else { "cleared" };
+    println!("ok: {action_label} recap on {}", out_path.display());
+    Ok(())
+}
+
+/// Wrap `RawTape::open` with a CLI-facing exit-2 on failure. Used by
+/// recap (and could be by future read-only commands) so error reporting
+/// is consistent.
+fn open_input(path: &std::path::Path, cmd: &str) -> tape_format::reader::RawTape {
+    match tape_format::reader::RawTape::open(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{cmd}: failed to open {}: {e}", path.display());
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Wrap `Meta::parse` with the same exit-2-on-failure CLI surface.
+fn parse_meta(raw: &tape_format::reader::RawTape, cmd: &str) -> tape_format::meta::Meta {
+    let meta_yaml = match raw.meta_yaml.as_deref() {
+        Some(m) => m,
+        None => {
+            eprintln!("{cmd}: input cassette is missing meta.yaml");
+            std::process::exit(2);
+        }
+    };
+    match tape_format::meta::Meta::parse(meta_yaml) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{cmd}: meta.yaml does not parse: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn cmd_annotate(
     file: &std::path::Path,
     note: &str,
