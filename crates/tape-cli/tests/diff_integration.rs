@@ -28,9 +28,18 @@ fn diff_text_output_has_summary() {
     assert!(out.status.success(), "tape diff failed: {:?}", out);
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("Task:"), "missing 'Task:' header:\n{text}");
-    assert!(text.contains("Outcome:"), "missing 'Outcome:' line:\n{text}");
-    assert!(text.contains("Tool budget:"), "missing 'Tool budget:' line:\n{text}");
-    assert!(text.contains("Final answers:"), "missing 'Final answers:':\n{text}");
+    assert!(
+        text.contains("Outcome:"),
+        "missing 'Outcome:' line:\n{text}"
+    );
+    assert!(
+        text.contains("Tool budget:"),
+        "missing 'Tool budget:' line:\n{text}"
+    );
+    assert!(
+        text.contains("Final answers:"),
+        "missing 'Final answers:':\n{text}"
+    );
 }
 
 #[test]

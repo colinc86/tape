@@ -103,7 +103,10 @@ fn clear_removes_recap_and_appends_audit_entry() {
         ])
         .output()
         .unwrap();
-    assert!(clear_out.status.success(), "recap --clear failed: {clear_out:?}");
+    assert!(
+        clear_out.status.success(),
+        "recap --clear failed: {clear_out:?}"
+    );
 
     let meta = read_meta(&after_clear);
     assert!(meta.recap.is_none(), "recap should be cleared");
@@ -163,13 +166,7 @@ fn mutually_exclusive_flags_exit_2() {
     let (_dir, input) = isolated_minimal();
 
     let out = Command::new(binary_path())
-        .args([
-            "recap",
-            input.to_str().unwrap(),
-            "--set",
-            "x",
-            "--clear",
-        ])
+        .args(["recap", input.to_str().unwrap(), "--set", "x", "--clear"])
         .output()
         .unwrap();
     // clap surfaces conflicts as exit 2 (the same "usage error" slot
@@ -287,7 +284,10 @@ fn boundary_280_chars_accepted() {
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "280-char recap should be accepted: {out:?}");
+    assert!(
+        out.status.success(),
+        "280-char recap should be accepted: {out:?}"
+    );
     let meta = read_meta(&output);
     assert_eq!(meta.recap.as_deref(), Some(exactly_max.as_str()));
 }

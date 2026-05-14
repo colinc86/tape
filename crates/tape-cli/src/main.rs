@@ -168,8 +168,7 @@ enum Cmd {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -284,11 +283,7 @@ fn cmd_record(
             .unwrap_or_else(|| "session".to_owned());
         std::path::PathBuf::from(format!("{stem}.tape"))
     });
-    let task_text = if task.is_empty() {
-        cmd.join(" ")
-    } else {
-        task
-    };
+    let task_text = if task.is_empty() { cmd.join(" ") } else { task };
 
     let opts = tape_record::run::RecordOptions {
         task: task_text,
@@ -321,12 +316,7 @@ fn cmd_record(
     Ok(())
 }
 
-fn cmd_diff(
-    a: &std::path::Path,
-    b: &std::path::Path,
-    all: bool,
-    format: &str,
-) -> Result<()> {
+fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -> Result<()> {
     let diff = tape_diff::compute(a, b)?;
     match format {
         "json" => {
@@ -339,16 +329,6 @@ fn cmd_diff(
     Ok(())
 }
 
-/// Phase-1 of issue #74. Loads `file`, runs the user's `--note` body through
-/// the redaction engine's defense-in-depth scan (the eject pipeline's
-/// `Pass 1` would redact rather than reject, so the pre-scan here is what
-/// gives leaks their explicit `ANNOT_LEAK` exit), assembles a fresh
-/// `Session` by replaying the loaded tracks via `append_track` (preserves
-/// `parent_step`/`refs`/`annotations` per #49), tacks on the new
-/// `annotation` event, and routes through `eject::eject` so the output
-/// passes `tape verify` with the same artifact and label inheritance the
-/// deck's `tool_eject` provides.
-#[allow(clippy::too_many_arguments)]
 /// Phase-1 of issue #105. Hand-managed `meta.recap` via three pairwise
 /// exclusive subflags. Unlike `cmd_annotate`, the write path does **not**
 /// go through the eject pipeline — we're editing only `meta.yaml`, so a
@@ -356,6 +336,15 @@ fn cmd_diff(
 /// surface (no `EjectOptions` field churn, no `tool_eject` deck
 /// inheritance changes, no risk of perturbing track payloads or
 /// artifacts on round-trip).
+///
+/// Defense-in-depth: `--set` does **not** route through the redaction
+/// engine (no model call, no §3.7 scan). The post-write `tape verify`
+/// at step 7 is the backstop — `LEAKED_SECRET_IN_META` (§10.5) fires on
+/// any secret-shaped recap text, exits 3, and removes the corrupt
+/// output. The recap field's narrow shape (≤280 chars, no newline) also
+/// makes the leak surface small. A future `--auto` flag will run the
+/// model-generated text through the redaction engine pre-write, the
+/// same way `cmd_annotate` does for `--note`.
 fn cmd_recap(
     file: &std::path::Path,
     set: Option<String>,
@@ -367,14 +356,9 @@ fn cmd_recap(
     //    handles the pairwise-exclusion side; this is the
     //    "at-least-one" half (clap can't model that cleanly when each
     //    flag also has a default like `bool: false` / `Option: None`).
-    let mode_count = [set.is_some(), clear, list]
-        .iter()
-        .filter(|b| **b)
-        .count();
+    let mode_count = [set.is_some(), clear, list].iter().filter(|b| **b).count();
     if mode_count == 0 {
-        eprintln!(
-            "tape recap: one of --set <text>, --clear, --list is required"
-        );
+        eprintln!("tape recap: one of --set <text>, --clear, --list is required");
         std::process::exit(2);
     }
 
@@ -383,29 +367,23 @@ fn cmd_recap(
     if list {
         let raw = open_input(file, "tape recap");
         let meta = parse_meta(&raw, "tape recap");
-        match meta.recap.as_deref() {
-            Some(r) => {
-                println!("{r}");
-                return Ok(());
-            }
-            None => {
-                eprintln!("tape recap: no recap set on {}", file.display());
-                std::process::exit(4);
-            }
+        if let Some(r) = meta.recap.as_deref() {
+            println!("{r}");
+            return Ok(());
         }
+        eprintln!("tape recap: no recap set on {}", file.display());
+        std::process::exit(4);
     }
 
     // 3. Mutating modes need an output path. Same shape as `cmd_annotate`.
-    let out_path = match out {
-        Some(p) => p,
-        None => {
-            let stem = file
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "tape".to_owned());
-            let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
-            parent.join(format!("{stem}.recap.tape"))
-        }
+    let out_path = if let Some(p) = out {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.recap.tape"))
     };
     if same_path(file, &out_path) {
         eprintln!("tape recap: --out must differ from <file>");
@@ -504,12 +482,9 @@ fn open_input(path: &std::path::Path, cmd: &str) -> tape_format::reader::RawTape
 
 /// Wrap `Meta::parse` with the same exit-2-on-failure CLI surface.
 fn parse_meta(raw: &tape_format::reader::RawTape, cmd: &str) -> tape_format::meta::Meta {
-    let meta_yaml = match raw.meta_yaml.as_deref() {
-        Some(m) => m,
-        None => {
-            eprintln!("{cmd}: input cassette is missing meta.yaml");
-            std::process::exit(2);
-        }
+    let Some(meta_yaml) = raw.meta_yaml.as_deref() else {
+        eprintln!("{cmd}: input cassette is missing meta.yaml");
+        std::process::exit(2);
     };
     match tape_format::meta::Meta::parse(meta_yaml) {
         Ok(m) => m,
@@ -520,6 +495,16 @@ fn parse_meta(raw: &tape_format::reader::RawTape, cmd: &str) -> tape_format::met
     }
 }
 
+/// Phase-1 of issue #74. Loads `file`, runs the user's `--note` body through
+/// the redaction engine's defense-in-depth scan (the eject pipeline's
+/// `Pass 1` would redact rather than reject, so the pre-scan here is what
+/// gives leaks their explicit `ANNOT_LEAK` exit), assembles a fresh
+/// `Session` by replaying the loaded tracks via `append_track` (preserves
+/// `parent_step`/`refs`/`annotations` per #49), tacks on the new
+/// `annotation` event, and routes through `eject::eject` so the output
+/// passes `tape verify` with the same artifact and label inheritance the
+/// deck's `tool_eject` provides.
+#[allow(clippy::too_many_arguments)]
 fn cmd_annotate(
     file: &std::path::Path,
     note: &str,
@@ -815,7 +800,12 @@ fn sanitize_label(s: &str) -> String {
         .collect()
 }
 
-fn load_tracks(path: &std::path::Path) -> Result<(tape_format::reader::RawTape, Vec<tape_format::tracks::Track>)> {
+fn load_tracks(
+    path: &std::path::Path,
+) -> Result<(
+    tape_format::reader::RawTape,
+    Vec<tape_format::tracks::Track>,
+)> {
     let raw = tape_format::reader::RawTape::open(path)?;
     let jsonl = raw
         .tracks_jsonl
@@ -843,7 +833,10 @@ fn cmd_play(
     if step.is_none() && range.is_none() && kind.is_none() {
         let meta_yaml = raw.meta_yaml.as_deref().unwrap_or("");
         let liner = raw.liner_md.as_deref().unwrap_or("");
-        print!("{}", tape_play::render_summary_view(meta_yaml, liner, &tracks));
+        print!(
+            "{}",
+            tape_play::render_summary_view(meta_yaml, liner, &tracks)
+        );
     } else {
         let filtered = tape_play::filter(&tracks, step, parsed_range, kind);
         let owned: Vec<tape_format::tracks::Track> = filtered.into_iter().cloned().collect();

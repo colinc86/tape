@@ -104,12 +104,18 @@ fn record_smoke_produces_valid_tape() {
         .output()
         .unwrap();
     let ls_text = String::from_utf8(ls.stdout).unwrap();
-    assert!(ls_text.contains("task"), "expected task in ls output:\n{ls_text}");
+    assert!(
+        ls_text.contains("task"),
+        "expected task in ls output:\n{ls_text}"
+    );
     assert!(
         ls_text.contains("model_call"),
         "expected model_call in ls output:\n{ls_text}"
     );
-    assert!(ls_text.contains("eject"), "expected eject in ls output:\n{ls_text}");
+    assert!(
+        ls_text.contains("eject"),
+        "expected eject in ls output:\n{ls_text}"
+    );
 
     rt.block_on(async {
         let _ = mock_shutdown.send(());
