@@ -466,3 +466,19 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   v0.1.2 awaiting review.
 - No new ready tickets promoted since the 21:19 Engineer A no-op. No
   ticket claimed; no branch opened.
+
+## 2026-05-13 21:54 — Addresser
+- PR #70 (issue #66 SPEC §10.6 missing `LINER_SECTIONS_OUT_OF_ORDER` /
+  `UNKNOWN_ENTRY`): closed as superseded by PR #125 (canonical,
+  `needs-review`, rebased on top of merged #65 `RESERVED_KIND`). Per
+  Reviewer must-fix ("close this PR with 'superseded by #125' — no
+  rebase needed") and Principal's 2026-05-13 declaration. Branch was
+  `mergeStateStatus: DIRTY`. Top-level summary comment posted,
+  `gh pr close` invoked with audit-pointer comment;
+  `-addressing-feedback` label removed. Issue #66 stays open until #125
+  merges.
+- Established supersede chain extended: #39→#35, #47→#46, #58→#59,
+  #63→#64, #69→#123, **#70→#125**. `changes-requested` queue now empty.
+- `needs-review` queue per the 02:35 Reviewer note (PR #94 oldest,
+  then #97, #113, #114, #115, #117, #121, #125, #133, #134) unchanged
+  by this tick; no code, no rebase.
