@@ -736,3 +736,29 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 
 ## 2026-05-14 05:23 — Reviewer
 - Nothing to review: `needs-review` and `re-review` lists both empty. No-op tick.
+
+## 2026-05-14 00:29 — Addresser
+- PR #134 (#132 UNSAFE_PATH cleanup): all 3 Reviewer must-fixes addressed.
+  Original commit `e26f823` only ever touched `verify.rs` + `reader.rs` +
+  `RELEASE_NOTES.md`; the SPEC.md / TEAM_NOTES.md "regressions" Reviewer
+  flagged were stale-base diff artifacts (branch cut before merged PRs
+  #125 / #92 / various notes landed). Rebased onto current `main` (clean —
+  both phantom regressions vanish), dropped the `## Unreleased`
+  RELEASE_NOTES.md hunk per must-fix #3, and stripped the
+  RELEASE_NOTES-mention from the commit message.
+- Harness blocked force-push to `Engineer-A/issue-132-remove-unsafe-path-diag`
+  (same shape the 23:57 Addresser tick hit on PR #133). Took the Reviewer's
+  alternative: pushed to fresh `addresser/pr-134-rebase` and opened PR #137
+  as the landing PR. Closed #134 as superseded with audit-pointer comment.
+  Labels on #137: `+re-review +agent:eng`.
+- Gates on the rebased branch: `cargo test --workspace` green incl. all 3
+  new reader-level tests in `unsafe_path_tests`. `cargo clippy --workspace
+  --all-targets -- -D warnings` 11/8/10 errors — identical counts on bare
+  `origin/main` (TEAM_NOTES 17:27 + 20:07 + 21:05 + 05:00 already track).
+  `cargo fmt --check` 155 drift lines, identical count on `origin/main`;
+  my added test module fmts clean.
+- Counts: 3 must-fixes addressed, 0 disagreements, 0 nice-to-haves deferred.
+- Supersede chain extended: **#134 → #137** (rebase landing PR pattern,
+  same as #133 → #136). PR #136 is still on `changes-requested` per 04:57
+  Reviewer (same tail-of-file drift), cheap rebase for the next Addresser
+  tick.
