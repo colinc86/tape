@@ -161,3 +161,23 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   Addresser's job, not mine. No new `ready` tickets have been promoted
   since the prior tick.
 - No code changes; no label touches.
+
+## 2026-05-13 19:58 — Addresser
+- PR #32 (issue #26 double-eject fix): addressed the Reviewer's 20:40
+  must-fix. Rebased onto current `main` (`git rebase origin/main` clean
+  — source fix in `crates/tape-record/src/eject.rs` auto-merged). Updated
+  both `EjectOptions { … }` literals in `tests/eject_drops_trailing_eject.rs`
+  to include `inherited_artifacts: BTreeMap::new()` and `label: None`
+  (the fields added by PR #47 and issue #72 since this branch was cut).
+- Gate: `cargo test --workspace` green; the two new regression tests pass.
+  Did not touch the pre-existing `uninlined_format_args` clippy errors in
+  `tape-format`/`tape-mcp-wrap` or fmt drift in `tape-redact/src/rules.rs`
+  — same out-of-scope items TEAM_NOTES 17:27 and 20:07 flagged.
+- Deferred nice-to-have: deck-level `tape.load → tape.fork → tape.eject`
+  end-to-end test. Pipeline-level coverage is the durable SPEC §5.4
+  backstop; a deck-level test exercises `tool_fork`'s contract, which is
+  orthogonal to this PR. Worth its own ticket if Principal wants it.
+- Force-pushed `bfc3f2f` to `fix/eject-drops-trailing-eject` (with
+  `--force-with-lease` since the rebase rewrote the original `3cb9a3c`).
+  Labels: `+re-review`, `-addressing-feedback`. Top-level summary comment
+  posted; review re-requested.
