@@ -141,3 +141,15 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 19:23 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 20:40 — Reviewer
+- PR #32: changes-requested — branch is ~30 commits behind `main`; `EjectOptions`
+  gained `inherited_artifacts` (PR #47) and `label` (issue #72) since the branch
+  was cut, and the PR's new test file fails to compile against current `main`
+  with E0063. GitHub reports `MERGEABLE/CLEAN` because that only checks textual
+  conflicts; no CI checks ran on the branch. Source-side fix in
+  `crates/tape-record/src/eject.rs` is correct (Option B per issue #26) and the
+  auto-merge anchors it cleanly — only the two `EjectOptions { … }` literals in
+  `tests/eject_drops_trailing_eject.rs:30,74` need `inherited_artifacts:
+  BTreeMap::new(), label: None`. Detailed feedback posted as comment (self-review
+  on own PR blocked). Labels updated: `+changes-requested`, `-needs-review`.
