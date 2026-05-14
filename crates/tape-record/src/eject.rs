@@ -176,6 +176,12 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         // filename and nothing else. Now lands in meta.yaml as well so
         // downstream tooling can group cassettes by label.
         label: opts.label.clone(),
+        // Issue #105: Recordings never populate `recap` directly — the
+        // field is owned by the post-hoc `tape recap` CLI which does its
+        // own zip rewrite. Default to None / empty here so fresh
+        // recordings round-trip without growing meta.yaml.
+        recap: None,
+        recaps: vec![],
     };
 
     // 9. Redact meta.yaml itself (defense-in-depth: the task string and

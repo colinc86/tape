@@ -29,6 +29,46 @@ pub struct Meta {
     /// by label without parsing `task`. SPEC §3.2. (Issue #72.)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub label: Option<String>,
+
+    /// One-or-two-sentence post-investigation summary suitable for pasting
+    /// into Slack / Linear / Jira / PR descriptions. Plain UTF-8, ≤280
+    /// chars, no newline. Set by `tape recap --set <text>`; cleared by
+    /// `tape recap --clear`. Distinct from `task` (pre-investigation
+    /// framing) and `liner-notes.md` (200–500 word write-up). (Issue #105.)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub recap: Option<String>,
+
+    /// Append-only audit trail of every `tape recap` invocation against
+    /// this cassette. Each `--set` / `--clear` adds one entry. Empty on
+    /// untouched cassettes — same skip-when-empty serde shape as
+    /// `models` / `tools`. (Issue #105.)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub recaps: Vec<RecapEntry>,
+}
+
+/// One row in the `meta.recaps` audit array. Records the wall-clock time
+/// of the operation, which side it modified (set vs clear), and the
+/// before/after recap text so a reader can reconstruct the recap timeline
+/// without re-running the operations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecapEntry {
+    pub applied_at: String,
+    pub kind: RecapKind,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prior_recap: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub new_recap: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecapKind {
+    /// `tape recap --set <text>`; `prior_recap` is the pre-existing value
+    /// (None on first set), `new_recap` is the value being written.
+    Set,
+    /// `tape recap --clear`; `prior_recap` is what existed,
+    /// `new_recap` is None.
+    Clear,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,5 +127,118 @@ impl Meta {
     /// Serialize to YAML.
     pub fn to_yaml(&self) -> crate::Result<String> {
         Ok(serde_yaml::to_string(self)?)
+    }
+}
+
+/// Maximum length for `meta.recap`. SPEC-adjacent constant kept here next
+/// to the field it bounds so callers (the CLI write path and `tape
+/// verify`) share one source of truth. (Issue #105.)
+pub const RECAP_MAX_LEN: usize = 280;
+
+/// Validate a candidate `meta.recap` value against the on-disk schema
+/// invariants: ≤[`RECAP_MAX_LEN`] chars, no newline characters. Returns
+/// a human-readable error message on violation. Used by both the
+/// `tape recap --set` CLI write path and the `tape verify` read path so
+/// any source of a recap (CLI today, deck tool tomorrow, hand-written
+/// cassettes from third-party tooling) is held to the same rule.
+pub fn validate_recap_text(s: &str) -> Result<(), String> {
+    let len = s.chars().count();
+    if len > RECAP_MAX_LEN {
+        return Err(format!("recap exceeds {RECAP_MAX_LEN} chars: got {len}"));
+    }
+    if s.contains('\n') || s.contains('\r') {
+        return Err("recap must not contain newline characters".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_meta() -> Meta {
+        Meta {
+            tape_version: "tape/v0".into(),
+            id: "01h8xy00-0000-7000-b8aa-000000000105".into(),
+            created_at: "2026-05-06T10:00:00Z".into(),
+            ejected_at: "2026-05-06T10:00:30Z".into(),
+            task: "test".into(),
+            recorder: Recorder {
+                agent: "test/0.0.1".into(),
+                user: None,
+            },
+            outcome: Outcome::Success,
+            models: vec![],
+            tools: vec![],
+            tool_budget: None,
+            redaction_summary: None,
+            label: None,
+            recap: None,
+            recaps: vec![],
+        }
+    }
+
+    #[test]
+    fn recap_field_absent_when_none_and_recaps_empty() {
+        let meta = fresh_meta();
+        let yaml = meta.to_yaml().unwrap();
+        assert!(
+            !yaml.contains("recap"),
+            "recap fields must be omitted when None/empty (forward-compat): {yaml}"
+        );
+    }
+
+    #[test]
+    fn recap_round_trips() {
+        let mut meta = fresh_meta();
+        meta.recap = Some("Found a race condition in process_refund().".into());
+        meta.recaps.push(RecapEntry {
+            applied_at: "2026-05-06T10:00:30Z".into(),
+            kind: RecapKind::Set,
+            prior_recap: None,
+            new_recap: meta.recap.clone(),
+        });
+        let yaml = meta.to_yaml().unwrap();
+        let parsed = Meta::parse(&yaml).unwrap();
+        assert_eq!(parsed.recap, meta.recap);
+        assert_eq!(parsed.recaps, meta.recaps);
+    }
+
+    #[test]
+    fn validate_recap_accepts_boundaries() {
+        assert!(validate_recap_text("").is_ok());
+        assert!(validate_recap_text(&"x".repeat(279)).is_ok());
+        assert!(validate_recap_text(&"x".repeat(280)).is_ok());
+    }
+
+    #[test]
+    fn validate_recap_rejects_overlong() {
+        let too_long = "x".repeat(281);
+        let err = validate_recap_text(&too_long).unwrap_err();
+        assert!(err.contains("280"), "{err}");
+        assert!(err.contains("281"), "{err}");
+    }
+
+    #[test]
+    fn validate_recap_rejects_newline() {
+        assert!(validate_recap_text("foo\nbar").is_err());
+        assert!(validate_recap_text("foo\rbar").is_err());
+    }
+
+    #[test]
+    fn recap_clear_audit_entry_round_trips() {
+        let mut meta = fresh_meta();
+        meta.recaps.push(RecapEntry {
+            applied_at: "2026-05-06T10:00:30Z".into(),
+            kind: RecapKind::Clear,
+            prior_recap: Some("old text".into()),
+            new_recap: None,
+        });
+        let yaml = meta.to_yaml().unwrap();
+        let parsed = Meta::parse(&yaml).unwrap();
+        assert_eq!(parsed.recaps.len(), 1);
+        assert_eq!(parsed.recaps[0].kind, RecapKind::Clear);
+        assert_eq!(parsed.recaps[0].prior_recap.as_deref(), Some("old text"));
+        assert!(parsed.recaps[0].new_recap.is_none());
     }
 }
