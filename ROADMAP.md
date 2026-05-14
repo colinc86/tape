@@ -19,99 +19,11 @@ The three-year arc:
 
 ---
 
-## Current Milestone — v0.1.2 (patch rollup)
+## Current Milestone — v0.2 (Claude Desktop + diff intelligence)
 
-**Status:** **Ready to ship.** All `priority:current` bugs closed. Cut is
-pending: cargo bump + RELEASE_NOTES prose + binary rebuild + tag +
-`gh release create`. Next PM tick can execute (the ready-to-ship state was
-blocked this tick because the prior ROADMAP snapshot was stale).
-
-A patch release that aggregates ~32 backward-compatible fixes merged since
-v0.1.1 (2026-05-07). No format or behavior changes; existing tapes and plugin
-installs continue to work unchanged.
-
-Headline fixes (full list will go in RELEASE_NOTES at release time):
-
-- **Spec compliance:** `tape verify` now enforces SPEC §3.1 (created_at ≤
-  ejected_at — #123), §5.4 (exactly one task / eject — #87), §5.5.1
-  (non-empty task prompt — #98), §9.1 (`deny_unknown_fields` on RedactConfig —
-  #40); UNKNOWN_KIND / RESERVED_KIND diagnostics wired (#65, #92); full
-  built-in rule set scanned in defense-in-depth (#38); meta.label redacted
-  before scan (#79); `meta.tool_budget` populated at eject time (#119);
-  `tape.fork` at last step + `tape.eject` no longer produces two eject events
-  (#32).
-- **Recorder / hook correctness:** `tape-hook` streams content hashing via
-  blake3::Hasher (#52); `PreToolUse` hook populates `file_write.before_hash`
-  (#57); `NotebookEdit` covered by overlay matchers and hook dispatch (#76,
-  #84); HTTP failure status recorded on proxied `model_call` (#24);
-  `parent_step` validated on writer + verifier (#19).
-- **Deck / MCP:** `tape.play` resolves `{ref: sha:...}` stubs (#48); `tool_eject`
-  carries inherited artifacts (#46) and preserves the loaded tape's
-  `meta.label` (#82); per-event timestamps preserved through `tool_eject` (#25)
-  and `tape.snapshot` (#16); JSON-RPC notifications suppressed per §4.1 (#59);
-  `tape.eject` accepts an optional `outcome` arg (#35); `tape-mcp-wrap`
-  PENDING_TTL raised to 1h (#55); `tape.seek` no longer panics on non-ASCII
-  (#12); `Session::append_at` preserves `parent_step`, refs, annotations (#54).
-- **Redaction:** `.taperc` loaded on every recording path (#29); engine rules
-  used for eject defense-in-depth (#27); `disable_default` rule names validated
-  (#50); oversize arrays and objects spilled to `artifacts/` (#4).
-- **Diff CLI:** `--judge` flag rejected with a clear error until narration
-  lands (#64); `last_answer` restricted to agent annotations (#22).
-- **Surfacing:** `--label` reaches `meta.yaml` (#73).
-
-### Release blockers
-
-- [ ] All `priority:current` bugs merged (see snapshot below).
-- [ ] Bump `[workspace.package].version` to `0.1.2` in `Cargo.toml`.
-- [ ] Update RELEASE_NOTES.md with a written changelog (prose, not commit
-  titles).
-- [ ] Rebuild macOS-Apple-Silicon binaries (`tape`, `tape-hook`,
-  `tape-mcp-wrap`) for the plugin marketplace.
-- [ ] Cut tag `v0.1.2` + `gh release create` with tarball + SHA256SUMS.
-
-### Open `priority:current` bugs
-
-This roadmap intentionally does **not** enumerate open bugs as a static list —
-it goes stale within hours (it already did, see #129). The source of truth is
-the live label set:
-
-```
-gh issue list --label priority:current --label kind:bug --state open
-```
-
-PM regenerates the snapshot below on every ROADMAP refine; engineers don't
-take it as a contract.
-
-Snapshot at **2026-05-14 05:35 UTC**:
-
-> `gh issue list --label priority:current --label kind:bug --state open`
-> returns **empty**.
-
-All v0.1.2 milestone bugs are closed:
-
-- #26 (severity:medium, fork+eject double terminator) — closed via merged
-  PR #32.
-- #66 (severity:low, SPEC §10.6 missing diagnostic codes) — closed via
-  merged PR #125.
-- #68 (severity:low, created_at) — closed via merged PR #123.
-- #109 (severity:low, tool_budget) — closed via merged PR #119.
-
-Remaining release work (next PM tick, option (b)):
-
-1. Bump `[workspace.package].version` to `0.1.2` in `Cargo.toml`.
-2. Prepend a v0.1.2 prose changelog to `RELEASE_NOTES.md` (matching the
-   v0.1.1 style: brief intro + grouped fixes + Known limitations carried
-   from v0.1.1).
-3. Update `README.md` status badge `v0.1.1` → `v0.1.2`.
-4. Commit `pm: release v0.1.2`, tag `v0.1.2`, push commit + tag, then
-   `gh release create v0.1.2 --notes-file <prose>`.
-5. (Outside PM scope) Rebuild macOS-Apple-Silicon binaries and upload the
-   tarball + SHA256SUMS to the GitHub release; bump the plugin marketplace
-   entry.
-
----
-
-## Next Milestone — v0.2 (Claude Desktop + diff intelligence)
+**Status:** Not started. Promoted from Next Milestone after v0.1.2 shipped
+2026-05-14. No tickets cut yet — Principal will decompose the five themes
+below into `priority:current` issues at the right time.
 
 The first **non-patch** release. Five themes — runtime expansion, narration,
 embedding-driven diff, interactive eject, and liner-notes-at-eject — all
@@ -142,6 +54,23 @@ Stretch items for v0.2:
 
 ---
 
+## Next Milestone — v0.3 (multi-runtime + ecosystem)
+
+Once the format is proven on two runtimes (Claude Code + Claude Desktop in
+v0.2), v0.3 broadens the surface and seeds the hosted-registry direction:
+
+- **Codex / OpenAI Agents adapter** and **OpenClaw adapter** — third and
+  fourth runtimes.
+- **Cursor adapter** (#106) — slipping forward if it lands as a v0.2 stretch.
+- **`tape splice`** — surgical edit of a single track's payload, preserving
+  structure.
+- **Hosted cassette registry** — the WebAssembly `tape verify` build (#107)
+  is the gating prerequisite for in-browser verification.
+- **Cross-platform binary distribution.** v0.1.x ships macOS-Apple-Silicon
+  only; v0.3 broadens to at least Linux x86_64 + macOS Intel.
+
+---
+
 ## Backlog
 
 Open enhancement issues grouped by theme. Principal converts these into
@@ -149,9 +78,9 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 
 **Priority labels** (per #118 / #126 — Principal's workflow-label discipline):
 
-- `priority:current` — must land in the current milestone (v0.1.2). Bug
-  fixes scoped to release.
-- `priority:next` — explicit v0.2 work (currently #74, #81, #106).
+- `priority:current` — must land in the current milestone (now v0.2).
+- `priority:next` — explicit v0.3 work, or v0.2 stretch (currently #74,
+  #81, #106).
 - `priority:later` — backlog. Live count via
   `gh issue list --label priority:later --state open` (27 as of 2026-05-13).
 
@@ -231,6 +160,17 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 ---
 
 ## Recently Shipped
+
+### v0.1.2 — 2026-05-14 — Spec-compliance rollup
+
+A pure bug-fix release closing the next thirty-plus findings after v0.1.1,
+dominated by SPEC enforcement gaps that `tape verify` was silently letting
+through (six previously-undetected MUSTs are now enforced). All four
+`priority:current` milestone bugs closed: #26 (fork+eject double terminator
+→ #32), #66 (SPEC §10.6 missing codes → #125), #68 (created_at ≤
+ejected_at → #123), #109 (`meta.tool_budget` populated → #119). No format
+or behavior changes; tapes and plugin installs from v0.1.x continue to
+work unchanged. Full notes in RELEASE_NOTES.md.
 
 ### v0.1.1 — 2026-05-07 — Audit cleanup
 

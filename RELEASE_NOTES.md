@@ -4,6 +4,177 @@ A cassette tape for agent runs. Record once, replay anywhere, share as a file.
 
 ---
 
+## v0.1.2 — 2026-05-14 — Spec-compliance rollup
+
+A pure bug-fix release. v0.1.1 closed twenty findings from a three-agent
+audit; v0.1.2 closes the next thirty-plus, dominated by SPEC enforcement
+gaps that `tape verify` was silently letting through. Every `priority:current`
+issue scoped to this milestone (#26, #66, #68, #109) is closed. **No format
+or behavior changes**: every tape produced by v0.1, v0.1.1, or v0.1.2
+remains a valid `tape/v0` cassette readable by any release in the line.
+
+The patch is heavy on diagnostics. Six previously-undetected MUSTs in
+SPEC are now enforced by verify, three diagnostic-code emissions that
+had been dead code are now wired correctly, and two had-the-symptom-but-
+not-the-cause bugs in the deck got their actual root cause fixed.
+
+### Spec enforcement (`tape verify`)
+
+The big block. `tape verify` is the load-bearing contract for the format —
+if it accepts a malformed tape, every consumer downstream inherits the
+problem. v0.1.2 closes six holes:
+
+- **§3.1 `created_at ≤ ejected_at`** is now checked, emitting
+  `BAD_TIMESTAMP` on violation (#68 → #123). Tapes with the meta fields
+  inverted previously passed clean.
+- **§5.4 "exactly one `task` / exactly one `eject`"** is enforced
+  (#86 → #87). Tapes with two task events or two eject events were
+  silently accepted.
+- **§5.5.1 "task prompt MUST be non-empty"** is enforced (#96 → #98).
+- **§9.1 `RedactConfig` typo rejection** — `serde(deny_unknown_fields)`
+  on `RedactConfig` so a misspelled key under `redact:` in `.taperc`
+  fails at config-load time instead of becoming a silent no-op
+  (#36 → #40).
+- **`UNKNOWN_KIND`** diagnostic is now emitted for non-reserved unknown
+  event kinds (#91 → #92). Previously these surfaced as the generic
+  `INVALID_TRACKS_JSON`. `RESERVED_KIND` for fork/splice events is
+  separately wired in #65.
+- **Defense-in-depth scan** now applies every default-enabled built-in
+  redaction rule (#33 → #38). Previously only the `sk-ant-` prefix was
+  caught, so tapes with leaked credentials in `meta.yaml` or
+  `liner-notes.md` could ship undetected. `meta.label` is now redacted
+  before this scan (#77 → #79) so a label containing an email or JWT
+  no longer hard-fails eject.
+
+### Recorder / hook correctness
+
+The capture surface had several "the data looks right but the events
+disagree" bugs that have all been buttoned up:
+
+- **`tape-hook` content hashes**: `PreToolUse` populates `file_write.
+  before_hash` (`#9 → #57`) so file_write events carry the pre-edit
+  hash; content hashing now streams via `blake3::Hasher` (#43 → #52)
+  instead of reading the entire file into memory, and the `blake3:0`
+  sentinel that earlier versions emitted when content was missing has
+  been removed (now the field is just absent, which is conformant).
+- **NotebookEdit coverage**: the settings overlay's PreToolUse /
+  PostToolUse matchers and the hook dispatch lists both include
+  NotebookEdit now (#75 → #76, #83 → #84). Live recordings of notebook
+  edits no longer get dropped on the floor.
+- **`parent_step` validation**: writer and verifier both enforce that
+  every event's `parent_step`, if present, points at a step that
+  actually exists (#3 → #19). A stale parent_step is no longer a silent
+  data-integrity problem.
+- **HTTP failure status** on proxied `model_call` events: the Anthropic
+  and OpenAI recorders now record the HTTP status code on failure
+  (#6 → #24) instead of just the body. Critical for debugging
+  rate-limited or auth-rejected calls in a replay.
+
+### Deck / MCP
+
+The MCP server (`tape mcp`) is the consumer interface — most of the
+deck bugs were "the tool succeeded but the result was missing
+something." All fixed:
+
+- **`tape.play` resolves `{ref: sha:...}` stubs** (#44 → #48) against
+  the loaded tape's `artifacts/` tree. Previously the agent got the
+  stub back and had to resolve it manually.
+- **`tool_eject` inherits artifacts and label** from the loaded tape
+  (#41 → #46, #80 → #82). Forking + re-ejecting no longer produces a
+  tape that fails `MISSING_ARTIFACT` on verify, and the new tape no
+  longer loses `meta.label`.
+- **`tape.fork` at last step + `tape.eject`** no longer produces a
+  tape with two eject events (#26 → #32). Pipeline now drops a trailing
+  eject before appending a fresh one.
+- **Per-event timestamps** are preserved through `tool_eject` (#20 →
+  #25) and `tape.snapshot` (#16). Replaying a tape now produces the
+  same timeline as the original.
+- **JSON-RPC notification suppression**: the MCP server no longer
+  responds to JSON-RPC notifications, per §4.1 (#56 → #59). Some MCP
+  clients hung waiting for an impossible response.
+- **`tape.eject` accepts an optional `outcome` arg** (#35) — defaults
+  to `unknown` if omitted (was previously hardcoded to `success`,
+  #30).
+- **`tape-mcp-wrap` PENDING_TTL** raised from 5 minutes to 1 hour
+  (#53 → #55). Long-running tool calls no longer get their responses
+  silently dropped.
+- **`tape.seek` no longer panics on non-ASCII payloads** (#7 → #12) —
+  the substring matcher's character-boundary handling is fixed.
+- **`Session::append_at`** preserves `parent_step`, `refs`, and
+  `annotations` on replay (#49 → #54). Snapshot replay no longer
+  silently strips event metadata.
+- **`meta.tool_budget`** is now populated at eject time (#109 → #119).
+  `tape diff`'s Latency summary was silently dead because every tape
+  was missing this field.
+
+### Redaction engine
+
+- **`.taperc` is loaded** on every recording path (#17 → #29). Earlier
+  versions implemented the config but never read it; custom rules,
+  `enable_optional`, and `disable_default` were all silent no-ops.
+- **Engine rules are used** for the eject defense-in-depth scan
+  (#23 → #27), so opt-in rules participate in the post-redaction
+  audit.
+- **`disable_default`** validates rule names (#45 → #50). Asymmetric
+  with `enable_optional` previously — typos in `disable_default`
+  silently succeeded, typos in `enable_optional` failed loud.
+- **Oversize arrays and objects** spill to `artifacts/` (#4), not
+  just strings. SPEC §5.6 measures encoded size; both writer and
+  reader now agree on the threshold.
+
+### Diff CLI
+
+- **`tape diff --judge`** rejects with a clear error until narration
+  lands (#62 → #64). The flag was previously accepted by clap and
+  silently ignored.
+- **`tape diff --last-answer`** restricts to agent annotations
+  (#15 → #22) instead of picking up parser-warning annotations as
+  "the canonical answer."
+
+### Surfacing
+
+- **`tape record --label`** reaches `meta.yaml` (#72 → #73). The
+  label was previously used only for the default filename and was
+  lost in the produced tape.
+
+### SPEC documentation
+
+- **§10.6 diagnostic-code list** now includes `LINER_SECTIONS_OUT_OF_ORDER`
+  and `UNKNOWN_ENTRY`, both of which `tape verify` already emits
+  (#66 → #125).
+
+### Cleanup
+
+- **`UNSAFE_PATH` diagnostic removed** as unreachable code
+  (#132 → #137). The verify implementation never had a path that
+  emitted it; the dead code is gone.
+
+### Workflow changes (no user impact)
+
+v0.1.2 also brought a project-internal workflow change worth noting
+for downstream maintainers: `priority:current` / `priority:next` /
+`priority:later` and `needs-review` / `in-review` / `changes-requested`
+/ `approved` / `blocked` are now the canonical issue and PR workflow
+labels (#118, #126). This affects how the project is run, not how
+the format or CLI behaves.
+
+### Known v0.1.2 limitations (still deferred to v0.2)
+
+Unchanged from v0.1.1:
+
+- No `/clear` boundary detection in `tape.snapshot`.
+- No streaming-cursor `tape.record_session(start) → tape.eject_session()`
+  two-step shape.
+- Bundled binaries are macOS Apple Silicon only.
+- `tape.diff` from the deck only works on tapes loaded from disk.
+- Interactive eject prompt (`[y/n/d/e]`) still unimplemented.
+- Diff alignment still LCS-based; Needleman-Wunsch + step-intent
+  embeddings is v0.2 work.
+- Judge-model narration not yet implemented (the `--judge` flag is
+  explicitly rejected with the v0.1.2 message).
+
+---
+
 ## v0.1.1 — 2026-05-07 — Audit cleanup
 
 A bug-fix-only release. Closes 20 findings from a three-agent audit covering
