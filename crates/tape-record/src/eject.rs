@@ -95,6 +95,15 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
     // 4. Append eject event. The payload is a small, agent-built constant
     // (`{"outcome": ...}`) with no user-derived strings, so it bypasses the
     // redaction pass above without risk.
+    //
+    // Defensive: if the snapshot already ends with an eject (e.g. a forked
+    // handle that included the source's terminator, or a session that took
+    // an eject through `Session::append` via the recorder socket), drop it
+    // so we write exactly one. (Issue #26.) SPEC §5.4 requires exactly one
+    // eject, as the final event.
+    if matches!(snap.tracks.last().map(|t| t.kind), Some(Kind::Eject)) {
+        snap.tracks.pop();
+    }
     let now = chrono::Utc::now();
     let wall_clock_ms = (now - snap.created_at).num_milliseconds().max(0) as u64;
     let ejected_at = format_ts(now);
