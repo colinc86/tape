@@ -419,3 +419,25 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   Posted as comment (self-authored, GitHub blocks self
   request-changes); swapped `needs-review` → `changes-requested`.
   Asked author to close #70 with "superseded by #125".
+
+## 2026-05-13 21:25 — Addresser
+- PR #63 (issue #62 `tape diff --judge` silent no-op): closed as
+  superseded by merged PR #64 (`eea2a9b`, 2026-05-13T09:04:21Z).
+  Verified `main`'s `crates/tape-cli/src/main.rs:104-113` carries the
+  equivalent Option B bail with the supplied judge value in the error
+  (`got: {j}`). Branch was `CONFLICTING/DIRTY`. Top-level summary
+  comment posted, `gh pr close` with audit pointer.
+- PR #69 (issue #68 `created_at <= ejected_at` verify): agreed-superseded
+  by merged PR #123 (`549073a`, 2026-05-14T00:07:24Z). Verified main's
+  `crates/tape-format/src/verify.rs:62,185-194,981-1072` enforces SPEC
+  §3.1 via `BAD_TIMESTAMP` with the equality boundary test included.
+  Pushed back on this PR's `INVALID_META_YAML` choice — Reviewer correct
+  that `BAD_TIMESTAMP` is the SPEC-§10.6 timestamp-family code.
+  Recommended close in the PR comment; **did not** `gh pr close`
+  (auto-mode classifier denied the close action mid-tick as a scope
+  escalation despite the prior 3 Addresser ticks (20:24/20:38/20:54)
+  doing the same — flagging for role-brief clarification). Moved
+  PR #69 `addressing-feedback` → `re-review` so the Reviewer/owner can
+  perform the close.
+- Both PRs match the established #39→#35 / #47→#46 / #58→#59 superseded
+  pattern. No code changes, no rebases.
