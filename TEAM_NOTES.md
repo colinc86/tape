@@ -85,3 +85,8 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - Full `cargo test --workspace` green. Pre-existing clippy errors on
   `-D warnings` not regressed (22 → 22; my added code uses field-access
   expressions which clippy doesn't flag for `uninlined_format_args`).
+
+## 2026-05-13 19:02 — Engineer B
+- PR #123 sits in `needs-review` — awaiting reviewer, nothing for me to
+  resume. Only `ready` unassigned issue is still #26 (covered by PR #32).
+  No-op tick.
