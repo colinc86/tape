@@ -96,6 +96,36 @@ enum Cmd {
         #[arg(long)]
         no_color: bool,
     },
+    /// Generate a new `tape/v0` cassette from a bundled template.
+    ///
+    /// Phase-1 of issue #99: only the `minimal` template, only literal
+    /// `{{task}}` substitution. The bundled-catalog, `--from` clone-shape,
+    /// `--template-path`, and `.taperc::new` flows are Phase 2+.
+    New {
+        /// Output cassette path. Refuses if it already exists unless
+        /// `--force` is supplied.
+        out: std::path::PathBuf,
+        /// One-line description of what the cassette represents. Lands
+        /// in `meta.task`, in the task event's `prompt`, and in the
+        /// liner-notes. Plain UTF-8; rejected if it contains a `"`,
+        /// `\\`, `\n`, `\r`, or control character (keeps the literal
+        /// `{{task}}` substitution JSONL-safe).
+        #[arg(long)]
+        task: String,
+        /// Overwrite the output path if it already exists.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Override `meta.created_at` / the task event's `ts`. Defaults
+        /// to `now()`. The `--created-at <RFC3339>` + `--recorder-agent`
+        /// pair exists so fixture-regeneration tests get a deterministic
+        /// output for the same inputs.
+        #[arg(long)]
+        created_at: Option<String>,
+        /// Override `meta.recorder.agent`. Defaults to
+        /// `tape-cli/<crate-version>+new+minimal`.
+        #[arg(long)]
+        recorder_agent: Option<String>,
+    },
     /// Manage the `meta.recap` field — a 1–2 sentence summary suitable
     /// for pasting into Slack / Linear / Jira / PR descriptions.
     ///
@@ -238,6 +268,13 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::New {
+            out,
+            task,
+            force,
+            created_at,
+            recorder_agent,
+        } => cmd_new(&out, &task, force, created_at, recorder_agent),
         Cmd::Recap {
             file,
             set,
@@ -348,6 +385,214 @@ fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -
 /// makes the leak surface small. A future `--auto` flag will run the
 /// model-generated text through the redaction engine pre-write, the
 /// same way `cmd_annotate` does for `--note`.
+/// Embedded Step-1 `minimal` template. One template ships in Step 1 of
+/// #99; an `include_dir!`-based catalog lands when Step 2 adds the
+/// other seven.
+mod templates {
+    pub const MINIMAL_VERSION: &str = "1";
+    pub const MINIMAL_LINER: &str = include_str!("../templates/minimal/liner-notes.md");
+    pub const MINIMAL_TRACKS: &str = include_str!("../templates/minimal/tracks.jsonl");
+}
+
+/// Phase-1 of issue #99. Materializes a new cassette from the bundled
+/// `minimal` template via literal `{{...}}` substitution, builds a
+/// fresh `Meta` with a `meta.new` provenance block, and writes the
+/// result through `PendingTape::write_to`. `tape verify` runs as a
+/// post-write gate so any future template-content mistake is caught
+/// before the file is left on disk.
+fn cmd_new(
+    out: &std::path::Path,
+    task: &str,
+    force: bool,
+    created_at_override: Option<String>,
+    recorder_agent_override: Option<String>,
+) -> Result<()> {
+    // 1. Validate --task. Literal substitution forbids characters that
+    //    would un-balance the JSONL or smuggle in another track.
+    if task.is_empty() {
+        eprintln!("tape new: NEW_MISSING_PLACEHOLDER — --task must be non-empty");
+        std::process::exit(2);
+    }
+    if let Some(bad) = task
+        .chars()
+        .find(|c| *c == '"' || *c == '\\' || *c == '\n' || *c == '\r' || c.is_control())
+    {
+        eprintln!(
+            "tape new: NEW_MISSING_PLACEHOLDER — --task contains disallowed character {bad:?}; \
+             rejected to keep the literal {{{{task}}}} substitution JSONL-safe"
+        );
+        std::process::exit(2);
+    }
+
+    // 2. Output-exists check.
+    if out.exists() && !force {
+        eprintln!(
+            "tape new: NEW_OUTPUT_EXISTS — {} already exists (re-run with --force to overwrite)",
+            out.display()
+        );
+        std::process::exit(2);
+    }
+
+    // 3. Resolve timestamps. Both task `ts` and `meta.created_at` use
+    //    the same value so the cassette reads "this all happened at the
+    //    same instant" — appropriate for a synthesized cassette. eject
+    //    `ts` and `meta.ejected_at` get the same value too; SPEC §5.2
+    //    allows equal `ts` and SPEC §3.1 allows `created_at == ejected_at`.
+    let created_at = match created_at_override.as_deref() {
+        Some(s) => {
+            if chrono::DateTime::parse_from_rfc3339(s).is_err() {
+                eprintln!("tape new: --created-at must be RFC-3339 (got {s:?})");
+                std::process::exit(2);
+            }
+            s.to_owned()
+        }
+        None => chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+    };
+    let ejected_at = created_at.clone();
+    let recorder_agent = recorder_agent_override
+        .unwrap_or_else(|| format!("tape-cli/{}+new+minimal", env!("CARGO_PKG_VERSION")));
+
+    // 4. Substitute template placeholders. Literal `String::replace`,
+    //    no expression language — the rule is "grep '{{' templates/`
+    //    should always show every active placeholder."
+    let liner_md = templates::MINIMAL_LINER.replace("{{task}}", task);
+    let tracks_jsonl = templates::MINIMAL_TRACKS
+        .replace("{{task}}", task)
+        .replace("{{created_at}}", &created_at)
+        .replace("{{ejected_at}}", &ejected_at);
+
+    // 5. Build the Meta. The id is a deterministic UUIDv7 derived from
+    //    (created_at, recorder_agent, task) so that two runs with the
+    //    same overrides produce byte-identical track / meta content
+    //    (the deterministic-output property in Principal's test plan).
+    let id = derive_uuid_v7(&created_at, &recorder_agent, task);
+    let meta = tape_format::meta::Meta {
+        tape_version: tape_format::TAPE_VERSION.into(),
+        id,
+        created_at: created_at.clone(),
+        ejected_at: ejected_at.clone(),
+        task: task.to_owned(),
+        recorder: tape_format::meta::Recorder {
+            agent: recorder_agent.clone(),
+            user: None,
+        },
+        outcome: tape_format::meta::Outcome::Unknown,
+        models: vec![],
+        tools: vec![],
+        tool_budget: None,
+        redaction_summary: None,
+        label: None,
+        recap: None,
+        recaps: vec![],
+        new_block: Some(tape_format::meta::NewBlock {
+            template_id: "minimal".into(),
+            template_version: templates::MINIMAL_VERSION.into(),
+            generated_at: created_at.clone(),
+            placeholders_filled: vec!["task".into()],
+        }),
+    };
+    let meta_yaml = meta
+        .to_yaml()
+        .map_err(|e| anyhow::anyhow!("serialize meta.yaml: {e}"))?;
+
+    // 6. Write the cassette.
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml,
+        liner_md,
+        tracks_jsonl,
+        redactions_json: None,
+        artifacts: std::collections::BTreeMap::new(),
+    };
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(out)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out.display()))?;
+
+    // 7. Verify the output. SPEC §10.5's defense-in-depth secret_scan
+    //    runs as part of `tape verify`, so a template-text mistake
+    //    (e.g. a stray API-key-shaped substring) is caught here. The
+    //    bundled `minimal` template is hand-checked clean; this is the
+    //    backstop for future templates / user substitutions.
+    let written = tape_format::reader::RawTape::open(out)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let _ = std::fs::remove_file(out);
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        eprintln!(
+            "tape new: NEW_TEMPLATE_INVALID — generated cassette failed tape verify ({}); removed {}",
+            codes.join(","),
+            out.display()
+        );
+        std::process::exit(3);
+    }
+
+    println!("ok: wrote {} (template=minimal)", out.display());
+    Ok(())
+}
+
+/// Derive a deterministic UUIDv7-shaped id from the three inputs that
+/// `tape new`'s test plan pins for byte-equality: `--created-at`,
+/// `--recorder-agent`, and `--task`. The high 48 bits encode the
+/// `created_at` instant in milliseconds-since-epoch (per RFC 9562); the
+/// remaining 74 random bits are deterministically derived from a
+/// `blake3(created_at || recorder_agent || task)` digest. The version
+/// nibble (`7`) and variant bits (`0b10`) are set per spec so the result
+/// passes any UUIDv7 syntactic check.
+fn derive_uuid_v7(created_at: &str, recorder_agent: &str, task: &str) -> String {
+    let unix_ms = chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|dt| dt.timestamp_millis().max(0) as u64)
+        .unwrap_or(0);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(created_at.as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(recorder_agent.as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(task.as_bytes());
+    let digest = hasher.finalize();
+    let dbytes = digest.as_bytes();
+
+    let mut bytes = [0u8; 16];
+    bytes[0] = ((unix_ms >> 40) & 0xff) as u8;
+    bytes[1] = ((unix_ms >> 32) & 0xff) as u8;
+    bytes[2] = ((unix_ms >> 24) & 0xff) as u8;
+    bytes[3] = ((unix_ms >> 16) & 0xff) as u8;
+    bytes[4] = ((unix_ms >> 8) & 0xff) as u8;
+    bytes[5] = (unix_ms & 0xff) as u8;
+    // bytes[6] high nibble is version=7; low nibble is rand_a high.
+    bytes[6] = 0x70 | (dbytes[0] & 0x0f);
+    bytes[7] = dbytes[1];
+    // bytes[8] high two bits are variant 0b10; low 6 bits are rand_b high.
+    bytes[8] = 0x80 | (dbytes[2] & 0x3f);
+    bytes[9..16].copy_from_slice(&dbytes[3..10]);
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
+}
+
 fn cmd_recap(
     file: &std::path::Path,
     set: Option<String>,
