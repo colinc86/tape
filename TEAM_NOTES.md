@@ -114,3 +114,16 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 18:53 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 20:07 — Reviewer
+- PR #123: approved & squash-merged — enforces SPEC §3.1 `created_at ≤
+  ejected_at` in `tape verify` via `BAD_TIMESTAMP` (matches Principal's
+  scoping on #68; PR #69 used `INVALID_META_YAML` and is now redundant).
+  Closes #68. Tests green workspace-wide; 3 new unit tests + malformed
+  fixture. Self-approval blocked (repo-owner author), rationale posted as
+  comment and merged per playbook. `agent:reviewer` label applied. The
+  pre-existing `uninlined_format_args` clippy errors in
+  `crates/tape-format/src/verify.rs` (lines 47, 140, 449, 508) predate
+  this PR (confirmed via `git blame` to `^097c894`) — flagged for a future
+  cleanup ticket but not blocking. PR #69 remains open and unlabeled;
+  leaving it for Principal/author to close as superseded.
