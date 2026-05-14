@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn parses_minimal_user_assistant() {
-        let s = include_str!("../../tests/fixtures/transcripts/minimal.jsonl");
+        let s = include_str!("../../../../tests/fixtures/transcripts/minimal.jsonl");
         let (entries, report) = parse_str(s);
         assert_eq!(report.total_lines, 2);
         assert_eq!(report.user_count, 1);
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn parses_tool_use_blocks() {
-        let s = include_str!("../../tests/fixtures/transcripts/with_bash.jsonl");
+        let s = include_str!("../../../../tests/fixtures/transcripts/with_bash.jsonl");
         let (entries, _report) = parse_str(s);
         let assistant = entries.iter().find_map(|e| match e {
             RawEntry::Assistant(a) => Some(a),
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn unknown_type_is_skipped_with_count() {
-        let s = include_str!("../../tests/fixtures/transcripts/unknown_type.jsonl");
+        let s = include_str!("../../../../tests/fixtures/transcripts/unknown_type.jsonl");
         let (entries, report) = parse_str(s);
         assert_eq!(report.user_count, 1);
         assert_eq!(report.assistant_count, 1);
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn user_content_can_be_array() {
-        let s = include_str!("../../tests/fixtures/transcripts/with_bash.jsonl");
+        let s = include_str!("../../../../tests/fixtures/transcripts/with_bash.jsonl");
         let (entries, _) = parse_str(s);
         let tool_result_user = entries
             .iter()

@@ -59,6 +59,9 @@ http = "1"
 # Diff
 similar = "2"
 
+# Bitflags (RuntimeCapabilities)
+bitflags = "2"
+
 # Internal — workspace crates can refer to each other via path
 tape-format = { path = "crates/tape-format", version = "0.1.0" }
 tape-record = { path = "crates/tape-record", version = "0.1.0" }

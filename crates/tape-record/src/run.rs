@@ -1,20 +1,30 @@
 //! Top-level `tape record` orchestration: spawn proxy(ies), spawn child,
 //! await exit, run eject.
+//!
+//! Runtime-specific surfaces (settings overlay, transcript ingestion, hook
+//! installation, MCP-wrap injection) go through the
+//! [`runtime::RuntimeAdapter`](crate::runtime::RuntimeAdapter) trait. Step 1
+//! of #106 has exactly one bundled adapter (`claude-code`); the trait dispatch
+//! looks like overkill today, on purpose — it's the surface the Cursor /
+//! Continue / Codex adapters plug into in Steps 2-5.
 
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::Arc;
 
 use tape_format::meta::Outcome;
 use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::eject::{eject, EjectOptions, EjectResult};
-use crate::overlay::{write_overlay_files, McpServerSpec, OverlayInputs};
 use crate::proxy::common::{spawn as spawn_proxy, ProxyConfig};
+use crate::runtime::{
+    claude_code_adapter, McpServerSpec, RecorderContext, RuntimeAdapter, RuntimeEnv,
+};
 use crate::session::Session;
 use crate::socket;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RecordOptions {
     pub task: String,
     pub recorder_agent: String,
@@ -32,6 +42,55 @@ pub struct RecordOptions {
     /// Path to the `tape-mcp-wrap` binary.
     /// Defaults to looking up next to the current exe.
     pub tape_mcp_wrap_bin: Option<PathBuf>,
+    /// Runtime adapter used to wire this recording. Defaults to the
+    /// Claude Code adapter (`claude-code`), which preserves v0.1
+    /// behavior bit-for-bit; Step 2+ adds the `--runtime` CLI flag and
+    /// auto-detection so this field can be set without the caller naming
+    /// the adapter directly.
+    pub runtime: Arc<dyn RuntimeAdapter>,
+}
+
+impl std::fmt::Debug for RecordOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordOptions")
+            .field("task", &self.task)
+            .field("recorder_agent", &self.recorder_agent)
+            .field("out_path", &self.out_path)
+            .field("upstream_anthropic", &self.upstream_anthropic)
+            .field("upstream_openai", &self.upstream_openai)
+            .field("label", &self.label)
+            .field("command", &self.command)
+            .field("env", &self.env)
+            .field("mcp_servers", &self.mcp_servers)
+            .field("tape_hook_bin", &self.tape_hook_bin)
+            .field("tape_mcp_wrap_bin", &self.tape_mcp_wrap_bin)
+            .field("runtime", &self.runtime.id())
+            .finish()
+    }
+}
+
+impl RecordOptions {
+    /// Convenience constructor matching the v0.1 call-site that fills in
+    /// the `runtime` field with the Claude Code adapter. Existing callers
+    /// that build the struct via literal initialization can keep doing so
+    /// — this is just the minimum-typing path for new callers and tests.
+    #[must_use]
+    pub fn new(task: String, recorder_agent: String, command: Vec<String>) -> Self {
+        Self {
+            task,
+            recorder_agent,
+            out_path: PathBuf::from("session.tape"),
+            upstream_anthropic: "https://api.anthropic.com".to_string(),
+            upstream_openai: "https://api.openai.com".to_string(),
+            label: None,
+            command,
+            env: Vec::new(),
+            mcp_servers: Vec::new(),
+            tape_hook_bin: None,
+            tape_mcp_wrap_bin: None,
+            runtime: claude_code_adapter(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -51,7 +110,9 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
 
     // Per-run temp dir. Dropping `temp_dir` removes the dir and everything
     // in it — overlay files, socket file (if it survives socket shutdown),
-    // etc. This is the cleanup invariant the brief is strict about.
+    // etc. This is the cleanup invariant the brief is strict about; the
+    // RuntimeAdapter's `cleanup` runs BEFORE this dir is dropped, so the
+    // two cleanup paths are sequential and non-racing.
     let temp_dir = tempfile::Builder::new()
         .prefix("tape-")
         .tempdir()?;
@@ -78,16 +139,24 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
         .clone()
         .unwrap_or_else(|| exe_dir.join("tape-mcp-wrap"));
 
-    // Write overlay files. Even with no mcp_servers, the settings overlay
-    // wires Bash/Read/Write hooks — that's the v0-distinguishing feature.
-    let overlay_inputs = OverlayInputs {
+    // Prepare the overlay via the runtime adapter. The adapter is the
+    // single source of truth for which env vars the child sees and which
+    // overlay files exist on disk.
+    let ctx = RecorderContext {
         tape_hook_bin,
         tape_mcp_wrap_bin,
         recorder_socket: recorder_socket_path.clone(),
         mcp_servers: opts.mcp_servers.clone(),
+        overlay_dir: temp_dir.path().to_path_buf(),
     };
-    let (settings_path, mcp_path) =
-        write_overlay_files(temp_dir.path(), &overlay_inputs)?;
+    let mut runtime_env = RuntimeEnv::default();
+    let overlay_handle = opts
+        .runtime
+        .prepare_overlay(&mut runtime_env, &ctx)
+        .map_err(|e| anyhow::anyhow!("runtime overlay failed: {e}"))?;
+    opts.runtime
+        .install_hooks(&ctx)
+        .map_err(|e| anyhow::anyhow!("runtime install_hooks failed: {e}"))?;
 
     // Anthropic proxy.
     let mut anthropic_cfg = ProxyConfig::anthropic();
@@ -102,13 +171,13 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     let openai_url = openai_proxy.base_url();
 
     info!(
+        runtime = %opts.runtime.id(),
         %anthropic_url,
         anthropic_upstream = %opts.upstream_anthropic,
         %openai_url,
         openai_upstream = %opts.upstream_openai,
         socket = %recorder_socket_path.display(),
-        settings = %settings_path.display(),
-        mcp = %mcp_path.display(),
+        overlay_paths = ?runtime_env.overlay_paths,
         "tape recording: proxies + recorder socket + overlay ready"
     );
 
@@ -118,9 +187,10 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     cmd.env("ANTHROPIC_BASE_URL", &anthropic_url);
     cmd.env("OPENAI_BASE_URL", &openai_url);
     cmd.env("TAPE_RECORDER_SOCKET", &recorder_socket_path);
-    cmd.env("TAPE_OVERLAY_SETTINGS", &settings_path);
-    cmd.env("TAPE_OVERLAY_MCP_CONFIG", &mcp_path);
     cmd.env("TAPE_BEFORE_DIR", &before_dir);
+    for (k, v) in &runtime_env.vars {
+        cmd.env(k, v);
+    }
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }
@@ -135,6 +205,13 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
             anthropic_proxy.shutdown().await;
             openai_proxy.shutdown().await;
             socket_handle.shutdown().await;
+            // Best-effort adapter cleanup before propagating. The
+            // adapter contract guarantees `cleanup` is idempotent and
+            // does not panic; we swallow its return so the original IO
+            // error surfaces to the caller.
+            if let Err(ce) = opts.runtime.cleanup(overlay_handle) {
+                warn!(error = %ce, "runtime cleanup after spawn failure");
+            }
             return Err(e.into());
         }
     };
@@ -143,6 +220,9 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     anthropic_proxy.shutdown().await;
     openai_proxy.shutdown().await;
     socket_handle.shutdown().await;
+    if let Err(e) = opts.runtime.cleanup(overlay_handle) {
+        warn!(error = %e, "runtime cleanup");
+    }
 
     let outcome = if child_status.success() {
         Outcome::Success
