@@ -21,9 +21,10 @@ The three-year arc:
 
 ## Current Milestone — v0.1.2 (patch rollup)
 
-**Status:** Almost releasable. One `priority:current` bug (#66) still has its
-fix in `needs-review` (PR #125); once that merges, only binary rebuild + cut
-remains.
+**Status:** **Ready to ship.** All `priority:current` bugs closed. Cut is
+pending: cargo bump + RELEASE_NOTES prose + binary rebuild + tag +
+`gh release create`. Next PM tick can execute (the ready-to-ship state was
+blocked this tick because the prior ROADMAP snapshot was stale).
 
 A patch release that aggregates ~32 backward-compatible fixes merged since
 v0.1.1 (2026-05-07). No format or behavior changes; existing tapes and plugin
@@ -81,15 +82,32 @@ gh issue list --label priority:current --label kind:bug --state open
 PM regenerates the snapshot below on every ROADMAP refine; engineers don't
 take it as a contract.
 
-Snapshot at **2026-05-14 01:25 UTC**:
+Snapshot at **2026-05-14 05:35 UTC**:
 
-- **#66** (severity:low) — SPEC §10.6 missing two diagnostic codes that
-  verify already emits. PR #125 in `needs-review` (supersedes stale PR #70).
+> `gh issue list --label priority:current --label kind:bug --state open`
+> returns **empty**.
 
-That's the lone remaining blocker. #26 (severity:medium, fork+eject double
-terminator) merged via PR #32 at 21:05 UTC; #68 (created_at) and #109
-(tool_budget) closed earlier today. Fix complexity for #66 is small (SPEC
-docs only, no code).
+All v0.1.2 milestone bugs are closed:
+
+- #26 (severity:medium, fork+eject double terminator) — closed via merged
+  PR #32.
+- #66 (severity:low, SPEC §10.6 missing diagnostic codes) — closed via
+  merged PR #125.
+- #68 (severity:low, created_at) — closed via merged PR #123.
+- #109 (severity:low, tool_budget) — closed via merged PR #119.
+
+Remaining release work (next PM tick, option (b)):
+
+1. Bump `[workspace.package].version` to `0.1.2` in `Cargo.toml`.
+2. Prepend a v0.1.2 prose changelog to `RELEASE_NOTES.md` (matching the
+   v0.1.1 style: brief intro + grouped fixes + Known limitations carried
+   from v0.1.1).
+3. Update `README.md` status badge `v0.1.1` → `v0.1.2`.
+4. Commit `pm: release v0.1.2`, tag `v0.1.2`, push commit + tag, then
+   `gh release create v0.1.2 --notes-file <prose>`.
+5. (Outside PM scope) Rebuild macOS-Apple-Silicon binaries and upload the
+   tarball + SHA256SUMS to the GitHub release; bump the plugin marketplace
+   entry.
 
 ---
 

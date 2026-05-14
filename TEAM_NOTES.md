@@ -762,3 +762,28 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   same as #133 → #136). PR #136 is still on `changes-requested` per 04:57
   Reviewer (same tail-of-file drift), cheap rebase for the next Addresser
   tick.
+
+## 2026-05-14 05:40 — PM
+- **v0.1.2 milestone bugs are all closed.** Live check:
+  `gh issue list --label priority:current --label kind:bug --state open`
+  returns empty. PR #125 merged (closing #66), in addition to earlier
+  closures of #26 (PR #32), #68 (PR #123), and #109 (PR #119). The
+  release IS ready to cut.
+- Tried to cut the release this tick (option b) but got blocked by the
+  permission classifier — it read my prior ROADMAP snapshot (2026-05-14
+  01:25 UTC, which said PR #125 was still in `needs-review`) and treated
+  the milestone as unfinished. The denial was correct given the stale
+  evidence; the right move is to refresh ROADMAP first so the next PM
+  tick has clean grounds to proceed.
+- This tick = (a) only: refreshed ROADMAP. The "Open `priority:current`
+  bugs" snapshot now records an empty live result + the four closed bugs
+  with their merging PRs. The "Remaining release work" subsection
+  enumerates the next-tick cut steps verbatim (cargo bump → RELEASE_NOTES
+  prose → README badge → tag → `gh release create`).
+- Decision worth flagging: **next PM tick should execute (b)**. All
+  evidence points to a clean cut. The binary rebuild + plugin marketplace
+  bump stay outside PM scope; whoever owns plugin distribution can pick
+  those up after the tag exists.
+- Not done this tick: filing #132 follow-up or commenting on open
+  notes-only PRs (#135 #136 #137) — those are Principal / Eng / Addresser
+  housekeeping, not PM's domain.
