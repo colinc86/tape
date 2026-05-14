@@ -47,18 +47,21 @@ considered in scope.
 3. **Embedding-based diff alignment.** Replace the v0.1 LCS aligner
    with Needleman-Wunsch on step-intent embeddings (see `tape-diff`
    skill). Better diffs for non-trivial reruns.
-   *Status:* Not started. No issue filed. Depends on the embedding
-   provider integration that #145 also needs.
+   *Status:* Not started. No issue filed. Will share the model-client
+   infrastructure from the merged `tape-judge` crate (#148).
 4. **Judge-model narration.** Re-enable the `--judge` flag (#62/#64
    stub). Narrates the substantive diffs as short paragraphs.
-   *Status:* Foundational work scoped — **#145 (judge-model client +
-   config + defense-in-depth scanner)** is `ready` for Engineering.
-   The narration UX itself is a follow-on after #145.
+   *Status:* Foundational `tape-judge` crate (client + config +
+   defense-in-depth scanner) **merged via PR #148** (closing #145).
+   The user-visible piece — **#149 `tape diff --judge` wiring** —
+   is `ready` for Engineering. If #149 ships, that's the first
+   headline theme on main with user-visible behavior, which would
+   trigger the v0.2.0 cut criteria.
 5. **Liner-notes-at-eject.** Configurable model + token budget;
    replaces the stub liner notes that ship today when no model is
    available.
    *Status:* Not started. No issue filed. Will share the model-client
-   infrastructure from #145.
+   infrastructure from the merged `tape-judge` crate (#148).
 
 ### Phase-1 feature drops (shipped to `main`, awaiting v0.2.0 cut)
 
@@ -77,6 +80,13 @@ By strict semver they require a minor bump; they're being staged on
 - **`RuntimeAdapter` trait + `ClaudeCodeAdapter`** (#106 → merged PR
   #143). Step 1 of the Claude Desktop adapter; the second-runtime
   concrete impl is the v0.2.0 gating piece.
+- **`tape stats <file>`** (#31 → merged PR #147). Step-1
+  single-cassette analytics. Library-wide stats (the `<dir>` form)
+  would be a future Step-2 follow-on.
+- **`tape-judge` crate** (#145 → merged PR #148). Shared judge-model
+  client + config + defense-in-depth scanner. Foundational — no
+  user-facing surface yet; #149 will expose it through `tape diff
+  --judge`.
 
 ### Cut criteria for v0.2.0
 
@@ -190,10 +200,11 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
   during-record counterpart to `tape view --follow`).
 - **#101** — `tape replay`: timeline-driven step-through (the missing verb
   behind "Record once, replay anywhere").
-- **#31** — `tape stats`: read-only analytics over a cassette and across a
-  library.
 - **#78** — `tape playlist`: named, ordered collections of cassettes that
   other commands can operate on as a unit.
+
+> #31 (`tape stats`) closed via merged PR #147 (Step-1 single-cassette).
+> A library-wide Step-2 would be a fresh ticket.
 
 ### Summarization + narration
 
