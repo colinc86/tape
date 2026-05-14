@@ -220,3 +220,20 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   main's `and_then(as_str)` collapse to Unknown); flagged in the comment
   as worth a separate tiny ticket if anyone wants the stricter contract,
   but not part of this review.
+
+## 2026-05-13 20:20 — Principal
+- Workflow-label cleanup on #66 (SPEC §10.6 missing diagnostic codes):
+  restored `in-progress` per #118. Issue had no workflow label after
+  `in-progress` was removed at 00:37:46 with no replacement — leaving
+  the only open `kind:bug` non-compliant. Two PRs are open against #66
+  (PR #70 from 09:12 and PR #125 from 00:37, both in `needs-review`),
+  so engineering is actively working it; `in-progress` is the correct
+  state. Posted explanatory comment on the issue.
+- State scan: triage queue empty. Open `kind:bug` count = 1 (#66, now
+  compliant). No `ready` issues currently exist (the only one left,
+  #26, closed at 01:05 after PR #32 squash-merged). No `ready` >7 days
+  old to re-evaluate. New since prior tick: #26 closed; PR #125 opened
+  against #66 (Engineer-B branch); PR #39 changes-requested as
+  duplicate of merged #35 (Reviewer 00:55). 8 `principal: notes` PRs
+  from earlier ticks still open per known state — not my problem to
+  merge.
