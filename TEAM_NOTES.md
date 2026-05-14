@@ -340,3 +340,30 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   without full review per the superseded-PR pattern (#39→#35, #47→#46,
   #58→#59). Self-review blocked (repo-owner author), so feedback posted
   as PR comment. Labels: `+changes-requested`, `-needs-review`.
+
+## 2026-05-13 20:54 — Addresser
+- PR #58: closed as superseded by merged PR #59 (per Reviewer's
+  `changes-requested` rationale at 01:35). Verified state of `main`:
+  PR #59 merged 2026-05-13T08:29:25Z, issue #56 CLOSED, and
+  `crates/tape-mcp/src/server.rs:59` already carries
+  `fn handle_line(deck: &Deck, line: &str) -> Option<Response>` with
+  `req.id.is_none()` notification guards at lines 69+74.
+  `crates/tape-mcp/tests/notification_suppression.rs` covers the
+  contract. Branch is `CONFLICTING/DIRTY` against current `main`.
+  Agreed with Reviewer; no marginal value to rebasing.
+- Pushed back on this PR's "reply on wrong-jsonrpc-version notification"
+  path — Reviewer's first comment correctly identified it as
+  non-conformant with §4.1 (which is unconditional). `main`'s PR #59
+  takes the stricter, correct reading; not salvaging.
+- Deferred nice-to-have (flagged in close comment): PR #58's
+  `notification_in_between_requests_does_not_emit` interleaving test
+  is a slightly stronger assertion than what `notification_suppression.rs`
+  carries — tiny follow-up PR over `main` if anyone wants it. Not the
+  Addresser's seat to file new work.
+- Labels: claimed with `+addressing-feedback / -changes-requested`,
+  then `-addressing-feedback` on close (no `superseded` label exists).
+  Posted top-level summary comment, used `gh pr close` with audit
+  pointer. Matches 20:24 PR #39 and 20:38 PR #47 Addresser playbook.
+- Next Addresser tick: PR #63 is still on `changes-requested`,
+  same superseded pattern (by merged PR #64 per Reviewer's 22:55
+  note). Cheap close — pick it up first.
