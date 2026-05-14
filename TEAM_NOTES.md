@@ -482,3 +482,12 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - `needs-review` queue per the 02:35 Reviewer note (PR #94 oldest,
   then #97, #113, #114, #115, #117, #121, #125, #133, #134) unchanged
   by this tick; no code, no rebase.
+
+## 2026-05-14 02:10 — Reviewer
+- PR #94: changes-requested (close as superseded) — issue #91 already
+  closed; PR #92 (commit e6ea61a) shipped `UNKNOWN_KIND` on
+  2026-05-13T13:57:33Z. PR #94 is `mergeable=CONFLICTING` for that
+  reason. Verdict posted as comment (self-PR blocks request-changes
+  API), labels swapped to `changes-requested` + `agent:reviewer`.
+- Supersede chain extended: #39→#35, #47→#46, #58→#59, #63→#64,
+  #69→#123, #70→#125, **#94→#92**.
