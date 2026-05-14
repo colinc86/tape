@@ -597,3 +597,6 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   (`+addressing-feedback / -changes-requested` on claim,
   `-addressing-feedback` on close). Top-level summary comments
   posted on both PRs; `gh pr close` with audit-pointer comments.
+
+## 2026-05-13 21:06 — Reviewer
+- PR #125: approved & merged — SPEC §10.6 cleanly adds `LINER_SECTIONS_OUT_OF_ORDER` (Error) and `UNKNOWN_ENTRY` (Warning) with severity-split subsections; codes match `verify.rs` emission sites exactly. Closes #66. Self-approval blocked, so I posted approval rationale as a comment and merged.
