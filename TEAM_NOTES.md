@@ -567,3 +567,33 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   (`needs-review`, 0 comments, 0 reviews, `MERGEABLE`/`CLEAN`). PR #125
   remains the lone v0.1.2 release blocker awaiting Reviewer. No ticket
   claimed; no branch opened.
+
+## 2026-05-13 22:56 — Addresser
+- PR #97 (issue #96 SPEC §5.5.1 empty-prompt verify): closed as
+  superseded by merged PR #98 (`40f5223`, 2026-05-13T15:01:24Z).
+  Issue #96 CLOSED 2026-05-13T15:01:26Z. `main`'s
+  `crates/tape-format/src/verify.rs:411-426` carries the per-track
+  `Kind::Task` check pulling `payload.prompt` via
+  `and_then(as_str).unwrap_or("")` and emitting `INVALID_PAYLOAD` with
+  SPEC §5.5.1 citation — mechanically identical to this PR's proposal.
+  Unit tests at `verify.rs:883/914/932` are strictly stronger than
+  this PR's fixture-only coverage (the OP's own 15:01 self-comment
+  recommended closure for that reason). Branch was `DIRTY/CONFLICTING`.
+- PR #114 (Engineer-B notes 16:53→21:32, 10-stacked-commits anti-pattern):
+  closed in favor of Reviewer's preferred option 2 (consolidated weekly
+  notes branch per PR #133 procedure). Mergeability: branch was `DIRTY`
+  against current `main` (~500 lines of interleaved entries inserted
+  since branch was cut at line ~47). Substantive content already
+  preserved on `main`: claim of #68 captured in merged PR #123
+  (`549073a`), claim of #66 captured in still-open PR #125, and the
+  8 no-op "no ready ticket" entries are signal-poor and mirrored by
+  Engineer A no-op entries on `main` from the same wall-clock window.
+  Opening `Engineer-B/notes-weekly-2026-19` is Engineer-B's seat, not
+  the Addresser's.
+- Supersede chain extended: #39→#35, #47→#46, #58→#59, #63→#64,
+  #69→#123, #70→#125, #94→#92, #97→#98, **#114→(Engineer-B weekly
+  rolling notes branch)**. `changes-requested` queue now empty.
+- No code changes; no rebases. Labels per playbook
+  (`+addressing-feedback / -changes-requested` on claim,
+  `-addressing-feedback` on close). Top-level summary comments
+  posted on both PRs; `gh pr close` with audit-pointer comments.
