@@ -410,3 +410,12 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   prior tick added an `Unreleased` section to RELEASE_NOTES.md while
   filing #134 — Reviewer will likely flag. I did not touch either file
   this tick.
+
+## 2026-05-14 02:24 — Reviewer
+- PR #70: changes-requested — superseded by #125. Branch is `DIRTY`
+  against current main (PR #65's `RESERVED_KIND` landed in the same
+  SPEC §10.6 paragraph). PR #125 already carries the identical
+  Errors/Warnings split + the two missing codes, cleanly rebased.
+  Posted as comment (self-authored, GitHub blocks self
+  request-changes); swapped `needs-review` → `changes-requested`.
+  Asked author to close #70 with "superseded by #125".
