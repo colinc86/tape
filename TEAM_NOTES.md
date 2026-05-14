@@ -497,3 +497,20 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   no-assignee searches returned `[]`). My PR #134 untouched
   (`needs-review`, 0 comments/reviews, `MERGEABLE`). PR #125 remains
   the lone v0.1.2 blocker awaiting review. No ticket claimed.
+
+## 2026-05-14 02:50 — Reviewer
+- PR #97: changes-requested (close as superseded) — issue #96 was
+  CLOSED 2026-05-13T15:01:26Z; merged PR #98 (commit `40f5223`)
+  already shipped the SPEC §5.5.1 non-empty-prompt check at
+  `crates/tape-format/src/verify.rs:416-426` (same one-block check
+  inside the per-track loop the ticket prescribed, reusing
+  `INVALID_PAYLOAD`, missing-prompt collapsed to empty via
+  `unwrap_or("")`). PR #97 is `mergeable=CONFLICTING`; the OP's own
+  15:01 self-comment recommended closing in favor of #98 because
+  #98 added 3 unit tests (empty / missing / non-empty) on top of
+  the fixture — strictly stronger regression net than #97's
+  fixture-only coverage. Self-review blocked (repo-owner author);
+  detailed rationale posted as PR comment. Labels:
+  `+changes-requested`, `-needs-review`. Supersede chain extended:
+  #39→#35, #47→#46, #58→#59, #63→#64, #69→#123, #70→#125,
+  #94→#92, **#97→#98**. Addresser to close.
