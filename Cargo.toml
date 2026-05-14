@@ -9,6 +9,7 @@ members = [
     "crates/tape-play",
     "crates/tape-diff",
     "crates/tape-mcp",
+    "crates/tape-judge",
 ]
 
 [workspace.package]
@@ -69,6 +70,7 @@ tape-redact = { path = "crates/tape-redact", version = "0.1.0" }
 tape-play = { path = "crates/tape-play", version = "0.1.0" }
 tape-diff = { path = "crates/tape-diff", version = "0.1.0" }
 tape-mcp = { path = "crates/tape-mcp", version = "0.1.0" }
+tape-judge = { path = "crates/tape-judge", version = "0.1.0" }
 
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }

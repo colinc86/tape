@@ -1500,6 +1500,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-judge"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "blake3",
+ "chrono",
+ "hyper",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tape-mcp"
 version = "0.1.2"
 dependencies = [
