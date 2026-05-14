@@ -34,6 +34,9 @@ enum Cmd {
     },
     /// One-line-per-track listing.
     Ls { file: std::path::PathBuf },
+    /// Read-only analytics over a single cassette. Phase-1 of #31:
+    /// no JSON, no library/compare, no pricing — those are Phases 2+.
+    Stats { file: std::path::PathBuf },
     /// Compare two tapes.
     Diff {
         a: std::path::PathBuf,
@@ -207,6 +210,7 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Verify { file, json } => cmd_verify(&file, json),
         Cmd::Ls { file } => cmd_ls(&file),
+        Cmd::Stats { file } => cmd_stats(&file),
         Cmd::Play {
             file,
             step,
@@ -1085,6 +1089,30 @@ fn load_tracks(
 fn cmd_ls(file: &std::path::Path) -> Result<()> {
     let (_, tracks) = load_tracks(file)?;
     print!("{}", tape_play::render_ls(&tracks));
+    Ok(())
+}
+
+/// Issue #31 Step-1. Read meta + tracks (already opened by
+/// `load_tracks`), pull a redaction count out of the optional
+/// `redactions.json`, and hand off to `tape_play::render_stats`. No I/O
+/// beyond what `load_tracks` already does.
+fn cmd_stats(file: &std::path::Path) -> Result<()> {
+    let (raw, tracks) = load_tracks(file)?;
+    let meta_yaml = raw
+        .meta_yaml
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("input cassette is missing meta.yaml"))?;
+    let meta = tape_format::meta::Meta::parse(meta_yaml)?;
+    let redactions_count = raw.redactions_json.as_deref().map(|s| {
+        serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| v.as_array().map(|a| a.len() as u64))
+            .unwrap_or(0)
+    });
+    print!(
+        "{}",
+        tape_play::render_stats(&meta, &tracks, redactions_count)
+    );
     Ok(())
 }
 

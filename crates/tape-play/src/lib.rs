@@ -63,6 +63,240 @@ pub fn render_summary_view(meta_yaml: &str, liner_md: &str, tracks: &[Track]) ->
     out
 }
 
+/// Step-1 of issue #31: read-only single-cassette analytics. Pure
+/// function over already-parsed inputs; no IO. The output is
+/// human-readable text only — JSON / TSV / library-aggregate /
+/// pricing live in later steps.
+///
+/// `redactions_count` is `Some(N)` when the cassette had a
+/// `redactions.json` entry, `None` otherwise — the difference matters
+/// because we report "0" for a tape that was processed by the redact
+/// engine with no hits vs an empty line for a tape that pre-dates the
+/// redactions.json convention. (Roughly per the issue body's
+/// "honest reporting" rule for `tokens: (none recorded)`.)
+pub fn render_stats(
+    meta: &tape_format::meta::Meta,
+    tracks: &[Track],
+    redactions_count: Option<u64>,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "id: {}", meta.id);
+    let _ = writeln!(out, "task: {}", meta.task);
+    let _ = writeln!(out, "outcome: {}", outcome_name(meta.outcome));
+    let span = format!("{} → {}", meta.created_at, meta.ejected_at);
+    match wall_clock_ms(tracks) {
+        WallClock::Span(ms) => {
+            let _ = writeln!(out, "span: {span}  ({ms} ms)");
+        }
+        WallClock::CollapsedSnapshot => {
+            let _ = writeln!(out, "span: {span}");
+            let _ = writeln!(
+                out,
+                "time accounting: N/A — single-timestamp snapshot (issue #5)"
+            );
+        }
+        WallClock::Unknown => {
+            let _ = writeln!(out, "span: {span}");
+        }
+    }
+
+    out.push('\n');
+    let hist = kind_histogram(tracks);
+    let _ = writeln!(out, "tracks: {}", tracks.len());
+    for k in [
+        Kind::Task,
+        Kind::ModelCall,
+        Kind::McpCall,
+        Kind::Shell,
+        Kind::FileRead,
+        Kind::FileWrite,
+        Kind::Annotation,
+        Kind::Eject,
+    ] {
+        let n = hist[k as usize];
+        if n > 0 {
+            let _ = writeln!(out, "  {}: {}", kind_name(k), n);
+        }
+    }
+
+    out.push('\n');
+    let model_calls: Vec<&Track> = tracks
+        .iter()
+        .filter(|t| t.kind == Kind::ModelCall)
+        .collect();
+    if model_calls.is_empty() {
+        let _ = writeln!(out, "tokens: (none recorded)");
+    } else {
+        let (tin, tout, unknown) = token_totals(&model_calls);
+        let known = model_calls.len() as u64 - unknown;
+        let unknown_note = if unknown > 0 {
+            format!(" ({unknown} model_call event(s) missing token counts)")
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "tokens: in={tin} + out={tout} across {known} model_call event(s){unknown_note}"
+        );
+    }
+
+    let mcp_n = hist[Kind::McpCall as usize];
+    let shell_n = hist[Kind::Shell as usize];
+    let _ = writeln!(out, "tools: {mcp_n} mcp_call, {shell_n} shell");
+
+    let read_n = hist[Kind::FileRead as usize];
+    let write_n = hist[Kind::FileWrite as usize];
+    let _ = writeln!(out, "files: {read_n} read, {write_n} write");
+
+    match redactions_count {
+        Some(n) => {
+            let _ = writeln!(out, "redactions: {n}");
+        }
+        None => {
+            let _ = writeln!(out, "redactions: (none recorded)");
+        }
+    }
+    out
+}
+
+fn outcome_name(o: tape_format::meta::Outcome) -> &'static str {
+    use tape_format::meta::Outcome;
+    match o {
+        Outcome::Success => "success",
+        Outcome::Failure => "failure",
+        Outcome::Abandoned => "abandoned",
+        Outcome::Unknown => "unknown",
+    }
+}
+
+fn kind_histogram(tracks: &[Track]) -> [u64; 8] {
+    let mut h = [0u64; 8];
+    for t in tracks {
+        h[t.kind as usize] += 1;
+    }
+    h
+}
+
+enum WallClock {
+    Span(i64),
+    CollapsedSnapshot,
+    Unknown,
+}
+
+/// Wall-clock span across the track list. Falls back to
+/// `CollapsedSnapshot` when every non-task/non-eject event shares one
+/// `ts` (bug #5 — snapshot-imported cassettes), and `Unknown` when the
+/// list is too short or timestamps don't parse. Lexical compare on the
+/// RFC-3339 strings would work for ordering but not for ms-precision
+/// arithmetic, so we parse to `chrono::DateTime` here.
+fn wall_clock_ms(tracks: &[Track]) -> WallClock {
+    if tracks.len() < 2 {
+        return WallClock::Unknown;
+    }
+    let body: Vec<&Track> = tracks
+        .iter()
+        .filter(|t| t.kind != Kind::Task && t.kind != Kind::Eject)
+        .collect();
+    // Issue #5 snapshot-collapse fingerprint: ≥2 body events with one
+    // shared `ts`. A single body event has nothing to compare against,
+    // and an empty body is just a task+eject tape with no time data.
+    if body.len() >= 2 {
+        let first_ts = body[0].ts.as_str();
+        if body.iter().all(|t| t.ts == first_ts) {
+            return WallClock::CollapsedSnapshot;
+        }
+    }
+    let first = parse_rfc3339(&tracks.first().unwrap().ts);
+    let last = parse_rfc3339(&tracks.last().unwrap().ts);
+    match (first, last) {
+        (Some(a), Some(b)) => WallClock::Span(b - a),
+        _ => WallClock::Unknown,
+    }
+}
+
+fn parse_rfc3339(s: &str) -> Option<i64> {
+    let dt = chrono_lite::parse(s)?;
+    Some(dt)
+}
+
+/// Tiny chrono-free RFC-3339 parser. Returns the timestamp in
+/// milliseconds since the Unix epoch. Tape-play doesn't depend on
+/// `chrono` and pulling it in just for `tape stats` is overkill; this
+/// handles the `%Y-%m-%dT%H:%M:%S(.%3f)?Z` shape every tape writer in
+/// this repo emits.
+mod chrono_lite {
+    pub fn parse(s: &str) -> Option<i64> {
+        // Expect "YYYY-MM-DDTHH:MM:SS" then optional ".fff" then "Z".
+        let bytes = s.as_bytes();
+        if bytes.len() < 20
+            || bytes[4] != b'-'
+            || bytes[7] != b'-'
+            || bytes[10] != b'T'
+            || bytes[13] != b':'
+            || bytes[16] != b':'
+            || !s.ends_with('Z')
+        {
+            return None;
+        }
+        let year: i64 = s.get(0..4)?.parse().ok()?;
+        let month: u32 = s.get(5..7)?.parse().ok()?;
+        let day: u32 = s.get(8..10)?.parse().ok()?;
+        let hour: u32 = s.get(11..13)?.parse().ok()?;
+        let minute: u32 = s.get(14..16)?.parse().ok()?;
+        let second: u32 = s.get(17..19)?.parse().ok()?;
+
+        let mut ms_frac: i64 = 0;
+        // Optional ".fff" between seconds and Z.
+        if bytes[19] == b'.' {
+            // s = "YYYY-MM-DDTHH:MM:SS.fff...Z"
+            let z_pos = s.len() - 1;
+            let frac = s.get(20..z_pos)?;
+            // Truncate or pad to 3 digits.
+            let padded: String = frac.chars().chain("000".chars()).take(3).collect();
+            ms_frac = padded.parse().ok()?;
+        } else if bytes[19] != b'Z' {
+            return None;
+        }
+
+        let days = days_from_civil(year, month, day);
+        let secs = days * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60 + second as i64;
+        Some(secs * 1000 + ms_frac)
+    }
+
+    /// Howard Hinnant's `days_from_civil`. Returns days since 1970-01-01
+    /// (Unix epoch) for a given (year, month, day). Correct over the
+    /// full proleptic Gregorian range. Cited from
+    /// <https://howardhinnant.github.io/date_algorithms.html>.
+    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let yoe = (y - era * 400) as i64;
+        let m = m as i64;
+        let d = d as i64;
+        let doy = (153 * if m > 2 { m - 3 } else { m + 9 } + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146097 + doe - 719468
+    }
+}
+
+fn token_totals(model_calls: &[&Track]) -> (u64, u64, u64) {
+    let mut tin: u64 = 0;
+    let mut tout: u64 = 0;
+    let mut unknown: u64 = 0;
+    for t in model_calls {
+        let a = t.payload.get("tokens_in").and_then(Value::as_u64);
+        let b = t.payload.get("tokens_out").and_then(Value::as_u64);
+        match (a, b) {
+            (Some(x), Some(y)) => {
+                tin += x;
+                tout += y;
+            }
+            _ => unknown += 1,
+        }
+    }
+    (tin, tout, unknown)
+}
+
 /// One-line semantic label for a track. Used by `tape ls`,
 /// the deck's `tape.tracks` tool, and the diff aligner.
 pub fn label(t: &Track) -> String {
@@ -251,5 +485,208 @@ mod tests {
     fn parse_range_works() {
         assert_eq!(parse_range("3..7"), Some((3, 7)));
         assert_eq!(parse_range("not-a-range"), None);
+    }
+
+    fn fresh_meta() -> tape_format::meta::Meta {
+        tape_format::meta::Meta {
+            tape_version: "tape/v0".into(),
+            id: "01h8xy00-0000-7000-b8aa-000000000031".into(),
+            created_at: "2026-05-06T10:00:00Z".into(),
+            ejected_at: "2026-05-06T10:00:42Z".into(),
+            task: "test the stats".into(),
+            recorder: tape_format::meta::Recorder {
+                agent: "test/0.0.1".into(),
+                user: None,
+            },
+            outcome: tape_format::meta::Outcome::Success,
+            models: vec![],
+            tools: vec![],
+            tool_budget: None,
+            redaction_summary: None,
+            label: None,
+            recap: None,
+            recaps: vec![],
+            new_block: None,
+        }
+    }
+
+    #[test]
+    fn stats_renders_kind_histogram() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x"}),
+            ),
+            t(
+                3,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x"}),
+            ),
+            t(4, Kind::Shell, json!({"command": "ls"})),
+            t(5, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("tracks: 5"), "{s}");
+        assert!(s.contains("task: 1"), "{s}");
+        assert!(s.contains("model_call: 2"), "{s}");
+        assert!(s.contains("shell: 1"), "{s}");
+        assert!(s.contains("eject: 1"), "{s}");
+        // Kinds with zero count are not rendered (terseness).
+        assert!(!s.contains("file_read: 0"), "{s}");
+    }
+
+    #[test]
+    fn stats_reports_wall_clock_ms_for_normal_tape() {
+        // The `t` helper builds ts as 2026-05-06T10:00:{step:02}Z, so tracks
+        // 1..=5 span 4 seconds = 4000 ms.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            t(5, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("(4000 ms)"), "{s}");
+    }
+
+    #[test]
+    fn stats_marks_snapshot_collapse() {
+        // All non-task/non-eject events share one ts → snapshot collapse.
+        let same_ts = "2026-05-06T10:00:30Z";
+        let mk = |step: u64, kind: Kind, payload: Value| Track {
+            step,
+            kind,
+            ts: same_ts.to_string(),
+            payload,
+            parent_step: None,
+            refs: vec![],
+            annotations: vec![],
+        };
+        let tracks = vec![
+            mk(1, Kind::Task, json!({"prompt": "x"})),
+            mk(2, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            mk(3, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            mk(4, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("time accounting: N/A"), "{s}");
+        assert!(s.contains("issue #5"), "{s}");
+        // The other sections still render.
+        assert!(s.contains("tracks: 4"), "{s}");
+    }
+
+    #[test]
+    fn stats_sums_tokens_with_unknown_count() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "x", "model": "y", "tokens_in": 100, "tokens_out": 50}),
+            ),
+            t(
+                3,
+                Kind::ModelCall,
+                json!({"vendor": "x", "model": "y", "tokens_in": 200, "tokens_out": 80}),
+            ),
+            // Missing tokens — counts as unknown.
+            t(4, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            t(5, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("tokens: in=300 + out=130"), "{s}");
+        assert!(s.contains("across 2 model_call event(s)"), "{s}");
+        assert!(
+            s.contains("1 model_call event(s) missing token counts"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn stats_says_none_recorded_with_no_model_calls() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Shell, json!({"command": "ls"})),
+            t(3, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("tokens: (none recorded)"), "{s}");
+    }
+
+    #[test]
+    fn stats_counts_tools_and_files() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::McpCall, json!({"server": "db", "tool": "q"})),
+            t(3, Kind::McpCall, json!({"server": "db", "tool": "q"})),
+            t(4, Kind::Shell, json!({"command": "ls"})),
+            t(5, Kind::FileRead, json!({"path": "/a"})),
+            t(6, Kind::FileRead, json!({"path": "/b"})),
+            t(7, Kind::FileWrite, json!({"path": "/c"})),
+            t(8, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("tools: 2 mcp_call, 1 shell"), "{s}");
+        assert!(s.contains("files: 2 read, 1 write"), "{s}");
+    }
+
+    #[test]
+    fn stats_redactions_distinguishes_zero_from_missing() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        // Engine ran, zero hits.
+        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        assert!(s.contains("redactions: 0"), "{s}");
+
+        // No redactions.json at all (older cassette format).
+        let s = render_stats(&fresh_meta(), &tracks, None);
+        assert!(s.contains("redactions: (none recorded)"), "{s}");
+
+        // Non-zero count.
+        let s = render_stats(&fresh_meta(), &tracks, Some(3));
+        assert!(s.contains("redactions: 3"), "{s}");
+    }
+
+    #[test]
+    fn stats_header_contains_meta_fields() {
+        let s = render_stats(
+            &fresh_meta(),
+            &[t(1, Kind::Task, json!({"prompt": "x"}))],
+            Some(0),
+        );
+        assert!(
+            s.contains("id: 01h8xy00-0000-7000-b8aa-000000000031"),
+            "{s}"
+        );
+        assert!(s.contains("task: test the stats"), "{s}");
+        assert!(s.contains("outcome: success"), "{s}");
+        assert!(
+            s.contains("2026-05-06T10:00:00Z → 2026-05-06T10:00:42Z"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn chrono_lite_parses_basic_rfc3339() {
+        // Exact-second precision.
+        let a = chrono_lite::parse("2026-05-06T10:00:00Z").unwrap();
+        let b = chrono_lite::parse("2026-05-06T10:00:42Z").unwrap();
+        assert_eq!(b - a, 42_000);
+    }
+
+    #[test]
+    fn chrono_lite_parses_millis() {
+        let a = chrono_lite::parse("2026-05-06T10:00:00.000Z").unwrap();
+        let b = chrono_lite::parse("2026-05-06T10:00:00.250Z").unwrap();
+        assert_eq!(b - a, 250);
+    }
+
+    #[test]
+    fn chrono_lite_rejects_malformed() {
+        assert!(chrono_lite::parse("not-a-timestamp").is_none());
+        assert!(chrono_lite::parse("2026-05-06T10:00:00").is_none()); // no Z
     }
 }
