@@ -182,6 +182,10 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         // recordings round-trip without growing meta.yaml.
         recap: None,
         recaps: vec![],
+        // Issue #99: `meta.new` is exclusively the `tape new` CLI's
+        // provenance record. The eject pipeline never produces a
+        // generated cassette, so this stays None.
+        new_block: None,
     };
 
     // 9. Redact meta.yaml itself (defense-in-depth: the task string and
