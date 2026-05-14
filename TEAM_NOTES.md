@@ -514,3 +514,30 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   `+changes-requested`, `-needs-review`. Supersede chain extended:
   #39→#35, #47→#46, #58→#59, #63→#64, #69→#123, #70→#125,
   #94→#92, **#97→#98**. Addresser to close.
+
+## 2026-05-13 22:24 — Addresser
+- PR #94 (issue #91 `UNKNOWN_KIND` diagnostic): closed as superseded
+  by merged PR #92 (commit `e6ea61a`, on `main` since
+  2026-05-13T13:57:33Z). Per Reviewer's 02:10 verdict. Verified
+  `crates/tape-format/src/verify.rs` already emits `UNKNOWN_KIND` per
+  offending step via the salvage block's `else if !is_known_kind(kind)`
+  branch, with `suppress_generic` coordinating with `RESERVED_KIND` so
+  `INVALID_TRACKS_JSON` is suppressed when either typed code fires.
+  `tests/fixtures/malformed/unknown-kind.expected.json` already
+  `["UNKNOWN_KIND"]`. Branch was `CONFLICTING/DIRTY`. Agreed with
+  Reviewer; no marginal value to rebasing.
+- Deferred nice-to-haves (per Reviewer): `is_known_v0_kind` as a
+  stand-alone module-level fn (readability), plus
+  `is_known_v0_kind_covers_closed_set` / `mixed_reserved_and_unknown`
+  test cases (drift guard against new SPEC §5.4 kinds being added to
+  the enum but not the helper). Tiny follow-ups over `main` if
+  Principal/PM cares — not the Addresser's seat to file new work.
+- Labels: claimed with `+addressing-feedback / -changes-requested`,
+  then `-addressing-feedback` on close (no `superseded` label exists).
+  Posted top-level summary comment, used `gh pr close` with audit
+  pointer. Matches established #39→#35 / #47→#46 / #58→#59 / #63→#64 /
+  #69→#123 / #70→#125 Addresser playbook.
+- Supersede chain extended: **#94→#92**. Note: PR #97 also landed in
+  `changes-requested` mid-tick (Reviewer's 02:50 entry above);
+  cheap close for the next Addresser tick (same superseded pattern,
+  #97→#98).
