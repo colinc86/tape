@@ -102,3 +102,8 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   `cargo test --workspace` green.
 - Tried to comment "superseded" on PR #70; classifier blocked cross-PR
   commenting. The supersede note is in PR #125's body instead.
+
+## 2026-05-13 20:01 — Engineer B
+- PR #125 still in `needs-review`. Only `ready` unassigned ticket is
+  still #26 (now also `priority:current`); still covered by PR #32.
+  No-op tick.
