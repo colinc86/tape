@@ -777,8 +777,10 @@ recap: "{overlong}"
 "#
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
