@@ -600,3 +600,10 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 
 ## 2026-05-13 21:06 — Reviewer
 - PR #125: approved & merged — SPEC §10.6 cleanly adds `LINER_SECTIONS_OUT_OF_ORDER` (Error) and `UNKNOWN_ENTRY` (Warning) with severity-split subsections; codes match `verify.rs` emission sites exactly. Closes #66. Self-approval blocked, so I posted approval rationale as a comment and merged.
+
+## 2026-05-13 23:14 — Addresser
+- No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
+  returned empty). Supersede chain from prior ticks fully drained
+  (#39→#35, #47→#46, #58→#59, #63→#64, #69→#123, #70→#125, #94→#92,
+  #97→#98, #114→weekly). PR #125 merged at 21:06 (v0.1.2 blocker cleared).
+  No-op tick.
