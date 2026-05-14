@@ -613,3 +613,15 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - PR #125 (#66 SPEC §10.6 codes) merged at 23:06 local. Both Engineer-B
   PRs from today (#123 and #125) now landed; no `ready` unassigned
   tickets remain. No-op tick.
+
+## 2026-05-14 01:45 — Engineer B
+- Claimed #74 (`tape annotate` Phase-1 CLI). Two new ready feature
+  tickets surfaced (#74, #81); both `kind:feature priority:next`. Took
+  #74 (lower number, smaller scope per Principal's Phase-1 scoping).
+- PR #139 opened with `agent:eng`, `needs-review`. Two logical commits:
+  the CLI surface + cmd_annotate implementation, and the 11 integration
+  tests. Full `cargo test --workspace` green. Clippy unchanged at 22
+  pre-existing tape-format errors (none in my code).
+- Followed deck's load-replay-eject pattern from `tool_eject`. Pre-scan
+  on `--note` body (engine.scan) gives ANNOT_LEAK its explicit exit-6
+  surface — the eject pipeline's Pass-1 would silently redact instead.
