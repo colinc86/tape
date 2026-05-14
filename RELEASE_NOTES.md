@@ -4,6 +4,20 @@ A cassette tape for agent runs. Record once, replay anywhere, share as a file.
 
 ---
 
+## Unreleased
+
+### Internal cleanup
+
+- **Removed unreachable `UNSAFE_PATH` verifier diagnostic** (issue #132). The
+  code was defined in `tape-format::verify::DiagnosticCode` but never emitted
+  in practice — the tape reader (`RawTape::from_reader`) rejects unsafe zip
+  entry paths (entries containing `..` or starting with `/`, per SPEC §12.2)
+  before any `RawTape` is produced, so the verifier never sees them. The code
+  was not listed in SPEC §10.6, so no spec change is required. A reader-level
+  regression test now pins the rejection invariant.
+
+---
+
 ## v0.1.1 — 2026-05-07 — Audit cleanup
 
 A bug-fix-only release. Closes 20 findings from a three-agent audit covering

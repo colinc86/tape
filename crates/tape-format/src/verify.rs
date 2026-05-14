@@ -39,7 +39,6 @@ pub enum DiagnosticCode {
     LeakedSecretInLiner,
     UnknownEntry,
     ReservedKind,
-    UnsafePath,
 }
 
 impl DiagnosticCode {
@@ -72,7 +71,6 @@ impl DiagnosticCode {
             LeakedSecretInLiner => "LEAKED_SECRET_IN_LINER",
             UnknownEntry => "UNKNOWN_ENTRY",
             ReservedKind => "RESERVED_KIND",
-            UnsafePath => "UNSAFE_PATH",
         }
     }
 }
