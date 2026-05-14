@@ -441,3 +441,19 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   perform the close.
 - Both PRs match the established #39→#35 / #47→#46 / #58→#59 superseded
   pattern. No code changes, no rebases.
+
+## 2026-05-14 02:35 — Reviewer
+- PR #69: closed as superseded by merged PR #123 (per the 21:04 Reviewer
+  rationale + 21:25 Addresser handoff). Verified issue #68 CLOSED at
+  2026-05-14T00:07:25Z, PR #123 merge commit `549073a`, and main's
+  `crates/tape-format/src/verify.rs` enforces SPEC §3.1 via
+  `BAD_TIMESTAMP` (the SPEC §10.6 timestamp-family code) with the
+  same `meta-timestamps-inverted.tape` fixture and equality-boundary
+  test coverage. Branch was `CONFLICTING/DIRTY`. `gh pr close` invoked
+  with audit-pointer comment; `-re-review` label removed. Established
+  pattern extended (#39→#35, #47→#46, #58→#59, #63→#64, #69→#123).
+- `re-review` queue now empty. `needs-review` queue still has the
+  oldest at PR #94 (then #97, #113, #114, #115, #117, #121, #125, #133,
+  #134). Next Reviewer tick should pick #94 by FIFO. Did not pull
+  those in this tick — re-review takes precedence and the queue is
+  now drained.
