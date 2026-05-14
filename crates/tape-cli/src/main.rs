@@ -336,17 +336,18 @@ fn cmd_annotate(
         }
     };
     if same_path(file, &out_path) {
-        eprintln!(
-            "tape annotate: --out must differ from <file> (use --in-place once it ships)"
-        );
+        eprintln!("tape annotate: --out must differ from <file> (use --in-place once it ships)");
         std::process::exit(2);
     }
 
     // 2. Load the input cassette.
-    let raw = tape_format::reader::RawTape::open(file).map_err(|e| {
-        eprintln!("tape annotate: failed to open {}: {e}", file.display());
-        std::process::exit(2);
-    }).unwrap();
+    let raw = match tape_format::reader::RawTape::open(file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("tape annotate: failed to open {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
     let jsonl = raw
         .tracks_jsonl
         .as_deref()
@@ -356,10 +357,13 @@ fn cmd_annotate(
         .meta_yaml
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("input cassette is missing meta.yaml"))?;
-    let meta = tape_format::meta::Meta::parse(meta_yaml).map_err(|e| {
-        eprintln!("tape annotate: meta.yaml does not parse: {e}");
-        std::process::exit(2);
-    }).unwrap();
+    let meta = match tape_format::meta::Meta::parse(meta_yaml) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("tape annotate: meta.yaml does not parse: {e}");
+            std::process::exit(2);
+        }
+    };
 
     // 3. Build the redact engine from `.taperc` and pre-scan the note body.
     //    The eject pipeline's Pass 1 *redacts* track payloads rather than
@@ -367,8 +371,7 @@ fn cmd_annotate(
     //    `[REDACTED]` in the output. Pre-scanning here gives ANNOT_LEAK its
     //    explicit exit-6 surface that the issue body and Principal's
     //    acceptance criteria both call for.
-    let cwd = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("cwd: {e}"))?;
+    let cwd = std::env::current_dir().map_err(|e| anyhow::anyhow!("cwd: {e}"))?;
     let redact_engine = tape_redact::engine_with_taperc(&cwd)
         .map_err(|e| anyhow::anyhow!("failed to load .taperc: {e}"))?;
     let note_hits = redact_engine.scan(note);
@@ -391,9 +394,7 @@ fn cmd_annotate(
     let new_step = replay_len + 1;
     if let Some(s) = step {
         if s == 0 || s >= new_step {
-            eprintln!(
-                "tape annotate: ANNOT_BAD_STEP — --step must be in [1, {new_step}); got {s}"
-            );
+            eprintln!("tape annotate: ANNOT_BAD_STEP — --step must be in [1, {new_step}); got {s}");
             std::process::exit(4);
         }
     }
@@ -460,10 +461,7 @@ fn cmd_annotate(
     let report = tape_format::verify::verify(&written);
     if !report.is_valid() {
         let _ = std::fs::remove_file(&out_path);
-        let codes: Vec<&'static str> = report
-            .errors()
-            .map(|d| d.code.as_str())
-            .collect();
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
         eprintln!(
             "tape annotate: output failed tape verify ({}); removed {}",
             codes.join(","),
@@ -472,9 +470,8 @@ fn cmd_annotate(
         std::process::exit(3);
     }
 
-    let actor_display = actor.unwrap_or_else(|| {
-        std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned())
-    });
+    let actor_display =
+        actor.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()));
 
     if json {
         let mut payload = serde_json::json!({
@@ -494,9 +491,7 @@ fn cmd_annotate(
         let parent_desc = step
             .map(|s| format!("parent_step={s}"))
             .unwrap_or_else(|| "unparented".to_owned());
-        println!(
-            "  new track: step {new_step} (kind=annotation, {parent_desc})"
-        );
+        println!("  new track: step {new_step} (kind=annotation, {parent_desc})");
         println!("  actor: {actor_display}, by: {by}");
         for w in warnings.drain(..) {
             println!("  warning: {w}");
