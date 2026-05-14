@@ -689,3 +689,173 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   `changes-requested` at 05:00 (Reviewer: branch off old main, regresses
   SPEC.md / TEAM_NOTES.md / RELEASE_NOTES.md) — NOT my job per protocol,
   Feedback Addresser owns it. No ticket claimed; no branch opened.
+
+## 2026-05-13 16:35 — Principal
+- Refined #26 (`tape.fork` at last step + `tape.eject` produces invalid tape
+  with two eject events). Confirmed bug against `main @ 926c5c3`, picked
+  Option B (defensive strip in `eject::eject`) as the canonical fix, and
+  ruled the two "adjacent points" in the original report out of scope (one
+  already resolved by PR #35/#36, the other a separate UX question).
+  Labels: `agent:principal`, `kind:bug`, `ready` added.
+- No `triage`-labelled issues this tick. The four open bugs (#26, #109, #68,
+  #66) were filed today by the bug-sweep loop with high-quality investigations
+  already — they were skipping the `triage` step and arriving directly. I'm
+  picking the highest-severity (#26) per tick and promoting one at a time;
+  the others stay un-workflow-labelled until a future tick.
+- Investigation notes:
+  `.tape-handoffs/issue-26-fork-eject-double-terminator.investigation.md` on
+  branch `principal/issue-26`.
+- Flag for human: the bug-sweep loop's issues are not coming in with `triage`
+  by default. If the Principal pipeline is meant to be the gate, the
+  bug-finder workflow should be adjusted to apply `triage` on file; otherwise
+  the Principal step is bypassable. Not changing anything this tick.
+
+## 2026-05-13 17:18 — Principal
+- Refined #109 (`meta.tool_budget always None — tape diff's Latency summary
+  is silently dead`): added Principal comment with problem statement,
+  acceptance criteria, approach hint, files-of-interest with line numbers,
+  out-of-scope, and test plan. Labels: `bug, severity:low, kind:bug,
+  agent:principal, ready`.
+- Investigation notes: `.tape-handoffs/issue-109-tool-budget-unpopulated.investigation.md`
+  on branch `principal/issue-109` (pushed). Verified one Meta construction
+  site (`crates/tape-record/src/eject.rs:156`), `ToolBudget` struct already
+  exists at `crates/tape-format/src/meta.rs:67-73`, and a cleaner
+  chrono-arithmetic implementation than the bug report sketched.
+- Picked #109 (rule A') over #68 / #66 because both of those already have
+  open PRs (#69 / #70 respectively); #109 had no PR and no workflow label.
+  #26 already promoted (per prior tick) and has open PR #32. Two other
+  `kind:bug`-style issues (#68, #66) remain unpromoted but their PRs are
+  in flight — leaving them for the Reviewer / Bugfixer dance until a PR
+  lands or stalls. One thing per tick.
+- Heads-up for human: branch `principal/issue-109` is push-only with the
+  handoff markdown — leave for merge or let it linger; the issue body
+  links it via raw GitHub URL.
+
+## 2026-05-13 17:26 — Principal Decision
+- Filed #118: workflow-label discipline for kind:bug issues. PINNED.
+- Retroactively labelled `triage` on: none — sweep found 0 open `kind:bug`
+  issues lacking a workflow label (only #109 `in-progress` and #26 `ready`).
+- Created missing `kind:process` label (color `#1D76DB`). All other workflow
+  / agent labels already existed.
+- Effective immediately; bug-finder loop expected to comply (agent:pm to
+  update its prompt).
+
+## 2026-05-13 18:17 — Principal
+- Decide rule A' (well-investigated bug lacking a workflow label).
+  Promoted #68 `tape verify does not check created_at <= ejected_at
+  (SPEC §3.1 MUST)` directly to `ready`. Reporter had already supplied
+  reproducer + suggested patch + edge-case analysis, so this tick locked
+  in acceptance criteria and a non-obvious choice: reuse `BAD_TIMESTAMP`
+  rather than `INVALID_META_YAML` or a new code. Labels: added
+  `ready`, `kind:bug`, `agent:principal`.
+- Housekeeping: #66 (SPEC §10.6 missing diagnostic codes) was a sibling
+  bug missing both `kind:bug` and a workflow label. Added `triage` +
+  `kind:bug` so it surfaces in the standard triage queue for the next
+  Principal tick — not refining today (one issue per tick).
+- Did NOT touch #26 (still `ready`, PR #32 implements it but lacks
+  `needs-review`; engineer/reviewer labelling is not Principal's hat).
+- Pre-existing fmt drift in tape-format / tape-mcp-wrap flagged by
+  Engineer A on 2026-05-13 17:27 still has no issue filed. Out of
+  scope for this tick, but worth filing next time if it persists.
+
+## 2026-05-13 23:18 — Principal
+- Refined #66 (SPEC §10.6 missing `LINER_SECTIONS_OUT_OF_ORDER` +
+  `UNKNOWN_ENTRY`): `triage` → `ready`, added `agent:principal`. Pure
+  SPEC-text fix; no production code changes needed. Acceptance criteria,
+  rebase plan, and out-of-scope list posted as an issue comment.
+- Notable wrinkle: an engineer-authored fix already exists as PR #70
+  (`fix/spec-add-missing-codes`), but it is `CONFLICTING` against `main`
+  (PR #65 shifted §10.6 by adding `RESERVED_KIND` after #70 was opened)
+  and carries no workflow labels. Engineer who picks #66 should either
+  rebase #70 or open a fresh PR and close #70 as superseded.
+- Investigation handoff: `.tape-handoffs/issue-66-spec-10-6-missing-codes.investigation.md`
+  on branch `principal/issue-66` (pushed).
+- Surfaced for human attention: PR-routing meta-gap persists. PRs #32,
+  #70, and #69 are all engineer-authored, addressing real Principal-`ready`
+  bugs, and carrying no `needs-review`/`agent:eng` label so the Reviewer
+  doesn't see them. Per the wake-up brief I am NOT declaring a routing
+  policy this tick; flagging so the human can decide which role owns
+  engineer-PR labeling. Same flag the 16:42, 17:49, 18:19, 18:50 Engineer
+  ticks have raised.
+- Out of scope this tick (but worth a future ticket): `verify.rs:42, 75`
+  defines `UnsafePath` / `"UNSAFE_PATH"` that is never emitted — reader
+  rejects unsafe paths before verify runs. Either wire emission or remove
+  the variant + SPEC entry. Sibling of #60.
+
+## 2026-05-13 19:39 — Principal Decision
+- Filed #126: workflow-label discipline for PRs. PINNED. Sibling to #118.
+- Retroactively `needs-review`: PR #32, PR #39, PR #47, PR #58, PR #63,
+  PR #69, PR #70, PR #94, PR #97, PR #113, PR #114, PR #115, PR #117,
+  PR #120, PR #121, PR #125.
+- Commented on PR #70 with rebase guidance (post-#65 `CONFLICTING` on
+  `crates/tape-format/src/verify.rs` and SPEC.md §10.6).
+- Labels created: `in-review` (#0E8A16), `approved` (#0075CA).
+  `needs-review`, `changes-requested`, `blocked` pre-existed.
+- Skipped (author-merge `principal: notes` cosmetic pile-up): PR #112,
+  PR #116, PR #122, PR #124. Separate cleanup, out of scope.
+- Note: PR #69 is superseded by merged #123; labelled per policy but
+  recommend closing as superseded rather than reviewing.
+
+## 2026-05-13 20:30 — Principal Backlog Hygiene
+- Total open issues reviewed: 34 (32 non-pinned + #118/#126 pinned policy, skipped).
+- Created labels: `priority:current`, `priority:next`, `priority:later`,
+  `principal-close-candidate`.
+- Labelled priority:current: #26, #66 (both release-eligible bugs named in
+  ROADMAP's v0.1.2 section as deferrable to v0.1.3).
+- Labelled priority:next: #74 (`tape annotate` CLI), #81 (`tape doctor`),
+  #106 (RuntimeAdapter trait) — all explicitly named as v0.2 stretch in
+  ROADMAP's Next Milestone section.
+- Labelled priority:later: #2, #8, #10, #18, #31, #42, #51, #61, #67, #71,
+  #78, #85, #88, #89, #90, #93, #95, #99, #100, #101, #102, #103, #104, #105,
+  #107, #108, #110 (27 issues, all sitting in ROADMAP's Backlog buckets).
+- Added missing kind:* labels: `kind:feature` added to all 30 enhancement
+  issues (every enhancement-tagged issue was missing it per #118 discipline).
+  #26 and #66 already had `kind:bug`.
+- Closed as fixed: none in this pass. #68 (created_at≤ejected_at) and #109
+  (meta.tool_budget) were already closed by colinc86 before this run.
+- Closed as duplicate: none — no clear duplicates among open enhancement
+  issues; they're well-differentiated by ROADMAP buckets.
+- Tagged principal-close-candidate: none. The backlog as filed by PM
+  matches the ROADMAP's themed backlog buckets cleanly; nothing looks
+  out-of-scope for v0.x.
+- Roadmap drift spotted: ROADMAP names #68 and #109 under "Open bugs not
+  blocking the release (can roll into v0.1.3)" — but both are already closed
+  on GitHub (per PR #123 for #68; #109 closed 2026-05-13). The Open-bugs
+  list in the v0.1.2 milestone section is now down to #26 and #66 only.
+  Surfacing this here so PM can refresh ROADMAP at release-cut time. Not
+  modifying ROADMAP.md per scope.
+- No PR actions, no production code changes, no ROADMAP edits.
+
+## 2026-05-13 20:02 — Principal
+- Filed #129: ROADMAP drift — §"Open bugs not blocking the release" still
+  lists #68 (closed today via PR #123) and #109 (closed today by owner).
+  Routed to `agent:pm` with `kind:doc`. Genuine open priority:current bugs
+  as of this tick are #26 and #66.
+- Triage queue empty; no `kind:bug` issues lack workflow labels; no
+  reopened issues; no ready ticket aged >7 days. Decide-rule C (roadmap
+  drift) was the cleanest candidate this tick.
+
+## 2026-05-13 20:20 — Principal
+- Workflow-label cleanup on #66 (SPEC §10.6 missing diagnostic codes):
+  restored `in-progress` per #118. Issue had no workflow label after
+  `in-progress` was removed at 00:37:46 with no replacement — leaving
+  the only open `kind:bug` non-compliant. Two PRs are open against #66
+  (PR #70 from 09:12 and PR #125 from 00:37, both in `needs-review`),
+  so engineering is actively working it; `in-progress` is the correct
+  state. Posted explanatory comment on the issue.
+- State scan: triage queue empty. Open `kind:bug` count = 1 (#66, now
+  compliant). No `ready` issues currently exist (the only one left,
+  #26, closed at 01:05 after PR #32 squash-merged). New since prior
+  tick: #26 closed; PR #125 opened against #66 (Engineer-B branch);
+  PR #39 changes-requested as duplicate of merged #35 (Reviewer 00:55).
+  8 `principal: notes` PRs from earlier ticks still open per known
+  state — not my problem to merge.
+
+## 2026-05-13 21:30 — Principal Executive Housekeeping
+- Coordinated engineer collision on #66: declared PR #125 canonical, PR #70
+  superseded. Comments posted on issue and PR.
+- Filed #132: Remove unreachable UNSAFE_PATH diagnostic. `kind:cleanup`,
+  `priority:later`, `ready`.
+- Consolidated 9 stacked `principal: notes` PRs (#112, #116, #120, #122,
+  #124, #127, #128, #130, #131) into this PR. Declared new procedure:
+  rolling weekly notes PR going forward.
