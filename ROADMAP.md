@@ -21,36 +21,85 @@ The three-year arc:
 
 ## Current Milestone — v0.2 (Claude Desktop + diff intelligence)
 
-**Status:** Not started. Promoted from Next Milestone after v0.1.2 shipped
-2026-05-14. No tickets cut yet — Principal will decompose the five themes
-below into `priority:current` issues at the right time.
+**Status:** In flight. Five Phase-1 feature drops have already landed on
+`main` since v0.1.2 (2026-05-14 06:22Z); the five headline themes are
+where the bulk of work still sits. v0.2.0 is **not** ready to cut — at
+least one headline theme should land first so the release means something
+beyond "incremental command additions."
 
-The first **non-patch** release. Five themes — runtime expansion, narration,
-embedding-driven diff, interactive eject, and liner-notes-at-eject — all
-already named in README's tracklist and RELEASE_NOTES's deferred list.
+The first **non-patch** release. Five **headline themes** plus a growing
+set of **Phase-1 feature drops** landing alongside them. Both must be
+considered in scope.
 
-1. **Claude Desktop adapter.** Same `tape/v0` format, second runtime. Validates
-   that the format is runtime-neutral. No changes to `tape-format` or the deck
-   are expected; effort is in the recording/transcript-ingest layer.
-2. **Interactive eject prompt.** The `[y/n/d/e]` confirmation flow described
-   in the brief but unimplemented in v0.1.x. Lets the user inspect proposed
-   redactions before the tape lands on disk.
-3. **Embedding-based diff alignment.** Replace the v0.1 LCS aligner with
-   Needleman-Wunsch on step-intent embeddings (see `tape-diff` skill). Better
-   diffs for non-trivial reruns.
-4. **Judge-model narration.** Re-enable the `--judge` flag (#62/#64 stub).
-   Narrates the substantive diffs as short paragraphs.
-5. **Liner-notes-at-eject.** Configurable model + token budget; replaces the
-   stub liner notes that ship today when no model is available.
+### Headline themes (the original v0.2 definition)
 
-Stretch items for v0.2:
+1. **Claude Desktop adapter.** Same `tape/v0` format, second runtime.
+   Validates that the format is runtime-neutral. Effort sits in the
+   recording / transcript-ingest layer.
+   *Status:* `RuntimeAdapter` trait + `ClaudeCodeAdapter` shipped via
+   merged PR #143 (closing #106). This is the precursor — the
+   `ClaudeDesktopAdapter` concrete implementation is still to do. No
+   issue filed yet.
+2. **Interactive eject prompt.** The `[y/n/d/e]` confirmation flow
+   described in the brief but unimplemented in v0.1.x. Lets the user
+   inspect proposed redactions before the tape lands on disk.
+   *Status:* Not started. No issue filed.
+3. **Embedding-based diff alignment.** Replace the v0.1 LCS aligner
+   with Needleman-Wunsch on step-intent embeddings (see `tape-diff`
+   skill). Better diffs for non-trivial reruns.
+   *Status:* Not started. No issue filed. Depends on the embedding
+   provider integration that #145 also needs.
+4. **Judge-model narration.** Re-enable the `--judge` flag (#62/#64
+   stub). Narrates the substantive diffs as short paragraphs.
+   *Status:* Foundational work scoped — **#145 (judge-model client +
+   config + defense-in-depth scanner)** is `ready` for Engineering.
+   The narration UX itself is a follow-on after #145.
+5. **Liner-notes-at-eject.** Configurable model + token budget;
+   replaces the stub liner notes that ship today when no model is
+   available.
+   *Status:* Not started. No issue filed. Will share the model-client
+   infrastructure from #145.
 
-- **Causal-flow detection in diff** (the `causal` class in the schema today
-  but never produced).
-- **`tape annotate` CLI** (#74) — CLI counterpart to the MCP `tape.annotate`
-  tool. Cheap once the deck infra is in place; closes a parity gap.
-- **`tape doctor`** (#81) — install-surface diagnostic with pass/warn/fail
-  report. Reduces onboarding pain as the runtime list grows.
+### Phase-1 feature drops (shipped to `main`, awaiting v0.2.0 cut)
+
+These are user-facing CLI subcommands that have landed since v0.1.2.
+By strict semver they require a minor bump; they're being staged on
+`main` until v0.2.0 is cut alongside at least one headline theme.
+
+- **`tape annotate` CLI** (#74 → merged PR #141). CLI counterpart to
+  the MCP `tape.annotate` deck tool — closes a parity gap.
+- **`tape doctor`** (#81 → merged PR #140). Install-surface diagnostic
+  with pass/warn/fail report.
+- **`tape recap`** (#105 → merged PR #142). 1–2 sentence regenerable
+  summary for paste-into-Slack/Linear/Jira/PR contexts.
+- **`tape new`** (#99 → merged PR #146). Cassette generator with
+  bundled templates — the `cargo new` for `.tape` files.
+- **`RuntimeAdapter` trait + `ClaudeCodeAdapter`** (#106 → merged PR
+  #143). Step 1 of the Claude Desktop adapter; the second-runtime
+  concrete impl is the v0.2.0 gating piece.
+
+### Cut criteria for v0.2.0
+
+v0.2.0 ships when **all** of the following are true:
+
+- At least one headline theme has its user-visible behavior on `main`
+  (the headline-theme bar is "user can do something new at the CLI or
+  in the deck," not "infrastructure exists"). Today: zero met.
+- All open `priority:current` issues are closed.
+- `cargo test --workspace` clean on `main`.
+- Binary distribution gap (#144) resolved — v0.2.0 release page ships
+  tarball + `SHA256SUMS`, and the plugin marketplace entry is bumped
+  to match.
+
+The Phase-1 features will travel as part of v0.2.0 regardless of which
+headline theme actually triggers the cut — they're already user-facing
+on `main` and shouldn't sit unreleased indefinitely.
+
+### Stretch items for v0.2.x (post-v0.2.0)
+
+- **Causal-flow detection in diff** (the `causal` class in the schema
+  today but never produced). Pairs with the embedding-based diff
+  alignment work.
 
 ---
 
@@ -79,16 +128,14 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 **Priority labels** (per #118 / #126 — Principal's workflow-label discipline):
 
 - `priority:current` — must land in the current milestone (now v0.2).
-- `priority:next` — explicit v0.3 work, or v0.2 stretch (currently #74,
-  #81, #106).
+- `priority:next` — explicit v0.2 / v0.3 work. Live: `gh issue list
+  --label priority:next --state open` (currently #145 — judge-model
+  foundational).
 - `priority:later` — backlog. Live count via
-  `gh issue list --label priority:later --state open` (27 as of 2026-05-13).
+  `gh issue list --label priority:later --state open` (~27).
 
 ### Multi-runtime + ingest (the v0.3 direction)
 
-- **#106** — `RuntimeAdapter` trait + Cursor adapter. The missing growth lever
-  beyond Claude Code; should land alongside Claude Desktop in v0.2 if Cursor
-  parity is cheap.
 - **#95** — `tape ingest`: import LangSmith / OTLP / Langfuse / Helicone /
   OpenLLMetry / Phoenix traces. The "meet users where they are" play.
 - **#88** — `tape to-otlp`: export a cassette as OpenTelemetry traces.
@@ -96,8 +143,16 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 - **#102** — `tape to-fixture`: extract HTTP pairs to VCR / Polly / HTTPretty /
   JSONL test fixtures.
 
+> #106 (`RuntimeAdapter` trait) closed via merged PR #143 — now part of
+> the v0.2 "Claude Desktop adapter" headline theme. Concrete adapters
+> (Cursor, Codex, OpenClaw) remain open in spirit but are not separately
+> ticketed yet.
+
 ### Registry + distribution (the v0.3 direction)
 
+- **#144** — v0.1.2 binaries not shipping (PM-filed, blocks any user
+  install of v0.1.2+). Pre-requisite for the rest of this bucket since
+  it forces the release-asset pipeline to exist.
 - **#107** — WebAssembly build of `tape verify` (browser/Node/Deno npm
   package). Registry precursor; a hosted registry needs in-browser verify.
 - **#108** — `tape self-update`: keep `tape` / `tape-hook` / `tape-mcp-wrap`
@@ -105,7 +160,9 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
   releases.
 - **#90** — `colinc86/tape-action`: turnkey GitHub Action wrapping `tape test`
   and adjacent commands for CI.
-- **#81** — `tape doctor`: install-surface diagnostic (see Stretch in v0.2).
+
+> #81 (`tape doctor`) closed via merged PR #140 — see Phase-1 feature
+> drops in v0.2.
 
 ### Cassette editing + synthesis
 
@@ -115,14 +172,15 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
   auditable transform ledger.
 - **#85** — `tape rewind`: reconstruct the file tree as the recorded agent
   saw it at any step.
-- **#99** — `tape new`: cassette generator with bundled templates (the
-  `cargo new` for `.tape` files).
 - **#71** — `tape relinernote`: regenerate liner notes for existing cassettes
   with a configurable model + template.
 - **#42** — `tape anon`: strip identifiers (paths, usernames, internal IDs)
   for publishable cassettes.
 - **#89** — `tape encrypt` / `tape decrypt`: age-based confidentiality,
   orthogonal to `tape sign`.
+
+> #99 (`tape new`) closed via merged PR #146 — see Phase-1 feature drops
+> in v0.2.
 
 ### Read / inspect / dashboard
 
@@ -139,10 +197,11 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 
 ### Summarization + narration
 
-- **#105** — `tape recap`: 1-2 sentence regenerable summary for paste-into-
-  Slack/Linear/Jira/PR contexts.
 - **#103** — `tape changelog`: model-narrated multi-cassette changelog
   (release notes / sprint retro / incident summary).
+
+> #105 (`tape recap`) closed via merged PR #142 — see Phase-1 feature
+> drops in v0.2.
 
 ### Tagging + policy + custom rules
 
@@ -155,7 +214,9 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 
 ### Parity gaps
 
-- **#74** — `tape annotate` CLI (see Stretch in v0.2).
+> #74 (`tape annotate` CLI) closed via merged PR #141 — see Phase-1
+> feature drops in v0.2. Bucket retained as a placeholder for future
+> CLI/MCP parity work.
 
 ---
 
