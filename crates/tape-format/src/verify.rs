@@ -39,6 +39,7 @@ pub enum DiagnosticCode {
     LeakedSecretInLiner,
     UnknownEntry,
     ReservedKind,
+    MetaRecapInvalid,
 }
 
 impl DiagnosticCode {
@@ -71,6 +72,7 @@ impl DiagnosticCode {
             LeakedSecretInLiner => "LEAKED_SECRET_IN_LINER",
             UnknownEntry => "UNKNOWN_ENTRY",
             ReservedKind => "RESERVED_KIND",
+            MetaRecapInvalid => "META_RECAP_INVALID",
         }
     }
 }
@@ -192,6 +194,20 @@ pub fn verify(raw: &RawTape) -> VerifyReport {
                 meta.created_at, meta.ejected_at
             ),
         ));
+    }
+
+    // Issue #105: `meta.recap` is bounded to ≤280 chars and disallows
+    // newlines so any reader can paste it into a single-line field
+    // (Slack, Linear, Jira, PR descriptions). The validator lives in
+    // `meta::validate_recap_text` so the CLI write path and verify share
+    // one source of truth; this is the read-side enforcement.
+    if let Some(r) = &meta.recap {
+        if let Err(msg) = crate::meta::validate_recap_text(r) {
+            report.push(Diagnostic::error(
+                DiagnosticCode::MetaRecapInvalid,
+                format!("meta.recap is invalid: {msg}"),
+            ));
+        }
     }
 
     if meta.tape_version != TAPE_VERSION {

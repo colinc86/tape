@@ -70,7 +70,9 @@ fn engineer_b_finds_smoking_gun_via_deck() {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "tape.seek", "arguments": {"handle": handle, "query": "smoking gun", "k": 5}}
     }));
-    let hits = seek["result"]["structuredContent"]["hits"].as_array().expect("hits");
+    let hits = seek["result"]["structuredContent"]["hits"]
+        .as_array()
+        .expect("hits");
     assert!(!hits.is_empty(), "expected to surface the annotation");
     let smoking_step = hits[0]["step"].as_u64().expect("step");
 
@@ -80,9 +82,7 @@ fn engineer_b_finds_smoking_gun_via_deck() {
         "params": {"name": "tape.play", "arguments": {"handle": handle, "step": smoking_step}}
     }));
     let played = &play["result"]["structuredContent"]["tracks"][0];
-    let note = played["payload"]["note"]
-        .as_str()
-        .expect("annotation note");
+    let note = played["payload"]["note"].as_str().expect("annotation note");
 
     // 5. The smoking-gun fact: customer CUST-447139 and process_refund()
     assert!(
