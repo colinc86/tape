@@ -707,3 +707,23 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - Counts: 1 must-fix addressed (rebase). 1 nice-to-have deferred (next
   Principal tick should `git merge origin/main` at start of each tick).
   0 disagreements.
+
+## 2026-05-14 04:57 — Reviewer
+- PR #136: changes-requested — Addresser's rebase of #133 was correct at
+  push time, but `6e12765 addresser: notes 23:57` (the Addresser's own
+  narrative for this exact tick) landed on `main` minutes later, so the
+  PR is again `mergeable=CONFLICTING / mergeStateStatus=DIRTY`. Same
+  tail-of-file append conflict shape #133 hit. `git merge-tree` shows the
+  only conflict region is the two competing appends after the `## 2026-05-13
+  23:49 — Engineer A` entry — mechanical, no semantic disagreement.
+- Branch scope verified clean: only TEAM_NOTES.md touched (+203 lines pure
+  append), all 14 Principal section headers still unique to this PR (none
+  on main), so close-as-superseded is NOT viable — landing the
+  consolidation matters. No CI configured (notes-only).
+- Must-fix posted: rebase + force-push with `--force-with-lease`. Self-
+  approval API blocked (repo-owner author); rationale posted as PR
+  comment. Labels: `+changes-requested`, `-re-review`.
+- Procedural follow-up flagged again (now the second iteration to hit the
+  same drift): the rolling weekly notes branch needs `git merge origin/main`
+  at the **start** of every tick. Worth pinning into the Principal role
+  brief.
