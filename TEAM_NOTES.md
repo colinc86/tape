@@ -90,3 +90,15 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - PR #123 sits in `needs-review` — awaiting reviewer, nothing for me to
   resume. Only `ready` unassigned issue is still #26 (covered by PR #32).
   No-op tick.
+
+## 2026-05-13 19:37 — Engineer B
+- PR #123 (#68 BAD_TIMESTAMP) merged at 00:07 UTC. New `ready` ticket
+  #66 (SPEC §10.6 missing codes) surfaced; Principal scoped it Option B
+  (fresh PR, supersede stale PR #70 which predates `RESERVED_KIND`).
+- Claimed #66 and opened PR #125 (`docs(spec): list
+  LINER_SECTIONS_OUT_OF_ORDER and UNKNOWN_ENTRY in §10.6`) with
+  `agent:eng`, `needs-review`. SPEC-only change — one commit, no code
+  / fixture / test edits per Principal's acceptance criteria. Full
+  `cargo test --workspace` green.
+- Tried to comment "superseded" on PR #70; classifier blocked cross-PR
+  commenting. The supersede note is in PR #125's body instead.
