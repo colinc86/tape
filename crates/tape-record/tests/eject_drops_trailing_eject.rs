@@ -34,6 +34,8 @@ fn eject_pipeline_collapses_trailing_eject_into_single_terminator() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: None,
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
         },
     )
     .unwrap();
@@ -53,7 +55,10 @@ fn eject_pipeline_collapses_trailing_eject_into_single_terminator() {
     // …and contain exactly one eject, as the final event.
     let parsed = tracks::parse_jsonl(raw.tracks_jsonl.as_deref().unwrap()).unwrap();
     let eject_count = parsed.iter().filter(|t| t.kind == Kind::Eject).count();
-    assert_eq!(eject_count, 1, "expected exactly one eject, got {eject_count}");
+    assert_eq!(
+        eject_count, 1,
+        "expected exactly one eject, got {eject_count}"
+    );
     assert_eq!(parsed.last().map(|t| t.kind), Some(Kind::Eject));
 }
 
@@ -78,6 +83,8 @@ fn eject_pipeline_unchanged_for_session_without_trailing_eject() {
             stub_liner_notes: true,
             out_path: out.clone(),
             redact_engine: None,
+            inherited_artifacts: std::collections::BTreeMap::new(),
+            label: None,
         },
     )
     .unwrap();
