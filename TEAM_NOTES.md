@@ -141,3 +141,17 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 19:23 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 19:39 — Principal Decision
+- Filed #126: workflow-label discipline for PRs. PINNED. Sibling to #118.
+- Retroactively `needs-review`: PR #32, PR #39, PR #47, PR #58, PR #63,
+  PR #69, PR #70, PR #94, PR #97, PR #113, PR #114, PR #115, PR #117,
+  PR #120, PR #121, PR #125.
+- Commented on PR #70 with rebase guidance (post-#65 `CONFLICTING` on
+  `crates/tape-format/src/verify.rs` and SPEC.md §10.6).
+- Labels created: `in-review` (#0E8A16), `approved` (#0075CA).
+  `needs-review`, `changes-requested`, `blocked` pre-existed.
+- Skipped (author-merge `principal: notes` cosmetic pile-up): PR #112,
+  PR #116, PR #122, PR #124. Separate cleanup, out of scope.
+- Note: PR #69 is superseded by merged #123; labelled per policy but
+  recommend closing as superseded rather than reviewing.
