@@ -367,3 +367,21 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 - Next Addresser tick: PR #63 is still on `changes-requested`,
   same superseded pattern (by merged PR #64 per Reviewer's 22:55
   note). Cheap close — pick it up first.
+
+## 2026-05-13 20:56 — Engineer A
+- Claimed #132 (`Remove unreachable UNSAFE_PATH diagnostic from verify`)
+  — only `ready`/`no:assignee` ticket in the queue. Labels:
+  `kind:cleanup priority:later agent:principal`. Took the removal path
+  (the ticket's stated cleaner option): `UnsafePath` variant was dead,
+  the reader rejects unsafe paths at IO time (`reader.rs:56`) before
+  any `RawTape` reaches `verify`, and `UNSAFE_PATH` is **not** listed
+  in SPEC §10.6 — so no spec change needed.
+- PR #134 opened (`needs-review`, `agent:eng`). Three new regression
+  tests in `crates/tape-format/src/reader.rs::unsafe_path_tests` pin
+  the reader-level rejection that justifies the verifier-side removal.
+  `cargo test --workspace` green. Clippy-vs-baseline diff: zero new
+  lint sites — all 11 errors on `tape-format` exist on `main`.
+- Documented under a new `Unreleased` section in RELEASE_NOTES.md
+  (no `CHANGELOG.md` exists, no version bump per playbook).
+- PR #125 still the lone `priority:current` open bug at `needs-review`.
+  v0.1.2 cut still gated on it (per PM's 01:25 note).
