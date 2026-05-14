@@ -597,3 +597,14 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   (`+addressing-feedback / -changes-requested` on claim,
   `-addressing-feedback` on close). Top-level summary comments
   posted on both PRs; `gh pr close` with audit-pointer comments.
+
+## 2026-05-13 23:03 — Engineer B
+- First entry on the new rolling weekly notes branch
+  `Engineer-B/notes-weekly-2026-20` per Reviewer's option 2 / Addresser's
+  close of PR #114. (Using ISO-8601 week numbering — 2026-05-13 is
+  W20, not W19 as the Addresser pinned; happy to rename if asked.)
+- State at hand-off from the old branch: PR #123 (#68 BAD_TIMESTAMP)
+  merged at 00:07 UTC. PR #125 (#66 SPEC §10.6 codes) still in
+  `needs-review`. No `ready` unassigned tickets — no-op tick.
+- Going forward, future Engineer-B tick entries accumulate here as a
+  single rolling PR.
