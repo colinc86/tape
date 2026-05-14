@@ -394,21 +394,13 @@ mod templates {
     pub const MINIMAL_TRACKS: &str = include_str!("../templates/minimal/tracks.jsonl");
 }
 
-/// Phase-1 of issue #99. Materializes a new cassette from the bundled
-/// `minimal` template via literal `{{...}}` substitution, builds a
-/// fresh `Meta` with a `meta.new` provenance block, and writes the
-/// result through `PendingTape::write_to`. `tape verify` runs as a
-/// post-write gate so any future template-content mistake is caught
-/// before the file is left on disk.
-fn cmd_new(
-    out: &std::path::Path,
-    task: &str,
-    force: bool,
-    created_at_override: Option<String>,
-    recorder_agent_override: Option<String>,
-) -> Result<()> {
-    // 1. Validate --task. Literal substitution forbids characters that
-    //    would un-balance the JSONL or smuggle in another track.
+/// Validate the `--task` value for `tape new`. Rejects empty strings,
+/// JSONL-unsafe characters (`"`, `\\`, `\n`, `\r`, controls), and any
+/// `{{` sequence (which would cascade through later placeholder
+/// substitutions and silently diverge `meta.task` from
+/// `tracks[0].payload.prompt`). On rejection, prints a
+/// `NEW_MISSING_PLACEHOLDER` diagnostic and exits with code 2.
+fn validate_new_task(task: &str) {
     if task.is_empty() {
         eprintln!("tape new: NEW_MISSING_PLACEHOLDER — --task must be non-empty");
         std::process::exit(2);
@@ -423,6 +415,33 @@ fn cmd_new(
         );
         std::process::exit(2);
     }
+    if task.contains("{{") {
+        eprintln!(
+            "tape new: NEW_MISSING_PLACEHOLDER — --task must not contain `{{{{` \
+             (would cascade through later placeholder substitutions)"
+        );
+        std::process::exit(2);
+    }
+}
+
+/// Phase-1 of issue #99. Materializes a new cassette from the bundled
+/// `minimal` template via literal `{{...}}` substitution, builds a
+/// fresh `Meta` with a `meta.new` provenance block, and writes the
+/// result through `PendingTape::write_to`. `tape verify` runs as a
+/// post-write gate so any future template-content mistake is caught
+/// before the file is left on disk.
+fn cmd_new(
+    out: &std::path::Path,
+    task: &str,
+    force: bool,
+    created_at_override: Option<String>,
+    recorder_agent_override: Option<String>,
+) -> Result<()> {
+    // 1. Validate --task. Literal substitution forbids characters that
+    //    would un-balance the JSONL or smuggle in another track, and
+    //    forbids `{{` so the value can't cascade through later
+    //    placeholder substitutions.
+    validate_new_task(task);
 
     // 2. Output-exists check.
     if out.exists() && !force {
@@ -544,10 +563,10 @@ fn cmd_new(
 /// remaining 74 random bits are deterministically derived from a
 /// `blake3(created_at || recorder_agent || task)` digest. The version
 /// nibble (`7`) and variant bits (`0b10`) are set per spec so the result
-/// passes any UUIDv7 syntactic check.
+/// passes any `UUIDv7` syntactic check.
 fn derive_uuid_v7(created_at: &str, recorder_agent: &str, task: &str) -> String {
     let unix_ms = chrono::DateTime::parse_from_rfc3339(created_at)
-        .map(|dt| dt.timestamp_millis().max(0) as u64)
+        .map(|dt| u64::try_from(dt.timestamp_millis().max(0)).unwrap_or(0))
         .unwrap_or(0);
     let mut hasher = blake3::Hasher::new();
     hasher.update(created_at.as_bytes());

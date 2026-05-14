@@ -225,6 +225,29 @@ fn task_with_backslash_exits_2() {
 }
 
 #[test]
+fn task_with_double_brace_exits_2() {
+    // A --task that itself names another placeholder would silently
+    // cascade through the subsequent {{created_at}} / {{ejected_at}}
+    // substitutions in `cmd_new`, causing meta.task and
+    // tracks[0].payload.prompt to diverge. The validator rejects `{{`
+    // so the "literal, grep-auditable" substitution contract holds.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.tape");
+
+    let result = Command::new(binary_path())
+        .args(["new", out.to_str().unwrap(), "--task", "{{created_at}}"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!out.exists());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("NEW_MISSING_PLACEHOLDER"),
+        "expected NEW_MISSING_PLACEHOLDER: {stderr}"
+    );
+}
+
+#[test]
 fn empty_task_exits_2() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.tape");
