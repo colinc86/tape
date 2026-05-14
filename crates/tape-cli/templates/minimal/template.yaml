@@ -1,0 +1,14 @@
+id: minimal
+version: "1"
+description: >
+  Smallest valid `tape/v0` cassette — one task event and one eject.
+  The cassette generated from this template passes `tape verify` and
+  is the canonical starting point for hand-crafted cassettes.
+placeholders:
+  task:
+    required: true
+    description: >
+      One-line headline of what the cassette describes. Lands in
+      `meta.task`, in the task event's `prompt`, and inline in the
+      liner-notes. Plain UTF-8; no quotes, backslashes, newlines, or
+      control characters.

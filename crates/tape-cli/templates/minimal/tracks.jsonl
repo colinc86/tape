@@ -1,0 +1,2 @@
+{"step":1,"kind":"task","ts":"{{created_at}}","payload":{"prompt":"{{task}}"}}
+{"step":2,"kind":"eject","ts":"{{ejected_at}}","payload":{"outcome":"unknown"}}
