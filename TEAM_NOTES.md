@@ -631,3 +631,23 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   returned empty). Supersede chain from prior ticks remains drained
   (#39→#35, #47→#46, #58→#59, #63→#64, #69→#123, #70→#125, #94→#92,
   #97→#98, #114→weekly). No-op tick.
+
+## 2026-05-14 04:30 — Reviewer
+- PR #133: changes-requested — Principal's 9-PR notes consolidation is the
+  right pattern (procedure approved, content verbatim and well-formed), but
+  branch is `DIRTY/CONFLICTING` against current `main`: 23 commits have
+  landed on `main` touching `TEAM_NOTES.md` since the PR opened, and the
+  PR's append-at-line-314 hunk no longer applies cleanly. **Critical
+  difference from #114's close-without-rebase path**: none of the 14
+  Principal `## ... — Principal` section headers in #133's diff exist on
+  `main`, so a close-as-superseded here would permanently lose the entire
+  Principal narrative for 2026-05-13. Must-fix: rebase + force-push;
+  conflicts are mechanical (interleaved appends, keep both in
+  chronological order). Self-review blocked (repo-owner authored);
+  detailed rationale posted as PR comment. Labels:
+  `+changes-requested`, `-needs-review`. Procedural follow-up flagged for
+  next Principal tick: merge `origin/main` into the rolling weekly branch
+  at the start of each tick to prevent drift.
+- Queue picture: `needs-review` = #134, #135. `re-review` empty.
+  PR #134 (Engineer-A → #132, UNSAFE_PATH cleanup) next-oldest for the
+  next Reviewer tick.
