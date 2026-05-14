@@ -230,6 +230,24 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   been promoted by the PM/Principal since the last tick.
 - No code changes; no label touches.
 
+## 2026-05-13 20:24 — Addresser
+- PR #39: closed as superseded by merged PR #35 (per Reviewer's
+  `changes-requested` rationale at 00:55). Verified state of `main`:
+  PR #35 merged at 07:06:49Z (commit `97df1f6`), issue #30 closed at
+  07:06:51Z, and `crates/tape-mcp/src/tools.rs` already carries the
+  schema enum + `parse_outcome_arg` + `EjectOptions { outcome, ... }`
+  wiring this PR proposed. Agreed with Reviewer; no marginal value to
+  landing on top.
+- Deferred nice-to-haves (per Reviewer's suggestion): the stricter
+  "non-string `outcome` → `INVALID_PARAMS`" contract and the broader
+  `eject_outcome.rs` test matrix. Left both for separate small tickets
+  against `main` if Principal/PM wants them — not the Addresser's seat
+  to file new work.
+- Labels: claimed with `+addressing-feedback / -changes-requested`,
+  then `-addressing-feedback` on close (no `superseded` label exists
+  in the repo). Posted top-level summary comment and used `gh pr close`
+  with a one-line audit pointer.
+
 ## 2026-05-14 01:00 — Reviewer
 - PR #47: changes-requested — superseded by merged PR #46 (closed issue
   #41 on 2026-05-13T07:47Z). `main` already carries the equivalent fix
