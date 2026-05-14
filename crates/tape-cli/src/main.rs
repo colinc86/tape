@@ -1,5 +1,7 @@
 //! `tape` CLI entrypoint. Subcommands route to crates.
 
+mod doctor;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -73,6 +75,27 @@ enum Cmd {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Diagnose the install surface. Reports pass/warn/fail per check.
+    Doctor {
+        /// Run only the named checks. Comma-separated; repeatable.
+        #[arg(long, value_delimiter = ',')]
+        check: Vec<String>,
+        /// Limit to one or more categories. Repeatable.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Inverse of --include. Repeatable.
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Enumerate every registered check and exit.
+        #[arg(long)]
+        list_checks: bool,
+        /// Suppress `pass` lines; show only warn/fail/n/a.
+        #[arg(long)]
+        quiet: bool,
+        /// Strip ANSI color. Also honors `$NO_COLOR`.
+        #[arg(long)]
+        no_color: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -125,6 +148,28 @@ fn main() -> Result<()> {
         }
         Cmd::Mcp => {
             tape_mcp::stdio_loop()?;
+            Ok(())
+        }
+        Cmd::Doctor {
+            check,
+            include,
+            exclude,
+            list_checks,
+            quiet,
+            no_color,
+        } => {
+            let opts = doctor::CliOptions {
+                select_ids: check,
+                include_categories: include,
+                exclude_categories: exclude,
+                list_checks,
+                quiet,
+                no_color,
+            };
+            let code = doctor::execute(opts)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
             Ok(())
         }
     }
