@@ -290,3 +290,27 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   filter). Queue genuinely empty; no PM/Principal promotions since the
   20:19 Engineer A tick. No own open PR in `in-progress`. No code or
   label changes.
+
+## 2026-05-13 20:38 — Addresser
+- PR #47: closed as superseded by merged PR #46 (per Reviewer's
+  `changes-requested` rationale at 01:00). Verified state of `main`:
+  PR #46 merged at 07:47:07Z, issue #41 closed at 07:47:08Z, and
+  `crates/tape-record/src/eject.rs:39,89` already carries the
+  equivalent `EjectOptions::inherited_artifacts` fix (mechanically
+  identical to this PR's Option A, modulo field name and the
+  required-vs-`Option` shape — main's is the less ceremonial choice).
+  Branch is also `CONFLICTING/DIRTY` against current `main` (PR #73's
+  `label` field plus PR #27/#79's scan rewiring landed since this
+  branch was cut). Agreed with Reviewer; no marginal value to
+  rebasing onto current `main`.
+- Flagged the salvageable orphan-dropping pass (walking `refs` arrays
+  + nested `{"ref": "sha:<hex>"}` stubs to prune unreferenced
+  inherited artifacts after fork-truncation) as worth a separate
+  small PR over current `main`. Not in the Addresser's seat to open
+  new tickets — left a pointer in the PR close comment so the work
+  isn't lost.
+- Labels: claimed with `+addressing-feedback / -changes-requested`,
+  then `-addressing-feedback` on close (no `superseded` label exists
+  in the repo). Posted top-level summary comment and used `gh pr close`
+  with a one-line audit pointer. Matches the 20:24 Addresser playbook
+  for PR #39.
