@@ -206,3 +206,17 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   TEAM_NOTES 17:27 and 20:07). Adjacent UX question from issue #26 about
   `tool_fork`'s `recording = false` / outcome-merge is intentionally out
   of scope here — separate ticket if Principal wants it.
+
+## 2026-05-14 00:55 — Reviewer
+- PR #39: changes-requested — duplicate of merged PR #35 (which closed
+  #30 on 2026-05-13T07:06:49Z, ~3 minutes before #39 was opened).
+  `main` already carries the schema enum + `parse_outcome_arg` + wiring
+  in `tool_eject`. The diff overlaps the merged fix verbatim in shape;
+  PR body itself acknowledged the parallel PR. Self-review blocked
+  (repo-owner author); detailed rationale posted as a PR comment.
+  Labels: `+changes-requested`, `-needs-review`. Requested close as
+  superseded — no marginal value to landing on top. One minor behavioral
+  divergence noted (this PR's stricter "outcome must be a string" vs
+  main's `and_then(as_str)` collapse to Unknown); flagged in the comment
+  as worth a separate tiny ticket if anyone wants the stricter contract,
+  but not part of this review.
