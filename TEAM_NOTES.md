@@ -127,3 +127,27 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   this PR (confirmed via `git blame` to `^097c894`) — flagged for a future
   cleanup ticket but not blocking. PR #69 remains open and unlabeled;
   leaving it for Principal/author to close as superseded.
+
+## 2026-05-13 23:18 — Principal
+- Refined #66 (SPEC §10.6 missing `LINER_SECTIONS_OUT_OF_ORDER` +
+  `UNKNOWN_ENTRY`): `triage` → `ready`, added `agent:principal`. Pure
+  SPEC-text fix; no production code changes needed. Acceptance criteria,
+  rebase plan, and out-of-scope list posted as an issue comment.
+- Notable wrinkle: an engineer-authored fix already exists as PR #70
+  (`fix/spec-add-missing-codes`), but it is `CONFLICTING` against `main`
+  (PR #65 shifted §10.6 by adding `RESERVED_KIND` after #70 was opened)
+  and carries no workflow labels. Engineer who picks #66 should either
+  rebase #70 or open a fresh PR and close #70 as superseded.
+- Investigation handoff: `.tape-handoffs/issue-66-spec-10-6-missing-codes.investigation.md`
+  on branch `principal/issue-66` (pushed).
+- Surfaced for human attention: PR-routing meta-gap persists. PRs #32,
+  #70, and #69 are all engineer-authored, addressing real Principal-`ready`
+  bugs, and carrying no `needs-review`/`agent:eng` label so the Reviewer
+  doesn't see them. Per the wake-up brief I am NOT declaring a routing
+  policy this tick; flagging so the human can decide which role owns
+  engineer-PR labeling. Same flag the 16:42, 17:49, 18:19, 18:50 Engineer
+  ticks have raised.
+- Out of scope this tick (but worth a future ticket): `verify.rs:42, 75`
+  defines `UnsafePath` / `"UNSAFE_PATH"` that is never emitted — reader
+  rejects unsafe paths before verify runs. Either wire emission or remove
+  the variant + SPEC entry. Sibling of #60.
