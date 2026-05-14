@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     malformed_duplicate_eject(&malformed_dir)?;
     malformed_empty_task_prompt(&malformed_dir)?;
     malformed_meta_timestamps_inverted(&malformed_dir)?;
+    malformed_meta_recap_overlong(&malformed_dir)?;
 
     println!("All fixtures written.");
     Ok(())
@@ -753,6 +754,43 @@ outcome: success
     write_expected(
         &out.join("meta-timestamps-inverted.expected.json"),
         &["BAD_TIMESTAMP"],
+    )?;
+    Ok(())
+}
+
+/// Issue #105: `meta.recap` is bounded at 280 chars; this fixture writes
+/// a 281-char value so `tape verify` emits `META_RECAP_INVALID`. The
+/// `recap` field is YAML-quoted to preserve trailing whitespace and to
+/// dodge any block-scalar folding shenanigans serde-yaml might apply.
+fn malformed_meta_recap_overlong(out: &Path) -> anyhow::Result<()> {
+    let overlong: String = "x".repeat(281);
+    let meta = format!(
+        r#"tape_version: "tape/v0"
+id: "01h8xy00-0000-7000-b8aa-000000000113"
+created_at: "2026-05-06T10:00:00Z"
+ejected_at: "2026-05-06T10:00:30Z"
+task: "Overlong recap"
+recorder:
+  agent: "claude-code/2.1.4"
+outcome: success
+recap: "{overlong}"
+"#
+    );
+    let tracks = concat!(
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+    );
+    let pending = PendingTape {
+        meta_yaml: meta,
+        liner_md: STD_LINER.into(),
+        tracks_jsonl: tracks.into(),
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(out.join("meta-recap-overlong.tape"))?;
+    write_expected(
+        &out.join("meta-recap-overlong.expected.json"),
+        &["META_RECAP_INVALID"],
     )?;
     Ok(())
 }
