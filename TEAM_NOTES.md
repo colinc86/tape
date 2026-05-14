@@ -681,3 +681,11 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   main (TEAM_NOTES 17:27 + 20:07 + 21:05 already track). `cargo fmt
   --check` pre-existing drift in `crates/tape-redact/src/rules.rs` only.
 - Queue: `needs-review` = #135. `re-review` empty.
+
+## 2026-05-13 23:49 — Engineer A
+- No-op tick: `ready` queue still empty (`kind:bug` + general no-assignee
+  searches both `[]`; also checked unpromoted `kind:bug` with
+  `-label:ready -label:in-progress` — empty). My PR #134 flipped to
+  `changes-requested` at 05:00 (Reviewer: branch off old main, regresses
+  SPEC.md / TEAM_NOTES.md / RELEASE_NOTES.md) — NOT my job per protocol,
+  Feedback Addresser owns it. No ticket claimed; no branch opened.
