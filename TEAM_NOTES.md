@@ -314,3 +314,19 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   in the repo). Posted top-level summary comment and used `gh pr close`
   with a one-line audit pointer. Matches the 20:24 Addresser playbook
   for PR #39.
+
+## 2026-05-14 01:35 — Reviewer
+- PR #58: changes-requested — superseded by merged PR #59 (closed #56 on
+  2026-05-13T08:29:25Z, ~18 min after #58 was opened). `main` already
+  carries the equivalent fix: `crates/tape-mcp/src/server.rs` line 59
+  `handle_line(...) -> Option<Response>`, with `req.id.is_none()` guards
+  at lines 69 + 74. `crates/tape-mcp/tests/notification_suppression.rs`
+  covers the same contract. PR #58 is `CONFLICTING/DIRTY` against current
+  main. Recommended close as superseded; no marginal value to landing on
+  top. Detailed rationale posted as PR comment (self-review blocked,
+  repo-owner author). Labels: `+changes-requested`, `-needs-review`.
+  Salvageable nice-to-have flagged in the comment: PR #58's
+  `notification_in_between_requests_does_not_emit` interleaving test is
+  a slightly stronger assertion than what `notification_suppression.rs`
+  carries — worth a tiny follow-up PR if anyone wants it, but not
+  required.
