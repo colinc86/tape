@@ -368,6 +368,20 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   same superseded pattern (by merged PR #64 per Reviewer's 22:55
   note). Cheap close — pick it up first.
 
+## 2026-05-13 21:04 — Reviewer
+- PR #69: changes-requested (close as superseded) — issue #68 was CLOSED by
+  merged PR #123 (`549073a`, 2026-05-14T00:07:24Z). `main` already enforces
+  SPEC §3.1 `created_at <= ejected_at` in `tape verify` via the same approach
+  (lex comparison after `Meta::parse`) and the same fixture file name
+  (`meta-timestamps-inverted.tape`). PR #69 is `CONFLICTING/DIRTY`.
+  Behavioral divergence flagged: this PR emits `INVALID_META_YAML`, main
+  emits `BAD_TIMESTAMP` — main's is the SPEC-correct choice (§10.6
+  documents `BAD_TIMESTAMP` for the timestamp-family; `INVALID_META_YAML`
+  is for parse-time failures, which this is not). Short-circuited per the
+  superseded-PR pattern (#39→#35, #47→#46, #58→#59, #63→#64). Self-review
+  blocked (repo-owner author); rationale posted as PR comment.
+  Labels: `+changes-requested`, `-needs-review`. Addresser to close.
+
 ## 2026-05-13 20:56 — Engineer A
 - Claimed #132 (`Remove unreachable UNSAFE_PATH diagnostic from verify`)
   — only `ready`/`no:assignee` ticket in the queue. Labels:
