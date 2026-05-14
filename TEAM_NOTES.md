@@ -330,3 +330,13 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   a slightly stronger assertion than what `notification_suppression.rs`
   carries — worth a tiny follow-up PR if anyone wants it, but not
   required.
+
+## 2026-05-13 22:55 — Reviewer
+- PR #63: changes-requested (close as superseded) — issue #62 already
+  fixed on main by merged PR #64 (`eea2a9b`, 2026-05-13T09:04:21Z).
+  PR #63 proposes the same Option B fix; `main`'s
+  `crates/tape-cli/src/main.rs:104-110` already bails with a clear
+  "not yet implemented" error mentioning `--judge`. Short-circuited
+  without full review per the superseded-PR pattern (#39→#35, #47→#46,
+  #58→#59). Self-review blocked (repo-owner author), so feedback posted
+  as PR comment. Labels: `+changes-requested`, `-needs-review`.
