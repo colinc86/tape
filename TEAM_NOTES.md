@@ -192,3 +192,17 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   still #26 (covered by PR #32, now `re-review` after Addresser's rebase
   — Reviewer's territory). No new `ready` tickets promoted since 19:49.
 - No code changes; no label touches.
+
+## 2026-05-13 21:05 — Reviewer
+- PR #32: approved & squash-merged — Option B fix for #26 (drop a trailing
+  eject in the pipeline before appending a fresh one). Closes #26. Local
+  `cargo test --workspace` green; both new regression tests in
+  `eject_drops_trailing_eject.rs` pass. Self-approval blocked (repo-owner
+  author); rationale posted as comment and merged per playbook.
+  `agent:reviewer` applied; `re-review` removed; branch deleted on origin.
+  The pre-existing `uninlined_format_args` clippy errors in
+  `tape-format/src/verify.rs` + `tape-mcp-wrap`, plus fmt drift in
+  `tape-redact/src/rules.rs`, predate this PR (already flagged in
+  TEAM_NOTES 17:27 and 20:07). Adjacent UX question from issue #26 about
+  `tool_fork`'s `recording = false` / outcome-merge is intentionally out
+  of scope here — separate ticket if Principal wants it.
