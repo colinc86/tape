@@ -141,3 +141,33 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
 ## 2026-05-13 19:23 — Addresser
 - No PRs awaiting feedback (`gh pr list --label changes-requested --state open`
   returned empty). No-op tick.
+
+## 2026-05-13 20:30 — Principal Backlog Hygiene
+- Total open issues reviewed: 34 (32 non-pinned + #118/#126 pinned policy, skipped).
+- Created labels: `priority:current`, `priority:next`, `priority:later`,
+  `principal-close-candidate`.
+- Labelled priority:current: #26, #66 (both release-eligible bugs named in
+  ROADMAP's v0.1.2 section as deferrable to v0.1.3).
+- Labelled priority:next: #74 (`tape annotate` CLI), #81 (`tape doctor`),
+  #106 (RuntimeAdapter trait) — all explicitly named as v0.2 stretch in
+  ROADMAP's Next Milestone section.
+- Labelled priority:later: #2, #8, #10, #18, #31, #42, #51, #61, #67, #71,
+  #78, #85, #88, #89, #90, #93, #95, #99, #100, #101, #102, #103, #104, #105,
+  #107, #108, #110 (27 issues, all sitting in ROADMAP's Backlog buckets).
+- Added missing kind:* labels: `kind:feature` added to all 30 enhancement
+  issues (every enhancement-tagged issue was missing it per #118 discipline).
+  #26 and #66 already had `kind:bug`.
+- Closed as fixed: none in this pass. #68 (created_at≤ejected_at) and #109
+  (meta.tool_budget) were already closed by colinc86 before this run.
+- Closed as duplicate: none — no clear duplicates among open enhancement
+  issues; they're well-differentiated by ROADMAP buckets.
+- Tagged principal-close-candidate: none. The backlog as filed by PM
+  matches the ROADMAP's themed backlog buckets cleanly; nothing looks
+  out-of-scope for v0.x.
+- Roadmap drift spotted: ROADMAP names #68 and #109 under "Open bugs not
+  blocking the release (can roll into v0.1.3)" — but both are already closed
+  on GitHub (per PR #123 for #68; #109 closed 2026-05-13). The Open-bugs
+  list in the v0.1.2 milestone section is now down to #26 and #66 only.
+  Surfacing this here so PM can refresh ROADMAP at release-cut time. Not
+  modifying ROADMAP.md per scope.
+- No PR actions, no production code changes, no ROADMAP edits.
