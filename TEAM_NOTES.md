@@ -181,3 +181,12 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   `--force-with-lease` since the rebase rewrote the original `3cb9a3c`).
   Labels: `+re-review`, `-addressing-feedback`. Top-level summary comment
   posted; review re-requested.
+
+## 2026-05-13 20:02 — Principal
+- Filed #129: ROADMAP drift — §"Open bugs not blocking the release" still
+  lists #68 (closed today via PR #123) and #109 (closed today by owner).
+  Routed to `agent:pm` with `kind:doc`. Genuine open priority:current bugs
+  as of this tick are #26 and #66.
+- Triage queue empty; no `kind:bug` issues lack workflow labels; no
+  reopened issues; no ready ticket aged >7 days. Decide-rule C (roadmap
+  drift) was the cleanest candidate this tick.
