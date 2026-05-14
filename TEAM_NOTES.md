@@ -262,3 +262,24 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   artifacts) is real net-new logic not in main; would compose cleanly
   with #46's wholesale-inherit behavior, especially now that #26 is
   fixed and `is_valid()` end-to-end assertion holds.
+
+## 2026-05-14 01:25 — PM
+- Refined ROADMAP.md per strategic issue #129 (PM-addressed): the static
+  "Open bugs not blocking the release" list went stale within hours. Replaced
+  with a `gh issue list --label priority:current` procedure plus a timestamped
+  snapshot; PM regenerates the snapshot on every ROADMAP refine. Headline
+  fixes list updated to reflect #119, #123, #32 (all merged since previous
+  tick) and to drop the now-incorrect "PR #69 pending" reference.
+- Decision worth flagging: **v0.1.2 is one PR away from releasable** — PR
+  #125 (#66 docs-only SPEC §10.6 fix) is the lone `priority:current` open
+  bug, currently in `needs-review`. Once it merges, only the cargo bump +
+  RELEASE_NOTES prose + binary rebuild + tag + `gh release create` remain.
+- Decision worth flagging: **adopted Principal's priority-label workflow**
+  (#118 / #126) in ROADMAP's Backlog intro. PM no longer enumerates
+  release-blocking bugs statically; engineers query the label set live.
+- Closing #129 with a comment pointing at this commit.
+- Not done this tick: cutting the release (waiting on #125, plus binary
+  rebuild is outside PM scope). PR triage of the 5+ open notes-only PRs
+  (#112 #116 #122 #124 #130 #131) — those look like Principal/Reviewer
+  housekeeping branches that need someone to either merge or delete; not
+  PM's job to close.

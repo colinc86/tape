@@ -21,20 +21,24 @@ The three-year arc:
 
 ## Current Milestone — v0.1.2 (patch rollup)
 
-**Status:** Code complete on `main`. Awaiting binary rebuild + release cut.
+**Status:** Almost releasable. One `priority:current` bug (#66) still has its
+fix in `needs-review` (PR #125); once that merges, only binary rebuild + cut
+remains.
 
-A patch release that aggregates ~30 backward-compatible fixes merged since
+A patch release that aggregates ~32 backward-compatible fixes merged since
 v0.1.1 (2026-05-07). No format or behavior changes; existing tapes and plugin
 installs continue to work unchanged.
 
 Headline fixes (full list will go in RELEASE_NOTES at release time):
 
 - **Spec compliance:** `tape verify` now enforces SPEC §3.1 (created_at ≤
-  ejected_at — PR #69 pending), §5.4 (exactly one task / eject — #87), §5.5.1
+  ejected_at — #123), §5.4 (exactly one task / eject — #87), §5.5.1
   (non-empty task prompt — #98), §9.1 (`deny_unknown_fields` on RedactConfig —
   #40); UNKNOWN_KIND / RESERVED_KIND diagnostics wired (#65, #92); full
   built-in rule set scanned in defense-in-depth (#38); meta.label redacted
-  before scan (#79).
+  before scan (#79); `meta.tool_budget` populated at eject time (#119);
+  `tape.fork` at last step + `tape.eject` no longer produces two eject events
+  (#32).
 - **Recorder / hook correctness:** `tape-hook` streams content hashing via
   blake3::Hasher (#52); `PreToolUse` hook populates `file_write.before_hash`
   (#57); `NotebookEdit` covered by overlay matchers and hook dispatch (#76,
@@ -54,23 +58,38 @@ Headline fixes (full list will go in RELEASE_NOTES at release time):
   lands (#64); `last_answer` restricted to agent annotations (#22).
 - **Surfacing:** `--label` reaches `meta.yaml` (#73).
 
-Release blockers:
+### Release blockers
 
+- [ ] All `priority:current` bugs merged (see snapshot below).
+- [ ] Bump `[workspace.package].version` to `0.1.2` in `Cargo.toml`.
+- [ ] Update RELEASE_NOTES.md with a written changelog (prose, not commit
+  titles).
 - [ ] Rebuild macOS-Apple-Silicon binaries (`tape`, `tape-hook`,
   `tape-mcp-wrap`) for the plugin marketplace.
 - [ ] Cut tag `v0.1.2` + `gh release create` with tarball + SHA256SUMS.
-- [ ] Bump `[workspace.package].version` to `0.1.2` in `Cargo.toml`.
 
-Open bugs not blocking the release (can roll into v0.1.3):
+### Open `priority:current` bugs
 
-- #26 (severity:medium) — `tape.fork` at last step + `tape.eject` produces a
-  tape with two eject events. Narrow path.
-- #109 (severity:low) — `meta.tool_budget` always None; diff's Latency summary
-  silently dead.
-- #68 (severity:low) — verify doesn't check `created_at ≤ ejected_at` (PR #69
-  open).
-- #66 (severity:low) — SPEC §10.6 missing two diagnostic codes that verify
-  already emits (PR #70 open).
+This roadmap intentionally does **not** enumerate open bugs as a static list —
+it goes stale within hours (it already did, see #129). The source of truth is
+the live label set:
+
+```
+gh issue list --label priority:current --label kind:bug --state open
+```
+
+PM regenerates the snapshot below on every ROADMAP refine; engineers don't
+take it as a contract.
+
+Snapshot at **2026-05-14 01:25 UTC**:
+
+- **#66** (severity:low) — SPEC §10.6 missing two diagnostic codes that
+  verify already emits. PR #125 in `needs-review` (supersedes stale PR #70).
+
+That's the lone remaining blocker. #26 (severity:medium, fork+eject double
+terminator) merged via PR #32 at 21:05 UTC; #68 (created_at) and #109
+(tool_budget) closed earlier today. Fix complexity for #66 is small (SPEC
+docs only, no code).
 
 ---
 
@@ -109,6 +128,14 @@ Stretch items for v0.2:
 
 Open enhancement issues grouped by theme. Principal converts these into
 engineering tickets at the right time; PM keeps the buckets and reorders.
+
+**Priority labels** (per #118 / #126 — Principal's workflow-label discipline):
+
+- `priority:current` — must land in the current milestone (v0.1.2). Bug
+  fixes scoped to release.
+- `priority:next` — explicit v0.2 work (currently #74, #81, #106).
+- `priority:later` — backlog. Live count via
+  `gh issue list --label priority:later --state open` (27 as of 2026-05-13).
 
 ### Multi-runtime + ingest (the v0.3 direction)
 
