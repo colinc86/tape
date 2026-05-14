@@ -319,10 +319,8 @@ fn snapshot_collapse_ts_fallback_uses_ejected_at() {
         annotation.ts
     );
     assert!(
-        String::from_utf8_lossy(&out.stdout)
-            .contains("snapshot_collapse_ts_fallback")
-            || String::from_utf8_lossy(&out.stderr)
-                .contains("snapshot_collapse_ts_fallback"),
+        String::from_utf8_lossy(&out.stdout).contains("snapshot_collapse_ts_fallback")
+            || String::from_utf8_lossy(&out.stderr).contains("snapshot_collapse_ts_fallback"),
         "expected a snapshot_collapse_ts_fallback warning"
     );
 }
