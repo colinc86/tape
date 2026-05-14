@@ -46,7 +46,10 @@ fn stats_minimal_success_renders_expected_sections() {
     assert!(text.contains("tokens:"), "missing tokens line:\n{text}");
     assert!(text.contains("tools:"), "missing tools line:\n{text}");
     assert!(text.contains("files:"), "missing files line:\n{text}");
-    assert!(text.contains("redactions:"), "missing redactions line:\n{text}");
+    assert!(
+        text.contains("redactions:"),
+        "missing redactions line:\n{text}"
+    );
 }
 
 #[test]
@@ -67,4 +70,19 @@ fn stats_help_is_wired() {
     assert!(out.status.success(), "tape stats --help failed: {out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("stats"), "{text}");
+}
+
+/// Failure-path: a path that does not point at a readable cassette
+/// must exit non-zero. Guards against accidentally swallowing IO
+/// errors and reporting an empty/zero'd stats block.
+#[test]
+fn stats_exits_nonzero_on_missing_file() {
+    let out = Command::new(binary_path())
+        .args(["stats", "/this/path/does/not/exist/nope.tape"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "tape stats on a missing file should fail: {out:?}"
+    );
 }

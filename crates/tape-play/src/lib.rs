@@ -228,8 +228,13 @@ mod chrono_lite {
     pub fn parse(s: &str) -> Option<i64> {
         // Expect "YYYY-MM-DDTHH:MM:SS" then optional ".fff" then "Z".
         let bytes = s.as_bytes();
-        if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T'
-            || bytes[13] != b':' || bytes[16] != b':' || !s.ends_with('Z')
+        if bytes.len() < 20
+            || bytes[4] != b'-'
+            || bytes[7] != b'-'
+            || bytes[10] != b'T'
+            || bytes[13] != b':'
+            || bytes[16] != b':'
+            || !s.ends_with('Z')
         {
             return None;
         }
@@ -509,8 +514,16 @@ mod tests {
     fn stats_renders_kind_histogram() {
         let tracks = vec![
             t(1, Kind::Task, json!({"prompt": "x"})),
-            t(2, Kind::ModelCall, json!({"vendor": "anthropic", "model": "x"})),
-            t(3, Kind::ModelCall, json!({"vendor": "anthropic", "model": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x"}),
+            ),
+            t(
+                3,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x"}),
+            ),
             t(4, Kind::Shell, json!({"command": "ls"})),
             t(5, Kind::Eject, json!({"outcome": "success"})),
         ];
@@ -584,7 +597,10 @@ mod tests {
         let s = render_stats(&fresh_meta(), &tracks, Some(0));
         assert!(s.contains("tokens: in=300 + out=130"), "{s}");
         assert!(s.contains("across 2 model_call event(s)"), "{s}");
-        assert!(s.contains("1 model_call event(s) missing token counts"), "{s}");
+        assert!(
+            s.contains("1 model_call event(s) missing token counts"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -641,7 +657,10 @@ mod tests {
             &[t(1, Kind::Task, json!({"prompt": "x"}))],
             Some(0),
         );
-        assert!(s.contains("id: 01h8xy00-0000-7000-b8aa-000000000031"), "{s}");
+        assert!(
+            s.contains("id: 01h8xy00-0000-7000-b8aa-000000000031"),
+            "{s}"
+        );
         assert!(s.contains("task: test the stats"), "{s}");
         assert!(s.contains("outcome: success"), "{s}");
         assert!(

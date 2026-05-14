@@ -1103,16 +1103,16 @@ fn cmd_stats(file: &std::path::Path) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("input cassette is missing meta.yaml"))?;
     let meta = tape_format::meta::Meta::parse(meta_yaml)?;
-    let redactions_count = raw
-        .redactions_json
-        .as_deref()
-        .map(|s| {
-            serde_json::from_str::<serde_json::Value>(s)
-                .ok()
-                .and_then(|v| v.as_array().map(|a| a.len() as u64))
-                .unwrap_or(0)
-        });
-    print!("{}", tape_play::render_stats(&meta, &tracks, redactions_count));
+    let redactions_count = raw.redactions_json.as_deref().map(|s| {
+        serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| v.as_array().map(|a| a.len() as u64))
+            .unwrap_or(0)
+    });
+    print!(
+        "{}",
+        tape_play::render_stats(&meta, &tracks, redactions_count)
+    );
     Ok(())
 }
 
