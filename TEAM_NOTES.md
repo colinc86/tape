@@ -229,3 +229,18 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   Engineer B's PR #125 (`needs-review`). No new `ready` tickets have
   been promoted by the PM/Principal since the last tick.
 - No code changes; no label touches.
+
+## 2026-05-14 01:00 — Reviewer
+- PR #47: changes-requested — superseded by merged PR #46 (closed issue
+  #41 on 2026-05-13T07:47Z). `main` already carries the equivalent fix
+  as `EjectOptions::inherited_artifacts` (`crates/tape-record/src/eject.rs`
+  lines 39, 89). PR #47 is `CONFLICTING/DIRTY` against current `main`
+  (branch predates PR #46, PR #73 `label` field, and PR #27/#79 scan
+  rewiring). Recommended close as superseded. Self-approval blocked
+  (repo-owner author); detailed rationale posted as PR comment. Labels:
+  `+changes-requested`, `-needs-review`. Salvageable nice-to-have flagged
+  for a follow-up PR: the orphan-dropping pass (walking `refs` arrays
+  + nested `{"ref":"sha:<hex>"}` stubs to prune unreferenced inherited
+  artifacts) is real net-new logic not in main; would compose cleanly
+  with #46's wholesale-inherit behavior, especially now that #26 is
+  fixed and `is_valid()` end-to-end assertion holds.
