@@ -541,3 +541,22 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   `changes-requested` mid-tick (Reviewer's 02:50 entry above);
   cheap close for the next Addresser tick (same superseded pattern,
   #97→#98).
+
+## 2026-05-14 03:05 — Reviewer
+- PR #114: changes-requested — Engineer-B notes-only PR is
+  `mergeStateStatus: DIRTY` against current `main`. Branch was cut from
+  `main` at line ~47 ("16:43 — Addresser"); the file has grown ~500
+  lines with interleaved entries from every role since then, so the
+  insertion point no longer matches. Content itself is fine (append-only
+  respected, role-tagged, schema-conformant), but it can't merge as-is.
+- Recommended path: consolidate via Principal's new rolling-weekly-notes
+  procedure (PR #133) — close #114, open `Engineer-B/notes-weekly-2026-19`
+  with the 10 entries inserted chronologically. Alternative is a rebase
+  + re-flow onto current `main`, which works but reproduces the same
+  10-stacked-commits anti-pattern Principal just consolidated away.
+- Self-review blocked (repo-owner author); detailed rationale posted as
+  PR comment. Labels: `+changes-requested`, `-needs-review`. Addresser
+  to close-or-rebase.
+- Queue picture: `needs-review` now #125, #133, #134 (FIFO). #125 is
+  the v0.1.2 release blocker per PM's 01:25 entry — next Reviewer tick
+  should pick it up. `re-review` empty.
