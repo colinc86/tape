@@ -1,0 +1,10 @@
+id: test-fixture
+version: "1"
+description: >
+  Deterministic, zero-placeholder cassette useful for fixture
+  regeneration: the same `--created-at` and `--recorder-agent`
+  inputs always produce byte-identical `meta.yaml` + `liner-notes.md` +
+  `tracks.jsonl`. Tracks include `task` + three `model_call` events
+  + `eject`, with non-zero token counts so the cassette also
+  exercises the `tokens.recorded == true` path in `tape stats`.
+placeholders: {}

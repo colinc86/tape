@@ -1,0 +1,5 @@
+{"step":1,"kind":"task","ts":"{{created_at}}","payload":{"prompt":"test fixture"}}
+{"step":2,"kind":"model_call","ts":"{{created_at}}","payload":{"vendor":"anthropic","model":"claude-haiku-4-5","tokens_in":100,"tokens_out":40}}
+{"step":3,"kind":"model_call","ts":"{{created_at}}","payload":{"vendor":"anthropic","model":"claude-haiku-4-5","tokens_in":60,"tokens_out":25}}
+{"step":4,"kind":"model_call","ts":"{{created_at}}","payload":{"vendor":"anthropic","model":"claude-haiku-4-5","tokens_in":80,"tokens_out":35}}
+{"step":5,"kind":"eject","ts":"{{ejected_at}}","payload":{"outcome":"success"}}

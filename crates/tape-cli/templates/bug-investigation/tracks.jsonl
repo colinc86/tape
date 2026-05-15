@@ -1,0 +1,12 @@
+{"step":1,"kind":"task","ts":"{{created_at}}","payload":{"prompt":"{{task}}"}}
+{"step":2,"kind":"file_read","ts":"{{created_at}}","payload":{"path":"src/billing/refund.rs","bytes":2048}}
+{"step":3,"kind":"file_read","ts":"{{created_at}}","payload":{"path":"src/billing/handler.rs","bytes":1536}}
+{"step":4,"kind":"file_read","ts":"{{created_at}}","payload":{"path":"src/billing/lock.rs","bytes":1024}}
+{"step":5,"kind":"model_call","ts":"{{created_at}}","payload":{"vendor":"anthropic","model":"claude-opus-4-7","tokens_in":2200,"tokens_out":480}}
+{"step":6,"kind":"mcp_call","ts":"{{created_at}}","payload":{"server":"db","tool":"query","args":{"sql":"SELECT count(*) FROM refunds WHERE status='failed' AND created_at > now() - interval '24h'"}}}
+{"step":7,"kind":"file_read","ts":"{{created_at}}","payload":{"path":"src/billing/refund.rs","bytes":2048,"line":142}}
+{"step":8,"kind":"model_call","ts":"{{created_at}}","payload":{"vendor":"anthropic","model":"claude-opus-4-7","tokens_in":1800,"tokens_out":640}}
+{"step":9,"kind":"annotation","ts":"{{created_at}}","payload":{"by":"agent","note":"smoking gun: race window between the CAS at line 142 and the write at line 147 in process_refund()"}}
+{"step":10,"kind":"file_write","ts":"{{created_at}}","payload":{"path":"src/billing/refund.rs","bytes":2096}}
+{"step":11,"kind":"file_write","ts":"{{created_at}}","payload":{"path":"src/billing/lock.rs","bytes":1180}}
+{"step":12,"kind":"eject","ts":"{{ejected_at}}","payload":{"outcome":"success"}}

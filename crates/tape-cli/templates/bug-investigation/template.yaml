@@ -1,0 +1,17 @@
+id: bug-investigation
+version: "1"
+description: >
+  Canonical 12-track bug-hunt shape: the agent reads a few source
+  files, calls the model to reason about them, runs an MCP query
+  against a database (or similar), reads one more file to confirm
+  the smoking-gun hypothesis, annotates the finding, writes the
+  fix in two files, and ejects with `outcome: success`. Hand-rolled
+  for shape only — payloads are plausible, not real.
+placeholders:
+  task:
+    required: true
+    description: >
+      One-line headline of the bug under investigation. Lands in
+      `meta.task`, in the task event's `prompt`, and inline in the
+      liner-notes. Plain UTF-8; no quotes, backslashes, newlines, or
+      control characters.
