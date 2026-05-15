@@ -2633,7 +2633,18 @@ fn resolve_pricing_source(
     let cwd = std::env::current_dir().ok()?;
     let taperc_path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
         .or_else(tape_redact::config::TapeRcConfig::locate_user)?;
-    let yaml = std::fs::read_to_string(&taperc_path).ok()?;
+    // Surface read failures rather than silently falling through to the
+    // bundled table: `locate_*` confirmed `is_file()`, so an `Err` here
+    // is almost certainly an EACCES on a `.taperc` the user expects to
+    // be consulted. Symmetry with the parse-error branch below — both
+    // exit 2 with a diagnostic naming the `.taperc` path.
+    let yaml = match std::fs::read_to_string(&taperc_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("tape stats: failed to read {}: {e}", taperc_path.display());
+            std::process::exit(2);
+        }
+    };
     let cfg = match tape_redact::config::TapeRcConfig::parse(&yaml) {
         Ok(c) => c,
         Err(e) => {

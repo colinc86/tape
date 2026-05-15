@@ -18,6 +18,10 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
         Box::new(checks::config::UserTaperc),
         Box::new(checks::config::WorkspaceTaperc),
         Box::new(checks::config::RuleIdsValid),
+        // Issue #186 Acceptance #5: `.taperc::pricing.pricing_file`
+        // surface. `Warn`-severity — a broken configured pricing file
+        // does not block recording, only `tape stats --with-cost`.
+        Box::new(checks::config::ConfiguredPricingFile),
         Box::new(checks::permissions::TmpdirWritable),
         Box::new(checks::permissions::ClaudeDirWritable),
         // Step-2 of #81 (issue #163): claude-code soft-dependency checks.

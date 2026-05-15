@@ -369,10 +369,10 @@ redact:
 
     #[test]
     fn pricing_section_with_pricing_file_parses() {
-        let yaml = r#"
+        let yaml = r"
 pricing:
   pricing_file: ./prices.toml
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         assert_eq!(cfg.pricing.pricing_file.as_deref(), Some("./prices.toml"));
     }
