@@ -325,6 +325,30 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Regenerate `liner-notes.md` for an existing cassette via the
+    /// configured judge model in `.taperc::judge:`.
+    ///
+    /// Phase-1 vertical slice of issue #71: bundled `default` prompt
+    /// template only; `--template <path>` / `--template-id <id>`, the
+    /// interactive confirmation UX, JSON `--report` sidecar,
+    /// `.taperc::relinernote:` config, and pricing integration are
+    /// follow-on PRs.
+    Relinernote {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Override `.taperc::judge::model` for one invocation.
+        /// Empty means "use the value the config provides".
+        #[arg(long)]
+        model: Option<String>,
+        /// Render the prompt with placeholders substituted, print it
+        /// to stdout, and exit 0 without making an HTTP call.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output path. Default: `<basename>.relinernote.tape` next to
+        /// the input. Refuses if equal to the input path.
+        #[arg(short = 'o', long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -435,6 +459,12 @@ fn main() -> Result<()> {
             &file, note, editor, step, actor, &by, out, in_place, ts, json,
         ),
         Cmd::Export { file, format, out } => cmd_export(&file, &format, out),
+        Cmd::Relinernote {
+            file,
+            model,
+            dry_run,
+            out,
+        } => cmd_relinernote(&file, model, dry_run, out),
     }
 }
 
@@ -1006,6 +1036,7 @@ fn build_new_meta(
         recap: None,
         recaps: vec![],
         tags: vec![],
+        relinernotes: vec![],
         new_block: Some(tape_format::meta::NewBlock {
             template_id: bundle.id.into(),
             template_version: bundle.version.into(),
@@ -2552,4 +2583,377 @@ fn cmd_export(file: &std::path::Path, format: &str, out: Option<std::path::PathB
 
     println!("ok: wrote {}", out_path.display());
     Ok(())
+}
+fn cmd_relinernote(
+    file: &std::path::Path,
+    model_override: Option<String>,
+    dry_run: bool,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // 1. Resolve the output path. `--dry-run` doesn't write, so the
+    //    path resolution only matters for the write branch — but we
+    //    still validate it up front so `--dry-run -o <input>` fails
+    //    fast with the same message a real run would emit.
+    let out_path = if let Some(p) = out {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.relinernote.tape"))
+    };
+    if same_path(file, &out_path) {
+        eprintln!("tape relinernote: --out must differ from <file>");
+        std::process::exit(2);
+    }
+
+    // 2. Load the input. `meta.task` must be non-empty per AC #6 —
+    //    a task-less cassette has nothing to narrate.
+    let raw = open_input(file, "tape relinernote");
+    let mut meta = parse_meta(&raw, "tape relinernote");
+    if meta.task.trim().is_empty() {
+        eprintln!("tape relinernote: RELINER_NO_TASK — meta.task is empty");
+        std::process::exit(2);
+    }
+    let tracks_jsonl = raw.tracks_jsonl.as_deref().unwrap_or("");
+    let prior_liner = raw.liner_md.as_deref().unwrap_or("").to_owned();
+    let prior_sha = sha256_hex(prior_liner.as_bytes());
+
+    // 3. Build the prompt. Hardcoded `default` template; the
+    //    track summary is one line per event, head+tail-truncated at
+    //    RELINER_PROMPT_CAP bytes with an elision marker.
+    let prompt = render_relinernote_prompt(&meta, tracks_jsonl, &prior_liner);
+
+    // 4. `--dry-run` stops here — print the rendered prompt, exit 0,
+    //    no judge call. Test asserts the client is never invoked.
+    if dry_run {
+        println!("{prompt}");
+        return Ok(());
+    }
+
+    // 5. Load config and call the judge.
+    let (model_id, judge_out) = match run_relinernote_judge(&prompt, model_override) {
+        Ok(pair) => pair,
+        Err(code) => std::process::exit(code),
+    };
+
+    // 6. Validate the output. Both validators must pass — missing or
+    //    empty sections AND order. SPEC §4.1 is "in order"; the
+    //    canonical four-section liner notes are what every reader
+    //    (including `tape verify`) assumes.
+    let new_liner = judge_out.text.trim_end().to_owned();
+    let missing = tape_format::liner::missing_or_empty_sections(&new_liner);
+    if !missing.is_empty() {
+        eprintln!(
+            "tape relinernote: RELINER_OUTPUT_INVALID — missing or empty sections: {}",
+            missing.join(", ")
+        );
+        std::process::exit(2);
+    }
+    if !tape_format::liner::sections_in_order(&new_liner) {
+        eprintln!(
+            "tape relinernote: RELINER_OUTPUT_INVALID — required H2 sections are not in canonical order"
+        );
+        std::process::exit(2);
+    }
+
+    // 7. Append the audit entry. Hashes are over the canonical bytes
+    //    we'll write (so a reader can verify the chain by re-hashing
+    //    the on-disk body, not the original CR-terminated source).
+    let new_sha = sha256_hex(new_liner.as_bytes());
+    meta.relinernotes.push(tape_format::meta::RelinernoteEntry {
+        applied_at: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+        model: model_id,
+        template_id: "default".to_owned(),
+        prior_liner_notes_sha256: prior_sha,
+        new_liner_notes_sha256: new_sha,
+        judge_call: judge_out.record,
+    });
+
+    // 8. Rewrite the zip. Everything but meta.yaml + liner-notes.md
+    //    passes through byte-identical: tracks, redactions.json,
+    //    artifacts. Same posture `cmd_recap` uses.
+    let new_meta_yaml = meta
+        .to_yaml()
+        .map_err(|e| anyhow::anyhow!("re-serialize meta.yaml: {e}"))?;
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml: new_meta_yaml,
+        liner_md: new_liner,
+        tracks_jsonl: raw.tracks_jsonl.clone().unwrap_or_default(),
+        redactions_json: raw.redactions_json.clone(),
+        artifacts: raw.artifacts.clone().into_iter().collect(),
+    };
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(&out_path)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    // 9. Post-write verify. `LEAKED_SECRET_IN_LINER` (SPEC §10.5)
+    //    catches any secret-shaped content the defense-in-depth
+    //    scanner missed; exit 3 + remove the corrupt output.
+    let written = tape_format::reader::RawTape::open(&out_path)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let _ = std::fs::remove_file(&out_path);
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        eprintln!(
+            "tape relinernote: output failed tape verify ({}); removed {}",
+            codes.join(","),
+            out_path.display()
+        );
+        std::process::exit(3);
+    }
+
+    println!("ok: regenerated liner-notes.md on {}", out_path.display());
+    Ok(())
+}
+
+/// Helper extracted from `cmd_relinernote` to keep the driver under the
+/// workspace `clippy::too_many_lines` ceiling. Resolves the judge config,
+/// applies `--model` if non-empty, drives a single `complete` call, and
+/// translates the result into either `(model_id, JudgeOutput)` or the
+/// structured exit code the caller should propagate. Diagnostics are
+/// emitted to stderr before returning the `Err` arm.
+fn run_relinernote_judge(
+    prompt: &str,
+    model_override: Option<String>,
+) -> std::result::Result<(String, tape_judge::JudgeOutput), i32> {
+    let mut config = match load_judge_config_for_relinernote() {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — {msg}");
+            return Err(2);
+        }
+    };
+    if let Some(m) = model_override.as_deref().filter(|s| !s.is_empty()) {
+        m.clone_into(&mut config.model);
+    }
+    let model_id = config.model.clone();
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — build tokio runtime: {e}");
+            return Err(2);
+        }
+    };
+    let prompt_owned = prompt.to_owned();
+    let result = rt.block_on(async move {
+        let client = tape_judge::JudgeClient::new(config)?;
+        client
+            .complete(&prompt_owned, tape_judge::JudgeOpts::default())
+            .await
+    });
+
+    match result {
+        Ok(o) => Ok((model_id, o)),
+        Err(tape_judge::JudgeError::Rejected(hit)) => {
+            eprintln!(
+                "tape relinernote: RELINER_LEAK — judge output rejected by defense-in-depth: {}",
+                hit.rule_id
+            );
+            Err(6)
+        }
+        Err(e) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — judge call failed: {e}");
+            Err(2)
+        }
+    }
+}
+
+/// Locate `.taperc` (workspace first, user-level fallback), parse the
+/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`].
+/// Mirrors the loader the recap `--auto` path uses.
+fn load_judge_config_for_relinernote() -> std::result::Result<tape_judge::JudgeConfig, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user);
+    let Some(p) = path else {
+        return Err(".taperc not found (looked in workspace and $HOME); \
+             needed for relinernote to know the judge model + endpoint"
+            .into());
+    };
+    let yaml = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+    let cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+        .map_err(|e| format!("parse {}: {e}", p.display()))?
+        .ok_or_else(|| {
+            format!(
+                "{}: no `judge:` block; add one (model + api_key_env) and re-run",
+                p.display()
+            )
+        })?;
+    Ok(cfg)
+}
+
+/// Hardcoded bundled `default` prompt template (Phase 1 only).
+/// Instructions first, then the cassette context, then the track
+/// summary, then the existing liner notes. The order matters: an
+/// oversized tracks summary should never push the instructions out
+/// of the model's effective context.
+fn render_relinernote_prompt(
+    meta: &tape_format::meta::Meta,
+    tracks_jsonl: &str,
+    prior_liner: &str,
+) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(8 * 1024);
+    s.push_str(
+        "You are regenerating the `liner-notes.md` case insert for one recorded \
+         AI-agent investigation. Produce 200–500 words of Markdown. The output \
+         MUST contain, in this exact order, these four level-2 headings, each \
+         followed by at least one non-empty paragraph or list item before the next:\n\n\
+         ## What I was asked to do\n\
+         ## What I found\n\
+         ## Suggested next step / fix\n\
+         ## What I'm uncertain about\n\n\
+         Plain Markdown — no front-matter, no code fences around the whole thing, \
+         no other H1/H2 sections. Be concrete: name the user-visible outcome, not \
+         a meta description of the recording. Do not include any secrets, API keys, \
+         emails, or PII; if the source mentions them, refer abstractly.\n\n",
+    );
+    let _ = writeln!(s, "Task: {}", meta.task);
+    let outcome = match meta.outcome {
+        tape_format::meta::Outcome::Success => "success",
+        tape_format::meta::Outcome::Failure => "failure",
+        tape_format::meta::Outcome::Abandoned => "abandoned",
+        tape_format::meta::Outcome::Unknown => "unknown",
+    };
+    let _ = writeln!(s, "Outcome: {outcome}");
+    if let Some(label) = meta.label.as_deref() {
+        let _ = writeln!(s, "Label: {label}");
+    }
+    s.push_str("\nTracks (one line per step):\n");
+    s.push_str(&relinernote_track_summary(tracks_jsonl, RELINER_PROMPT_CAP));
+    if !prior_liner.trim().is_empty() {
+        s.push_str("\nPrior liner notes (for context — feel free to rewrite):\n");
+        s.push_str(prior_liner.trim());
+        s.push('\n');
+    }
+    s
+}
+
+/// 8 KiB cap on the tracks-summary slice of the prompt, per Principal
+/// scoping in #71. Tracks above the cap are head+tail-truncated with
+/// an explicit `… N tracks elided …` marker so both ends of long
+/// investigations stay visible.
+const RELINER_PROMPT_CAP: usize = 8 * 1024;
+
+fn relinernote_track_summary(tracks_jsonl: &str, byte_cap: usize) -> String {
+    let Ok(tracks) = tape_format::tracks::parse_jsonl(tracks_jsonl) else {
+        return "(tracks did not parse)\n".to_owned();
+    };
+    let lines: Vec<String> = tracks.iter().map(relinernote_track_line).collect();
+    let mut full = String::new();
+    for l in &lines {
+        full.push_str(l);
+        full.push('\n');
+    }
+    if full.len() <= byte_cap {
+        return full;
+    }
+    let elide = format!(
+        "… {} tracks elided (budget {byte_cap} bytes) …\n",
+        lines.len()
+    );
+    let side = byte_cap.saturating_sub(elide.len()) / 2;
+    let head = char_safe_prefix(&full, side);
+    let tail = char_safe_suffix(&full, side);
+    let mut out = String::with_capacity(byte_cap);
+    out.push_str(&head);
+    out.push_str(&elide);
+    out.push_str(&tail);
+    out
+}
+
+fn relinernote_track_line(t: &tape_format::tracks::Track) -> String {
+    let kind = match t.kind {
+        tape_format::tracks::Kind::Task => "task",
+        tape_format::tracks::Kind::ModelCall => "model_call",
+        tape_format::tracks::Kind::McpCall => "mcp_call",
+        tape_format::tracks::Kind::Shell => "shell",
+        tape_format::tracks::Kind::FileRead => "file_read",
+        tape_format::tracks::Kind::FileWrite => "file_write",
+        tape_format::tracks::Kind::Annotation => "annotation",
+        tape_format::tracks::Kind::Eject => "eject",
+    };
+    let hint = relinernote_payload_hint(t.kind, &t.payload);
+    if hint.is_empty() {
+        format!("  {:>3}. {kind}", t.step)
+    } else {
+        format!("  {:>3}. {kind}: {hint}", t.step)
+    }
+}
+
+fn relinernote_payload_hint(
+    kind: tape_format::tracks::Kind,
+    payload: &serde_json::Value,
+) -> String {
+    let key = match kind {
+        tape_format::tracks::Kind::Task => "prompt",
+        tape_format::tracks::Kind::ModelCall => "model",
+        tape_format::tracks::Kind::McpCall => "tool",
+        tape_format::tracks::Kind::Shell => "command",
+        tape_format::tracks::Kind::FileRead | tape_format::tracks::Kind::FileWrite => "path",
+        tape_format::tracks::Kind::Annotation => "note",
+        tape_format::tracks::Kind::Eject => "outcome",
+    };
+    let raw = payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .replace(['\n', '\r'], " ");
+    let truncated: String = raw.chars().take(120).collect();
+    if raw.chars().count() > 120 {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn char_safe_prefix(s: &str, byte_cap: usize) -> String {
+    if s.len() <= byte_cap {
+        return s.to_owned();
+    }
+    let mut end = byte_cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
+}
+
+fn char_safe_suffix(s: &str, byte_cap: usize) -> String {
+    if s.len() <= byte_cap {
+        return s.to_owned();
+    }
+    let mut start = s.len().saturating_sub(byte_cap);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_owned()
+}
+
+/// Lowercase-hex SHA-256 of a byte slice. Used for the `meta.relinernotes[]`
+/// hash chain. blake3 is the workspace's preferred hash, but SPEC §4 / the
+/// audit-row convention in `meta.relinernotes` calls for SHA-256 explicitly
+/// (Principal AC #4 names `prior_liner_notes_sha256` / `new_liner_notes_sha256`).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let digest = sha2::Sha256::digest(bytes);
+    let mut s = String::with_capacity(64);
+    for b in digest.as_slice() {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }

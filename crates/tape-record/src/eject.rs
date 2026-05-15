@@ -186,6 +186,11 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         // `tape tag` CLI. Live recordings ship with an empty list so
         // untouched cassettes round-trip without growing meta.yaml.
         tags: vec![],
+        // Issue #71: `meta.relinernotes[]` is owned by the post-hoc
+        // `tape relinernote` CLI. Live recordings ship with an empty
+        // list so untouched cassettes round-trip without growing
+        // meta.yaml.
+        relinernotes: vec![],
         // Issue #99: `meta.new` is exclusively the `tape new` CLI's
         // provenance record. The eject pipeline never produces a
         // generated cassette, so this stays None.
