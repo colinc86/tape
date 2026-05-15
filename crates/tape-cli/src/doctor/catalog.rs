@@ -1,4 +1,4 @@
-//! Phase-1 check catalog.
+//! Doctor check catalog.
 //!
 //! Adding a new check is a one-line edit here. The order in this vector is
 //! the order checks are *executed* and *reported*; keep it stable so the
@@ -7,7 +7,7 @@
 use super::check::Check;
 use super::checks;
 
-/// The stable phase-1 catalog. Order matters — `--list-checks` snapshots
+/// The stable doctor catalog. Order matters — `--list-checks` snapshots
 /// against this exact sequence.
 pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
     vec![
@@ -20,10 +20,17 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
         Box::new(checks::config::RuleIdsValid),
         Box::new(checks::permissions::TmpdirWritable),
         Box::new(checks::permissions::ClaudeDirWritable),
+        // Step-2 of #81 (issue #163): claude-code soft-dependency checks.
+        // Warn-severity; never escalates the exit code without --strict
+        // (which is also deferred).
+        Box::new(checks::claude_code::ClaudeInstalled),
+        Box::new(checks::claude_code::ClaudePluginEnabled),
     ]
 }
 
-/// Phase-1 category list, in display order. Distinct from the catalog
+/// Doctor category list, in display order. Distinct from the catalog
 /// because the category-level header (`signing  ⊘ n/a`) needs to appear
-/// even when no checks land in that category in this phase.
-pub const PHASE_1_CATEGORIES: &[&str] = &["binary", "config", "permissions"];
+/// even when no checks land in that category in this phase. Name is
+/// grandfathered from Phase 1; functions as a phase-agnostic display
+/// order today.
+pub const PHASE_1_CATEGORIES: &[&str] = &["binary", "config", "permissions", "claude-code"];
