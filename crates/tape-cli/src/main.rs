@@ -244,15 +244,22 @@ enum Cmd {
     },
     /// Append an annotation to an existing tape, writing a new cassette.
     ///
-    /// Phase-1 CLI counterpart to the deck's `tape.annotate` tool. See
-    /// issue #74 — implements only the minimum viable surface; `--editor`,
-    /// `--import`, `--in-place`, and `--force-resign` are follow-ups.
+    /// CLI counterpart to the deck's `tape.annotate` tool (issue #74).
+    /// `--import` and `--force-resign` remain follow-ups.
     Annotate {
         /// Input cassette to annotate.
         file: std::path::PathBuf,
-        /// Annotation body. SPEC §5.5.7 `note` field.
-        #[arg(long)]
-        note: String,
+        /// Annotation body. SPEC §5.5.7 `note` field. Mutually exclusive
+        /// with `--editor`; exactly one of the two MUST be supplied.
+        #[arg(long, required_unless_present = "editor", conflicts_with = "editor")]
+        note: Option<String>,
+        /// Compose the annotation body in `$VISUAL` / `$EDITOR` / `vi`
+        /// (in that resolution order). Mutually exclusive with `--note`;
+        /// exactly one of the two MUST be supplied. An empty body
+        /// (after comment-strip) cancels the operation cleanly with
+        /// exit 0 and no output cassette. (Issue #158.)
+        #[arg(long, conflicts_with = "note")]
+        editor: bool,
         /// Parent step the annotation hangs off. Validated against the
         /// tape's existing tracks: 1 ≤ N < new_step.
         #[arg(long)]
@@ -267,9 +274,18 @@ enum Cmd {
         #[arg(long, default_value = "human", value_parser = ["agent", "human"])]
         by: String,
         /// Output path. Default: `<basename>.annotated.tape` next to the
-        /// input. Refuses if equal to the input path.
-        #[arg(short = 'o', long)]
+        /// input. Refuses if equal to the input path; use `--in-place`
+        /// for atomic rewrite of the input. Mutually exclusive with
+        /// `--in-place`.
+        #[arg(short = 'o', long, conflicts_with = "in_place")]
         out: Option<std::path::PathBuf>,
+        /// Atomic rewrite of the input cassette via a sibling temp file
+        /// followed by a rename. The post-write verify gate runs before
+        /// the rename; on failure the input is preserved untouched and
+        /// exit 3 is returned. Mutually exclusive with `--out`.
+        /// (Issue #158.)
+        #[arg(long, conflicts_with = "out")]
+        in_place: bool,
         /// Override the annotation timestamp. Must be RFC-3339 (`Z`
         /// suffix). MUST be ≥ the last track's `ts` to preserve SPEC §5.2
         /// monotonicity.
@@ -395,13 +411,17 @@ fn main() -> Result<()> {
         Cmd::Annotate {
             file,
             note,
+            editor,
             step,
             actor,
             by,
             out,
+            in_place,
             ts,
             json,
-        } => cmd_annotate(&file, &note, step, actor, &by, out, ts, json),
+        } => cmd_annotate(
+            &file, note, editor, step, actor, &by, out, in_place, ts, json,
+        ),
         Cmd::Export { file, format, out } => cmd_export(&file, &format, out),
     }
 }
@@ -1751,32 +1771,110 @@ fn parse_meta(raw: &tape_format::reader::RawTape, cmd: &str) -> tape_format::met
 /// `annotation` event, and routes through `eject::eject` so the output
 /// passes `tape verify` with the same artifact and label inheritance the
 /// deck's `tool_eject` provides.
+/// Resolve the annotation body. clap's `required_unless_present` +
+/// `conflicts_with` guarantees exactly one of `--note` / `--editor` is
+/// set, so the caller passes the parsed `note` plus the `editor` flag
+/// and receives:
+///
+/// - `Some(body)` — happy path, body ready to scan + persist.
+/// - `None` — `--editor` was set and the user cancelled with an empty
+///   body. The caller exits 0 with no output cassette; the cancel
+///   message has already been printed.
+///
+/// Any other failure (editor spawn, non-UTF-8, oversize, non-zero
+/// editor exit) prints a diagnostic and calls `std::process::exit(2)`
+/// *after* `compose_note_via_editor`'s `tempfile::NamedTempFile` has
+/// dropped — keeping issue #158 AC #6 / #8 / #9 (no temp-file leak)
+/// satisfied.
+fn resolve_note_body(
+    file: &std::path::Path,
+    note: Option<String>,
+    editor: bool,
+    by: &str,
+) -> Option<String> {
+    if editor {
+        match compose_note_via_editor(file, by) {
+            Ok(Some(body)) => Some(body),
+            Ok(None) => {
+                eprintln!("tape annotate: nothing to annotate (empty body)");
+                None
+            }
+            Err(EditorError::SpawnFailed(msg) | EditorError::EditorExitNonZero(msg)) => {
+                eprintln!("tape annotate: {msg}");
+                std::process::exit(2);
+            }
+            Err(EditorError::NonUtf8Body) => {
+                eprintln!("tape annotate: editor produced non-UTF-8 body");
+                std::process::exit(2);
+            }
+            Err(EditorError::OversizeBody(n)) => {
+                eprintln!(
+                    "tape annotate: body exceeds 16 KiB limit (got {n} bytes after comment-strip)"
+                );
+                std::process::exit(2);
+            }
+        }
+    } else {
+        Some(note.expect(
+            "clap required_unless_present('editor') guarantees note is Some when editor is false",
+        ))
+    }
+}
+
+/// Build a sibling path next to `file` with the supplied filename
+/// suffix (joined after the file stem with a `.`). Falls back to a
+/// stem of `tape` and a parent of `.` when the input path has no
+/// stem / no parent (e.g. a bare filename). Used by both the
+/// `--in-place` temp path and the default `<stem>.annotated.tape`
+/// output path; centralising the logic dodges the
+/// `binding's name too similar` and `map(<f>).unwrap_or_else(<g>)`
+/// clippy lints that the inline duplicate triggered.
+fn sibling_path(file: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let dir = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let base = file.file_stem().map_or_else(
+        || std::borrow::Cow::Borrowed("tape"),
+        |s| s.to_string_lossy(),
+    );
+    dir.join(format!("{base}.{suffix}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_annotate(
     file: &std::path::Path,
-    note: &str,
+    note: Option<String>,
+    editor: bool,
     step: Option<u64>,
     actor: Option<String>,
     by: &str,
     out: Option<std::path::PathBuf>,
+    in_place: bool,
     ts: Option<String>,
     json: bool,
 ) -> Result<()> {
-    // 1. Resolve the output path (default sibling: `<stem>.annotated.tape`)
-    //    and refuse equal-to-input. SPEC §1.3 — annotate is non-destructive.
-    let out_path = match out {
-        Some(p) => p,
-        None => {
-            let stem = file
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "tape".to_owned());
-            let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
-            parent.join(format!("{stem}.annotated.tape"))
-        }
+    // 1a. Acquire the note body. clap already enforces the
+    //     mutually-exclusive / required-unless-present pair, so exactly
+    //     one branch fires.
+    let Some(note) = resolve_note_body(file, note, editor, by) else {
+        // `None` is the empty-body cancel from `--editor`. The helper
+        // already printed the cancel message; exit 0 with no output.
+        return Ok(());
     };
-    if same_path(file, &out_path) {
-        eprintln!("tape annotate: --out must differ from <file> (use --in-place once it ships)");
+
+    // 1b. Resolve the output path. `--in-place` overrides to a sibling
+    //     temp path; the rename onto `file` happens after the verify
+    //     gate at step 9. Default (neither flag set): sibling
+    //     `<stem>.annotated.tape` per Phase 1.
+    let final_path = file.to_path_buf();
+    let out_path = if in_place {
+        let pid = std::process::id();
+        sibling_path(file, &format!("annotate-tmp-{pid}.tape"))
+    } else {
+        out.unwrap_or_else(|| sibling_path(file, "annotated.tape"))
+    };
+    if !in_place && same_path(file, &out_path) {
+        eprintln!(
+            "tape annotate: --out must differ from <file> (use --in-place for atomic rewrite)"
+        );
         std::process::exit(2);
     }
 
@@ -1814,7 +1912,7 @@ fn cmd_annotate(
     let cwd = std::env::current_dir().map_err(|e| anyhow::anyhow!("cwd: {e}"))?;
     let redact_engine = tape_redact::engine_with_taperc(&cwd)
         .map_err(|e| anyhow::anyhow!("failed to load .taperc: {e}"))?;
-    let note_hits = redact_engine.scan(note);
+    let note_hits = redact_engine.scan(&note);
     if !note_hits.is_empty() {
         eprintln!(
             "tape annotate: ANNOT_LEAK — --note matches redaction rule(s): {}",
@@ -1862,7 +1960,7 @@ fn cmd_annotate(
         step: new_step,
         kind: tape_format::tracks::Kind::Annotation,
         ts: annot_ts_str.clone(),
-        payload: serde_json::json!({"by": by, "note": note}),
+        payload: serde_json::json!({"by": by, "note": &note}),
         parent_step: step,
         refs: vec![],
         annotations: vec![],
@@ -1910,13 +2008,34 @@ fn cmd_annotate(
         std::process::exit(3);
     }
 
+    // 10. `--in-place`: atomic rename the verified temp onto the input.
+    //     `std::fs::rename` is atomic for same-filesystem targets on
+    //     Unix, which holds for the sibling temp path we chose. If the
+    //     rename itself fails (different filesystem, permissions, etc.)
+    //     we leave the temp file in place and exit 2 with a clear
+    //     message so the user can recover.
+    let reported_path = if in_place {
+        if let Err(e) = std::fs::rename(&out_path, &final_path) {
+            eprintln!(
+                "tape annotate: --in-place rename {} → {} failed: {e}; verified output left at {}",
+                out_path.display(),
+                final_path.display(),
+                out_path.display(),
+            );
+            std::process::exit(2);
+        }
+        final_path.clone()
+    } else {
+        out_path.clone()
+    };
+
     let actor_display =
         actor.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()));
 
     if json {
         let mut payload = serde_json::json!({
             "schema_version": "1",
-            "output_path": out_path.to_string_lossy(),
+            "output_path": reported_path.to_string_lossy(),
             "new_step": new_step,
             "actor": actor_display,
             "by": by,
@@ -1927,7 +2046,7 @@ fn cmd_annotate(
         }
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
-        println!("ok: annotated {}", out_path.display());
+        println!("ok: annotated {}", reported_path.display());
         let parent_desc = step
             .map(|s| format!("parent_step={s}"))
             .unwrap_or_else(|| "unparented".to_owned());
@@ -1939,6 +2058,144 @@ fn cmd_annotate(
         let _ = result; // suppress unused warning
     }
     Ok(())
+}
+
+/// Recoverable failure from the editor helper. The caller maps each
+/// variant to its stderr message + exit code **after** the helper
+/// returns (and `tempfile::NamedTempFile` has dropped its scratch
+/// file). This indirection is what guarantees the temp file is gone
+/// before the process exits — `std::process::exit` skips destructors,
+/// so calling it from inside the helper would leak the buffer per
+/// issue #158 AC#6 / AC#8 / AC#9.
+enum EditorError {
+    SpawnFailed(String),
+    EditorExitNonZero(String),
+    NonUtf8Body,
+    OversizeBody(usize),
+}
+
+/// `--editor` driver. Writes a comment-stubbed template to a temp file,
+/// opens `$VISUAL` / `$EDITOR` / `vi` on it, blocks on the editor, then
+/// reads the result. Returns:
+///
+/// - `Ok(Some(body))` — non-empty body after comment-strip + trim. The
+///   16 KiB cap and UTF-8 validity are already verified.
+/// - `Ok(None)` — empty body after comment-strip. The caller treats
+///   this as a clean cancel and exits 0 with no output cassette.
+/// - `Err(EditorError::*)` — recoverable failure variant; the caller
+///   maps each to a stderr message + exit 2 after this function has
+///   returned, ensuring `tempfile`'s Drop runs first.
+///
+/// The `tempfile::NamedTempFile` cleans up the buffer on drop, so a
+/// panic / signal between launch and read still removes the scratch
+/// file — and the explicit `Err(...)` return on each failure path
+/// ensures the same Drop runs before the process exits. The
+/// defense-in-depth scan runs on the returned body via the existing
+/// call in `cmd_annotate`, identical to the `--note` path.
+fn compose_note_via_editor(
+    file: &std::path::Path,
+    by: &str,
+) -> std::result::Result<Option<String>, EditorError> {
+    // 1. Resolve the editor. Standard Unix precedence: `$VISUAL`
+    //    overrides `$EDITOR`, which falls back to `vi`. Empty / unset
+    //    env vars are treated as missing so an exported-but-empty
+    //    `EDITOR=` doesn't try to spawn `""`.
+    let editor_cmd = std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "vi".to_owned());
+
+    // 2. Materialise the template into a temp file. Comments start
+    //    with `#` and are stripped after the editor exits.
+    let template = format!(
+        "\n\
+         # tape annotate — write your annotation body below.\n\
+         # Lines beginning with '#' are stripped before save.\n\
+         # An empty body cancels the operation.\n\
+         #\n\
+         # File: {}\n\
+         # By:   {}\n",
+        file.display(),
+        by,
+    );
+    let mut tmp = tempfile::NamedTempFile::new()
+        .map_err(|e| EditorError::SpawnFailed(format!("create temp file: {e}")))?;
+    {
+        use std::io::Write as _;
+        tmp.write_all(template.as_bytes())
+            .map_err(|e| EditorError::SpawnFailed(format!("write template: {e}")))?;
+        tmp.flush()
+            .map_err(|e| EditorError::SpawnFailed(format!("flush template: {e}")))?;
+    }
+
+    // 3. Spawn the editor. Pass the temp path through a shell so
+    //    multi-word EDITOR values like `code --wait` work. We use
+    //    `/bin/sh -c "$EDITOR \"$0\"" <path>` to keep the path
+    //    argument shell-safe.
+    let path_arg = tmp.path().to_string_lossy().into_owned();
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("{editor_cmd} \"$0\""))
+        .arg(&path_arg)
+        .status();
+    let status = status.map_err(|e| {
+        EditorError::SpawnFailed(format!("failed to spawn editor {editor_cmd:?}: {e}"))
+    })?;
+    if !status.success() {
+        let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+        return Err(EditorError::EditorExitNonZero(format!(
+            "editor {editor_cmd:?} exited with status {code}"
+        )));
+    }
+
+    // 4. Read the result. Reject non-UTF-8 explicitly so a misbehaving
+    //    editor that writes binary garbage doesn't produce a corrupt
+    //    annotation payload. The temp file is dropped on the function
+    //    return path; returning an `Err` here lets the caller surface
+    //    the failure *after* Drop runs.
+    let bytes = std::fs::read(tmp.path())
+        .map_err(|e| EditorError::SpawnFailed(format!("read edited temp: {e}")))?;
+    let Ok(body) = String::from_utf8(bytes) else {
+        return Err(EditorError::NonUtf8Body);
+    };
+
+    // 5. Strip comment lines (any line whose first non-whitespace
+    //    char is `#`) and trim surrounding blank lines. The body is
+    //    bounded at 16 KiB after the strip per #74 §3.6.
+    let stripped = strip_comments_and_trim(&body);
+    if stripped.len() > 16 * 1024 {
+        return Err(EditorError::OversizeBody(stripped.len()));
+    }
+    if stripped.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(stripped))
+    // `tmp` drops here on every Ok path; on the `Err(...)` returns
+    // above it drops as the `?` / `return` unwinds the function frame,
+    // *before* the caller maps the variant to `std::process::exit(2)`.
+}
+
+/// Strip lines whose first non-whitespace character is `#`, then trim
+/// leading + trailing blank lines from the result. Mid-body blank
+/// lines are preserved so paragraph breaks survive the edit.
+fn strip_comments_and_trim(body: &str) -> String {
+    let mut kept: Vec<&str> = Vec::with_capacity(body.lines().count());
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        kept.push(line);
+    }
+    // Trim leading + trailing blank lines.
+    while kept.first().is_some_and(|l| l.trim().is_empty()) {
+        kept.remove(0);
+    }
+    while kept.last().is_some_and(|l| l.trim().is_empty()) {
+        kept.pop();
+    }
+    kept.join("\n")
 }
 
 /// Determine the annotation's `ts`. Honors an explicit `--ts` (validated
