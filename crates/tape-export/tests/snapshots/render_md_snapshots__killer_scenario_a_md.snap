@@ -1,0 +1,52 @@
+---
+source: crates/tape-export/tests/render_md_snapshots.rs
+assertion_line: 38
+expression: "render(\"killer-scenario-a.tape\")"
+---
+# Investigate payment failures for customer 4471
+
+**Recorded:** 2026-05-06T10:00:00Z by `claude-code/2.1.4`
+**Outcome:** success
+**Tracks:** 6 (`task` ×1, `model_call` ×2, `mcp_call` ×1, `annotation` ×1, `eject` ×1)
+
+## Liner notes
+
+## What I was asked to do
+Investigate why customer 4471's payments are failing.
+
+## What I found
+Smoking gun: a race condition in the refund processor at `process_refund()` in `payments.rs`. Customer ID `CUST-447139` triggers the bug when two refund requests arrive within 50ms of each other.
+
+## Suggested next step / fix
+Add an advisory lock around `process_refund()` keyed on customer_id.
+
+## What I'm uncertain about
+Whether other adjacent flows (chargeback, partial refund) share the same lock domain.
+
+## Tracklist
+
+### 1. `task` · 2026-05-06T10:00:00Z
+
+> Investigate payment failures for customer 4471
+
+### 2. `model_call` · 2026-05-06T10:00:15Z
+
+Model: `anthropic/claude-opus-4-7`
+
+### 3. `mcp_call` · 2026-05-06T10:00:25Z
+
+Tool: `db.query`
+
+### 4. `annotation` · 2026-05-06T10:00:40Z
+
+📌 by `agent`
+
+> smoking gun: race condition in process_refund() — customer CUST-447139
+
+### 5. `model_call` · 2026-05-06T10:00:50Z
+
+Model: `anthropic/claude-opus-4-7`
+
+### 6. `eject` · 2026-05-06T10:01:00Z
+
+Outcome: `success`

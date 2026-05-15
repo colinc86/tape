@@ -1,0 +1,20 @@
+[package]
+name = "tape-export"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "Render a tape/v0 cassette to portable formats (Markdown today, HTML next)"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde_json.workspace = true
+tape-format.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

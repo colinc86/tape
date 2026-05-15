@@ -1,0 +1,38 @@
+---
+source: crates/tape-export/tests/render_md_snapshots.rs
+assertion_line: 33
+expression: "render(\"minimal-success.tape\")"
+---
+# Say hello
+
+**Recorded:** 2026-05-06T10:00:00Z by `claude-code/2.1.4`
+**Outcome:** success
+**Tracks:** 3 (`task` ×1, `model_call` ×1, `eject` ×1)
+
+## Liner notes
+
+## What I was asked to do
+Say hello.
+
+## What I found
+The greeting was produced.
+
+## Suggested next step / fix
+None — task completed.
+
+## What I'm uncertain about
+Nothing.
+
+## Tracklist
+
+### 1. `task` · 2026-05-06T10:00:00Z
+
+> Say hello
+
+### 2. `model_call` · 2026-05-06T10:00:15Z
+
+Model: `anthropic/claude-opus-4-7`
+
+### 3. `eject` · 2026-05-06T10:00:30Z
+
+Outcome: `success`
