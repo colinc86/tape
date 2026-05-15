@@ -6,6 +6,25 @@ use serde::{Deserialize, Serialize};
 pub struct TapeRcConfig {
     #[serde(default)]
     pub redact: RedactConfig,
+    /// `[pricing]` block. Currently single-field; gains options as later
+    /// `tape stats --with-cost` slices land. Issue #186.
+    #[serde(default)]
+    pub pricing: PricingConfig,
+}
+
+/// `.taperc::pricing` block. One field today: `pricing_file`, the
+/// default `--pricing-file` path consumed by `tape stats --with-cost`.
+/// Relative paths in this field resolve against the `.taperc`'s
+/// parent directory, not the user's cwd — see `cmd_stats` for the
+/// resolver wiring. (Issue #186 / Step-5 of #31.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingConfig {
+    /// Path to a TOML pricing table. Same schema as `--pricing-file`
+    /// (issue #181). When set, `tape stats --with-cost` falls back to
+    /// this path if the `--pricing-file` flag is not supplied.
+    #[serde(default)]
+    pub pricing_file: Option<String>,
 }
 
 /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
@@ -66,10 +85,8 @@ impl TapeRcConfig {
         // SPEC §9.2: `disable_default` only targets the built-in rule set.
         // Unknown ids were a silent no-op (issue #45) — symmetric with
         // `enable_optional` below, which already rejects them.
-        let known_ids: std::collections::HashSet<String> = crate::rules::built_in()
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
+        let known_ids: std::collections::HashSet<String> =
+            crate::rules::built_in().into_iter().map(|r| r.id).collect();
         for id in &self.redact.disable_default {
             if !known_ids.contains(id) {
                 anyhow::bail!("disable_default references unknown rule: {id}");
@@ -123,9 +140,8 @@ impl TapeRcConfig {
 /// hashes, and the original secret.
 fn is_typed_placeholder(s: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(r"^<[A-Z][A-Z0-9_]*(?::[A-Za-z0-9_-]+)?>$").unwrap()
-    });
+    let re =
+        RE.get_or_init(|| regex::Regex::new(r"^<[A-Z][A-Z0-9_]*(?::[A-Za-z0-9_-]+)?>$").unwrap());
     re.is_match(s)
 }
 
@@ -145,15 +161,12 @@ pub fn engine_with_taperc(cwd: &std::path::Path) -> anyhow::Result<crate::Engine
     let mut engine = crate::Engine::with_default_rules();
     let path = TapeRcConfig::locate_workspace(cwd).or_else(TapeRcConfig::locate_user);
     if let Some(p) = path {
-        let yaml = std::fs::read_to_string(&p).map_err(|e| {
-            anyhow::anyhow!("failed to read {}: {e}", p.display())
-        })?;
-        let cfg = TapeRcConfig::parse(&yaml).map_err(|e| {
-            anyhow::anyhow!("failed to parse {}: {e}", p.display())
-        })?;
-        cfg.apply(&mut engine).map_err(|e| {
-            anyhow::anyhow!("failed to apply {}: {e}", p.display())
-        })?;
+        let yaml = std::fs::read_to_string(&p)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", p.display()))?;
+        let cfg = TapeRcConfig::parse(&yaml)
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", p.display()))?;
+        cfg.apply(&mut engine)
+            .map_err(|e| anyhow::anyhow!("failed to apply {}: {e}", p.display()))?;
     }
     Ok(engine)
 }
@@ -316,7 +329,8 @@ redact:
         let mut engine = crate::Engine::with_default_rules();
         let err = cfg.apply(&mut engine).unwrap_err();
         assert!(
-            err.to_string().contains("disable_default references unknown rule"),
+            err.to_string()
+                .contains("disable_default references unknown rule"),
             "expected unknown-rule error; got: {err}"
         );
         // The `email` rule must still be enabled, since the typo'd disable
@@ -331,8 +345,14 @@ redact:
     #[test]
     fn enable_optional_and_disable_default_have_symmetric_error_shape() {
         let cases = [
-            ("enable_optional", "redact:\n  enable_optional: [\"nope\"]\n"),
-            ("disable_default", "redact:\n  disable_default: [\"nope\"]\n"),
+            (
+                "enable_optional",
+                "redact:\n  enable_optional: [\"nope\"]\n",
+            ),
+            (
+                "disable_default",
+                "redact:\n  disable_default: [\"nope\"]\n",
+            ),
         ];
         for (field, yaml) in cases {
             let cfg = TapeRcConfig::parse(yaml).unwrap();
@@ -341,6 +361,47 @@ redact:
             assert!(
                 err.to_string().contains(field) && err.to_string().contains("nope"),
                 "{field}: expected error to mention field and id; got: {err}"
+            );
+        }
+    }
+
+    // --- Issue #186: `pricing:` block parse tests ---
+
+    #[test]
+    fn pricing_section_with_pricing_file_parses() {
+        let yaml = r#"
+pricing:
+  pricing_file: ./prices.toml
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.pricing.pricing_file.as_deref(), Some("./prices.toml"));
+    }
+
+    #[test]
+    fn missing_pricing_section_is_default() {
+        // No `pricing:` block at all → field is None, redact still parses.
+        let yaml = r#"
+redact:
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert!(cfg.pricing.pricing_file.is_none());
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    #[test]
+    fn typo_under_pricing_rejects() {
+        // `#[serde(deny_unknown_fields)]` on PricingConfig: each of these
+        // should fail config-load so a user catches the typo immediately.
+        for bad in [
+            "pricing:\n  pricing_path: ./prices.toml\n",
+            "pricing:\n  file: ./prices.toml\n",
+            "pricing:\n  pricingFile: ./prices.toml\n",
+            "pricing:\n  pricing_file_path: ./prices.toml\n",
+        ] {
+            assert!(
+                TapeRcConfig::parse(bad).is_err(),
+                "expected typo to fail config-load: {bad}"
             );
         }
     }
