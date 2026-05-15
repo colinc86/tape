@@ -444,3 +444,432 @@ outcome: success
     };
     pending.write_to(out).unwrap();
 }
+
+// --- Phase 2 (issue #158): --editor + --in-place --------------------
+
+use std::os::unix::fs::PermissionsExt;
+
+/// Write a small shell script that mimics an editor: it takes the
+/// argument path it's invoked with and overwrites the file's content
+/// with `body`. Returns the path to the script (executable).
+///
+/// The script is `set -e` so any IO failure surfaces as a non-zero
+/// exit, which the editor-error tests rely on. `exit_code` lets the
+/// tests force a non-zero return after the write (or, with an empty
+/// body, before any write — for the "editor failed" path).
+fn make_mock_editor(dir: &std::path::Path, body: &[u8], exit_code: i32) -> std::path::PathBuf {
+    let script = dir.join("mock-editor.sh");
+    let body_path = dir.join("mock-editor.body");
+    std::fs::write(&body_path, body).unwrap();
+    let script_body = format!(
+        "#!/bin/sh\nset -e\ncat {body:?} > \"$1\"\nexit {exit_code}\n",
+        body = body_path.display(),
+    );
+    std::fs::write(&script, script_body).unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+    script
+}
+
+/// Spawn `tape annotate` with `EDITOR` pointed at a mock editor and
+/// `VISUAL` cleared. Returns the captured output for assertion.
+fn run_annotate_with_editor(
+    binary: &std::path::Path,
+    args: &[&str],
+    editor: &std::path::Path,
+) -> std::process::Output {
+    std::process::Command::new(binary)
+        .args(args)
+        .env_remove("VISUAL")
+        .env("EDITOR", editor.as_os_str())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn editor_happy_path_writes_body_into_annotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    let editor = make_mock_editor(dir.path(), b"hello from editor\n", 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert!(
+        out.status.success(),
+        "tape annotate --editor failed: {out:?}"
+    );
+    let raw = tape_format::reader::RawTape::open(&output).unwrap();
+    let jsonl = raw.tracks_jsonl.as_deref().unwrap();
+    let tracks = tape_format::tracks::parse_jsonl(jsonl).unwrap();
+    let annot = tracks
+        .iter()
+        .rev()
+        .find(|t| t.kind == tape_format::tracks::Kind::Annotation)
+        .expect("at least one annotation track");
+    assert_eq!(annot.payload["note"], "hello from editor");
+
+    // tape verify on the output is clean.
+    let v = std::process::Command::new(binary_path())
+        .args(["verify", output.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(v.status.success(), "verify failed: {v:?}");
+}
+
+#[test]
+fn editor_strips_comment_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    let body = b"# tape annotate header\nactual text\n# trailing comment\n";
+    let editor = make_mock_editor(dir.path(), body, 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let raw = tape_format::reader::RawTape::open(&output).unwrap();
+    let jsonl = raw.tracks_jsonl.as_deref().unwrap();
+    let tracks = tape_format::tracks::parse_jsonl(jsonl).unwrap();
+    let annot = tracks
+        .iter()
+        .rev()
+        .find(|t| t.kind == tape_format::tracks::Kind::Annotation)
+        .unwrap();
+    assert_eq!(annot.payload["note"], "actual text");
+}
+
+#[test]
+fn editor_empty_body_after_strip_is_a_clean_cancel() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    let body = b"# only\n# comment\n# lines\n\n";
+    let editor = make_mock_editor(dir.path(), body, 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert!(out.status.success(), "empty body should exit 0: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("nothing to annotate"), "{stderr}");
+    assert!(!output.exists(), "no output cassette on empty body");
+}
+
+#[test]
+fn editor_nonzero_exit_propagates() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    // Body content irrelevant — the editor exits non-zero.
+    let editor = make_mock_editor(dir.path(), b"never reaches\n", 1);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("editor"), "{stderr}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn editor_redaction_hit_exits_annot_leak() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    // `sk-ant-` Anthropic-key prefix is in the bundled redact rules.
+    let body = b"key: sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMM-AAAA\n";
+    let editor = make_mock_editor(dir.path(), body, 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert_eq!(out.status.code(), Some(6), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ANNOT_LEAK"), "{stderr}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn editor_oversized_body_exits_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    let big = vec![b'x'; 17 * 1024];
+    let editor = make_mock_editor(dir.path(), &big, 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("16 KiB"), "{stderr}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn editor_non_utf8_body_exits_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let output = dir.path().join("input.annotated.tape");
+    // 0xFF 0xFE 0x00 is an invalid UTF-8 sequence.
+    let editor = make_mock_editor(dir.path(), &[0xFF, 0xFE, 0x00], 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        &editor,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("non-UTF-8"), "{stderr}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn editor_and_note_are_mutually_exclusive() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "x",
+            "--editor",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn annotate_with_no_body_source_rejects_at_parse_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args(["annotate", input.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn in_place_replaces_input_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "pin: race in process_refund",
+            "--in-place",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    // No sibling temp left behind.
+    let stem = input.file_stem().unwrap().to_string_lossy().into_owned();
+    let parent = input.parent().unwrap();
+    for entry in std::fs::read_dir(parent).unwrap() {
+        let p = entry.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with(&format!("{stem}.annotate-tmp-")),
+            "temp file lingered: {p:?}"
+        );
+    }
+    // Input now carries the annotation as the last user-visible track.
+    let raw = tape_format::reader::RawTape::open(&input).unwrap();
+    let jsonl = raw.tracks_jsonl.as_deref().unwrap();
+    let tracks = tape_format::tracks::parse_jsonl(jsonl).unwrap();
+    let annot = tracks
+        .iter()
+        .rev()
+        .find(|t| t.kind == tape_format::tracks::Kind::Annotation)
+        .unwrap();
+    assert_eq!(annot.payload["note"], "pin: race in process_refund");
+}
+
+#[test]
+fn in_place_and_out_are_mutually_exclusive() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let elsewhere = dir.path().join("else.tape");
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "x",
+            "--in-place",
+            "-o",
+            elsewhere.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn in_place_json_reports_input_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "in-place via json",
+            "--in-place",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["output_path"], input.to_string_lossy().as_ref());
+}
+
+#[test]
+fn in_place_redaction_hit_preserves_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    // Hash the prior input bytes so we can verify they're untouched.
+    let prior_bytes = std::fs::read(&input).unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "key: sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMM-AAAA",
+            "--in-place",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ANNOT_LEAK"), "{stderr}");
+    // Input cassette is untouched (byte-identical).
+    let after_bytes = std::fs::read(&input).unwrap();
+    assert_eq!(prior_bytes, after_bytes, "input must be preserved");
+    // No sibling temp left behind.
+    let stem = input.file_stem().unwrap().to_string_lossy().into_owned();
+    for entry in std::fs::read_dir(dir.path()).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with(&format!("{stem}.annotate-tmp-")),
+            "temp file lingered: {name}"
+        );
+    }
+}
+
+#[test]
+fn editor_combined_with_in_place_writes_through_to_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let editor = make_mock_editor(dir.path(), b"composed via editor + in-place\n", 0);
+
+    let out = run_annotate_with_editor(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "--in-place",
+        ],
+        &editor,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let raw = tape_format::reader::RawTape::open(&input).unwrap();
+    let jsonl = raw.tracks_jsonl.as_deref().unwrap();
+    let tracks = tape_format::tracks::parse_jsonl(jsonl).unwrap();
+    let annot = tracks
+        .iter()
+        .rev()
+        .find(|t| t.kind == tape_format::tracks::Kind::Annotation)
+        .unwrap();
+    assert_eq!(annot.payload["note"], "composed via editor + in-place");
+}
