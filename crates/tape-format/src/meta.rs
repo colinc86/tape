@@ -1,6 +1,7 @@
 //! `meta.yaml` schema. See SPEC.md §3.
 
 use serde::{Deserialize, Serialize};
+use tape_judge::JudgeCallRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Meta {
@@ -76,9 +77,11 @@ pub struct NewBlock {
 }
 
 /// One row in the `meta.recaps` audit array. Records the wall-clock time
-/// of the operation, which side it modified (set vs clear), and the
-/// before/after recap text so a reader can reconstruct the recap timeline
-/// without re-running the operations.
+/// of the operation, which side it modified (set vs clear vs auto), and
+/// the before/after recap text so a reader can reconstruct the recap
+/// timeline without re-running the operations. For `Auto` entries the
+/// embedded `judge_call` captures the underlying LLM invocation's audit
+/// row (model, prompt/output hashes, scan result, retries, truncation).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecapEntry {
     pub applied_at: String,
@@ -87,6 +90,13 @@ pub struct RecapEntry {
     pub prior_recap: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub new_recap: Option<String>,
+    /// LLM audit record for entries written by `tape recap --auto`. Always
+    /// `None` on `Set` / `Clear` rows; populated on `Auto` rows from the
+    /// `JudgeCallRecord` returned by the underlying `tape-judge` call.
+    /// Skipped from the YAML when absent so existing fixtures stay byte-
+    /// identical. (Issue #151.)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub judge_call: Option<JudgeCallRecord>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,6 +108,11 @@ pub enum RecapKind {
     /// `tape recap --clear`; `prior_recap` is what existed,
     /// `new_recap` is None.
     Clear,
+    /// `tape recap --auto`; `prior_recap` is the pre-existing value (if
+    /// any), `new_recap` is the model-authored recap that just passed
+    /// validation and the defense-in-depth scanner. The `judge_call`
+    /// field on the entry holds the LLM audit row. (Issue #151.)
+    Auto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +242,7 @@ mod tests {
             kind: RecapKind::Set,
             prior_recap: None,
             new_recap: meta.recap.clone(),
+            judge_call: None,
         });
         let yaml = meta.to_yaml().unwrap();
         let parsed = Meta::parse(&yaml).unwrap();
@@ -263,6 +279,7 @@ mod tests {
             kind: RecapKind::Clear,
             prior_recap: Some("old text".into()),
             new_recap: None,
+            judge_call: None,
         });
         let yaml = meta.to_yaml().unwrap();
         let parsed = Meta::parse(&yaml).unwrap();
@@ -270,5 +287,58 @@ mod tests {
         assert_eq!(parsed.recaps[0].kind, RecapKind::Clear);
         assert_eq!(parsed.recaps[0].prior_recap.as_deref(), Some("old text"));
         assert!(parsed.recaps[0].new_recap.is_none());
+    }
+
+    #[test]
+    fn recap_auto_entry_round_trips_with_judge_call() {
+        use tape_judge::record::ScanOutcome;
+
+        let mut meta = fresh_meta();
+        let judge_call = JudgeCallRecord {
+            ts: "2026-05-14T09:00:00.123Z".into(),
+            model: "claude-haiku-4-5".into(),
+            prompt_hash: "abc123".into(),
+            output_hash: "def456".into(),
+            scan_result: ScanOutcome::Clean,
+            retry_count: 0,
+            truncated: false,
+        };
+        meta.recap = Some("Auto-generated summary of the cassette's outcome.".into());
+        meta.recaps.push(RecapEntry {
+            applied_at: "2026-05-14T09:00:00.123Z".into(),
+            kind: RecapKind::Auto,
+            prior_recap: None,
+            new_recap: meta.recap.clone(),
+            judge_call: Some(judge_call.clone()),
+        });
+        let yaml = meta.to_yaml().unwrap();
+        // The `auto` discriminant must serialize lowercase, matching
+        // the existing `set` / `clear` conventions.
+        assert!(yaml.contains("kind: auto"), "yaml=\n{yaml}");
+        let parsed = Meta::parse(&yaml).unwrap();
+        assert_eq!(parsed.recaps.len(), 1);
+        assert_eq!(parsed.recaps[0].kind, RecapKind::Auto);
+        assert_eq!(parsed.recaps[0].judge_call.as_ref(), Some(&judge_call));
+    }
+
+    #[test]
+    fn recap_judge_call_omitted_when_none() {
+        // Pre-#151 cassettes have no `judge_call` field on Set/Clear rows.
+        // Round-trip a Set entry and assert the field is absent from YAML
+        // so the file stays byte-compatible with older readers.
+        let mut meta = fresh_meta();
+        meta.recap = Some("hand-written".into());
+        meta.recaps.push(RecapEntry {
+            applied_at: "2026-05-06T10:00:30Z".into(),
+            kind: RecapKind::Set,
+            prior_recap: None,
+            new_recap: Some("hand-written".into()),
+            judge_call: None,
+        });
+        let yaml = meta.to_yaml().unwrap();
+        assert!(
+            !yaml.contains("judge_call"),
+            "judge_call must be omitted when None: {yaml}"
+        );
     }
 }
