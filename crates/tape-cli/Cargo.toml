@@ -25,6 +25,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tape-format.workspace = true
+tape-judge.workspace = true
 tape-play.workspace = true
 tape-diff.workspace = true
 tape-mcp.workspace = true

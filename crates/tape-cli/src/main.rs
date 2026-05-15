@@ -45,8 +45,18 @@ enum Cmd {
         all: bool,
         #[arg(long, default_value = "text")]
         format: String,
+        /// Narrate each substantive alignment using the judge model
+        /// loaded from `.taperc::judge:`. The CLI value overrides the
+        /// config's `model` field for this invocation (resolution
+        /// order: `--judge` > `.taperc` > tape-judge default). Without
+        /// `--judge`, the structural diff renders unchanged.
         #[arg(long)]
         judge: Option<String>,
+        /// Maximum number of judge calls per invocation. Caps cost on
+        /// large diffs. Remaining substantive entries past the cap
+        /// render with a `budget exceeded` marker. Default: 25.
+        #[arg(long, default_value_t = 25)]
+        judge_budget: u32,
     },
     /// Record a Claude Code session into a `.tape` file.
     Record {
@@ -223,17 +233,8 @@ fn main() -> Result<()> {
             all,
             format,
             judge,
-        } => {
-            if let Some(j) = judge {
-                anyhow::bail!(
-                    "tape diff --judge is not yet implemented (got: {j}). \
-                     The judge-narrated alignment is on the roadmap; until then, \
-                     tape diff produces structural alignment only. \
-                     Re-run without --judge to get the structural diff."
-                );
-            }
-            cmd_diff(&a, &b, all, &format)
-        }
+            judge_budget,
+        } => cmd_diff(&a, &b, all, &format, judge, judge_budget),
         Cmd::Record {
             label,
             out,
@@ -360,8 +361,36 @@ fn cmd_record(
     Ok(())
 }
 
-fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -> Result<()> {
-    let diff = tape_diff::compute(a, b)?;
+fn cmd_diff(
+    a: &std::path::Path,
+    b: &std::path::Path,
+    all: bool,
+    format: &str,
+    judge_model: Option<String>,
+    judge_budget: u32,
+) -> Result<()> {
+    let mut diff = tape_diff::compute(a, b)?;
+
+    // #149 AC #1: `--judge` runs the structural diff first (unchanged),
+    // then walks substantive entries through the judge model and
+    // attaches narration. Without `--judge`, behavior is identical to
+    // pre-PR.
+    if let Some(model_override) = judge_model {
+        let config = load_judge_config(&model_override)?;
+        let max_input_chars = config.max_input_chars;
+        let client = tape_judge::JudgeClient::new(config)
+            .map_err(|e| anyhow::anyhow!("tape diff --judge: {e}"))?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(tape_diff::judge::narrate_substantive_pairs(
+            &mut diff,
+            &client,
+            judge_budget,
+            max_input_chars,
+        ));
+    }
+
     match format {
         "json" => {
             println!("{}", tape_diff::render_json(&diff));
@@ -371,6 +400,44 @@ fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -
         }
     }
     Ok(())
+}
+
+/// Locate `.taperc`, parse its `judge:` block, override `model` with the
+/// CLI value. Resolution order is CLI > .taperc > tape-judge default
+/// (#149 AC #1), so callers can override the model per-invocation
+/// without editing `.taperc`. When no `judge:` block exists in
+/// `.taperc`, we synthesize a minimal default config — `--judge` should
+/// be usable out of the box as long as `OPENAI_API_KEY` (or whichever
+/// env var the user wires up) is set.
+fn load_judge_config(model_override: &str) -> Result<tape_judge::JudgeConfig> {
+    let cwd = std::env::current_dir().map_err(|e| anyhow::anyhow!("cwd: {e}"))?;
+    // Mirror `tape_redact::config::Config::locate_workspace` + fallback
+    // to `$HOME/.taperc`. We can't depend on that crate's loader for
+    // the judge block, but the file location heuristic is identical.
+    let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user);
+    let mut config = if let Some(p) = path {
+        let yaml = std::fs::read_to_string(&p)
+            .map_err(|e| anyhow::anyhow!("read {}: {e}", p.display()))?;
+        tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+            .map_err(|e| anyhow::anyhow!("parse {}: {e}", p.display()))?
+            .unwrap_or_else(default_judge_config)
+    } else {
+        default_judge_config()
+    };
+    config.model = model_override.to_owned();
+    Ok(config)
+}
+
+fn default_judge_config() -> tape_judge::JudgeConfig {
+    // Minimal config that lets `--judge <MODEL>` work without a
+    // `.taperc::judge:` block — the user only needs `OPENAI_API_KEY`
+    // set. Identical defaults to `JudgeConfig::from_taperc_yaml` when
+    // the block lists only `model:`.
+    let placeholder_yaml = "judge:\n  model: placeholder\n";
+    tape_judge::JudgeConfig::from_taperc_yaml(placeholder_yaml)
+        .expect("placeholder yaml parses")
+        .expect("judge block present in placeholder yaml")
 }
 
 /// Phase-1 of issue #105. Hand-managed `meta.recap` via three pairwise
