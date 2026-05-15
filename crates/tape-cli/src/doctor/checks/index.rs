@@ -3,13 +3,13 @@
 //!
 //! Four checks: `index.exists`, `index.sqlite.integrity`,
 //! `index.lock.stale`, `index.last_rescan.fresh`. All four are soft
-//! dependencies on the local-library SQLite layer scoped under #2;
+//! dependencies on the local-library `SQLite` layer scoped under #2;
 //! that layer was *not* shipped on `main` even though #2 closed.
 //! Consequently every check short-circuits to `Na` when
 //! `<cache>/tape/index/` is absent (the "library not in use"
 //! branch) and to `Na` with a "deferred to the #2 follow-up"
 //! message when the underlying directory / file exists but the
-//! real probe (SQLite integrity, pidfile liveness, mtime read) has
+//! real probe (`SQLite` integrity, pidfile liveness, mtime read) has
 //! not yet landed.
 //!
 //! This file establishes the wiring; the post-#2-SQLite follow-up
@@ -275,7 +275,7 @@ mod tests {
             LastRescanFresh.run(&env),
         ];
         for o in &outs {
-            assert_eq!(o.status, Status::Na, "{:?}", o);
+            assert_eq!(o.status, Status::Na, "{o:?}");
             assert!(o.message.contains("library not in use"), "{}", o.message);
         }
     }
