@@ -434,6 +434,7 @@ mod tests {
             recaps: vec![],
             new_block: None,
             tags: vec![],
+            relinernotes: vec![],
         }
     }
 

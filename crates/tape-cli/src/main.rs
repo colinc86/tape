@@ -2511,7 +2511,6 @@ fn cmd_verify(file: &std::path::Path, json: bool) -> Result<()> {
     }
 }
 
-
 /// Step-1 of issue #8. Renders the cassette to GitHub-flavored
 /// Markdown via `tape_export::render_markdown` and writes the result
 /// to the resolved output path. No defense-in-depth re-scan (Step 3),
