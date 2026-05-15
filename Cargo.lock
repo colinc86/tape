@@ -1458,6 +1458,7 @@ dependencies = [
  "serde_json",
  "tape-diff",
  "tape-format",
+ "tape-judge",
  "tape-mcp",
  "tape-play",
  "tape-record",
@@ -1478,7 +1479,9 @@ dependencies = [
  "serde_yaml",
  "similar",
  "tape-format",
+ "tape-judge",
  "tape-play",
+ "tokio",
 ]
 
 [[package]]

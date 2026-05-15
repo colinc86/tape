@@ -12,11 +12,15 @@
 //!   - [`classify_pair`] — assigns a class to one aligned pair.
 //!   - [`compute`] — top-level: load + align + classify, no narration.
 //!   - [`render_text`] / [`render_json`] — output formatters.
+//!   - [`narrate`] — `--judge`-mode narration via [`tape_judge::JudgeClient`].
+
+pub mod narrate;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tape_format::reader::RawTape;
 use tape_format::tracks::{self, Kind, Track};
+use tape_judge::JudgeCallRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Diff {
@@ -24,6 +28,13 @@ pub struct Diff {
     pub outcome: Outcomes,
     pub alignment: Vec<AlignedPair>,
     pub summary: Summary,
+    /// Audit trail of every successful judge call made while building
+    /// this diff. Empty in the no-`--judge` path. Serialized into the
+    /// `--format json` output so a user who redirects to a file gets
+    /// the audit rows alongside the structural diff (cassettes
+    /// themselves stay immutable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub judge_calls: Vec<JudgeCallRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -151,6 +162,7 @@ pub fn compute(a_path: &std::path::Path, b_path: &std::path::Path) -> anyhow::Re
         },
         alignment,
         summary,
+        judge_calls: Vec::new(),
     })
 }
 
@@ -218,8 +230,14 @@ pub fn classify_pair(
         (Some(_), None) => Class::Deleted,
         (None, Some(_)) => Class::Inserted,
         (Some(a), Some(b)) => {
-            let at = a_tracks.iter().find(|t| t.step == a).expect("a step exists");
-            let bt = b_tracks.iter().find(|t| t.step == b).expect("b step exists");
+            let at = a_tracks
+                .iter()
+                .find(|t| t.step == a)
+                .expect("a step exists");
+            let bt = b_tracks
+                .iter()
+                .find(|t| t.step == b)
+                .expect("b step exists");
             classify_present(at, bt)
         }
     };
@@ -313,11 +331,14 @@ fn last_answer(tracks: &[Track]) -> Option<String> {
     // user notes (`by: "user"`) are explicitly skipped — they are not answers.
     // If no agent annotation exists, fall through to the last model_call.
     let agent_note = tracks.iter().rev().find(|t| {
-        t.kind == Kind::Annotation
-            && t.payload.get("by").and_then(Value::as_str) == Some("agent")
+        t.kind == Kind::Annotation && t.payload.get("by").and_then(Value::as_str) == Some("agent")
     });
     if let Some(t) = agent_note {
-        return t.payload.get("note").and_then(Value::as_str).map(String::from);
+        return t
+            .payload
+            .get("note")
+            .and_then(Value::as_str)
+            .map(String::from);
     }
     // Else, last model_call response text.
     tracks
@@ -377,7 +398,17 @@ pub fn render_text(diff: &Diff, show_all: bool) -> String {
             let _ = writeln!(out, "    after:  {label_b}");
         }
         if let Some(narr) = &pair.narration {
-            let _ = writeln!(out, "    why:    {narr}");
+            // AC1: stable `judge:` marker, 2-space indent. The narration
+            // may be multi-line prose from the model; subsequent lines
+            // are continued under the same indent so the marker stays
+            // visually distinct from structural fields above.
+            let mut lines = narr.lines();
+            if let Some(first) = lines.next() {
+                let _ = writeln!(out, "  judge: {first}");
+                for line in lines {
+                    let _ = writeln!(out, "         {line}");
+                }
+            }
         }
         if !pair.downstream_b.is_empty() {
             let _ = writeln!(out, "    impact: flows into Track {:?}", pair.downstream_b);
