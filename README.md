@@ -148,9 +148,13 @@ redact:
     - id: pii_customer
       pattern: 'CUST-\d{6}'
   enable_optional: ["ipv4_private"]
+pricing:
+  pricing_file: ./prices.toml
 ```
 
 Built-in rules: `email`, `anthropic_api_key`, `openai_api_key`, `aws_access_key`, `jwt`, `ssn`, `credit_card`, `bearer_token`, plus `ipv4_private` and `generic_high_entropy` as opt-ins.
+
+`pricing.pricing_file` is the per-repo default for `tape stats --with-cost`. The `--pricing-file <PATH>` CLI flag still wins; the bundled table is the final fallback. Relative paths resolve against the `.taperc`'s parent directory.
 
 ## Liner notes
 

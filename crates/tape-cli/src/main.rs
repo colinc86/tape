@@ -2605,6 +2605,69 @@ fn cmd_ls(file: &std::path::Path) -> Result<()> {
 /// `load_tracks`), pull a redaction count out of the optional
 /// `redactions.json`, and hand off to `tape_play::render_stats`. No I/O
 /// beyond what `load_tracks` already does.
+/// Resolve which pricing-file path (if any) `tape stats --with-cost`
+/// should consume, applying the issue #186 precedence:
+///
+/// 1. The `--pricing-file` CLI flag — wins. The diagnostic prefix is
+///    empty (the `PricingLoadError` already names the user-supplied
+///    path).
+/// 2. `.taperc::pricing.pricing_file` — second. Relative paths
+///    resolve against the `.taperc`'s parent directory, not `cwd`,
+///    so `cd subdir && tape stats ...` doesn't flip the resolved
+///    path under the user. The diagnostic prefix is
+///    `"(via <.taperc>): "` so a `PricingLoadError` names *both*
+///    files per AC.
+/// 3. `None` — the renderer falls back to the bundled table.
+///
+/// Returns `Some((resolved_path, diagnostic_prefix))` for branches 1
+/// and 2; `None` for branch 3.
+fn resolve_pricing_source(
+    cli_flag: Option<&std::path::Path>,
+) -> Option<(std::path::PathBuf, String)> {
+    if let Some(p) = cli_flag {
+        return Some((p.to_path_buf(), String::new()));
+    }
+    // Probe the workspace + user `.taperc` chain. Use the same
+    // locator that the redaction engine uses so the two stay in
+    // lockstep on path-discovery rules.
+    let cwd = std::env::current_dir().ok()?;
+    let taperc_path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user)?;
+    // Surface read failures rather than silently falling through to the
+    // bundled table: `locate_*` confirmed `is_file()`, so an `Err` here
+    // is almost certainly an EACCES on a `.taperc` the user expects to
+    // be consulted. Symmetry with the parse-error branch below — both
+    // exit 2 with a diagnostic naming the `.taperc` path.
+    let yaml = match std::fs::read_to_string(&taperc_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("tape stats: failed to read {}: {e}", taperc_path.display());
+            std::process::exit(2);
+        }
+    };
+    let cfg = match tape_redact::config::TapeRcConfig::parse(&yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("tape stats: failed to parse {}: {e}", taperc_path.display());
+            std::process::exit(2);
+        }
+    };
+    let pricing_file = cfg.pricing.pricing_file.as_deref()?;
+    let configured = std::path::Path::new(pricing_file);
+    let resolved = if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        // `.taperc`'s parent — falls back to `.` if unparented (e.g.
+        // a bare-filename test fixture, which won't actually happen
+        // in production but is structurally honest).
+        taperc_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(configured)
+    };
+    Some((resolved, format!("(via {}): ", taperc_path.display())))
+}
+
 fn cmd_stats(
     file: &std::path::Path,
     format: &str,
@@ -2643,20 +2706,25 @@ fn cmd_stats(
             .and_then(|v| v.as_array().map(|a| a.len() as u64))
             .unwrap_or(0)
     });
-    // Resolve the pricing table. `render_stats` (no override) uses
-    // the bundled table internally; the `_with_pricing` path is
-    // exercised whenever `--pricing-file` is set, even when
-    // `--with-cost` is absent — in that case the table is loaded for
-    // its validation side effect (so `--pricing-file <bad>` still
-    // exits 2 even without `--with-cost`).
-    let pricing_table = match pricing_file {
-        Some(path) => match tape_play::pricing::PricingTable::load_from_file(path) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                eprintln!("tape stats: {e}");
-                std::process::exit(2);
+    // Resolve the pricing table with the precedence documented in
+    // issue #186: `--pricing-file` CLI flag > `.taperc::pricing.pricing_file`
+    // > bundled. `render_stats` (no override) uses the bundled table
+    // internally; the `_with_pricing` path is exercised whenever a
+    // table override resolves, even when `--with-cost` is absent —
+    // in that case the table is loaded for its validation side effect
+    // (so `--pricing-file <bad>` still exits 2 even without
+    // `--with-cost`).
+    let resolved_pricing = resolve_pricing_source(pricing_file);
+    let pricing_table = match resolved_pricing {
+        Some((path, source_label)) => {
+            match tape_play::pricing::PricingTable::load_from_file(&path) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("tape stats: {source_label}{e}");
+                    std::process::exit(2);
+                }
             }
-        },
+        }
         None => None,
     };
     match format {

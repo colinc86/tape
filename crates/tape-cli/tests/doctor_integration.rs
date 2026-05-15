@@ -175,8 +175,8 @@ fn known_good_environment_exits_zero() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        s.contains("12 pass"),
-        "expected 12 passes (11 baseline + #177 pricing.table.fresh); got:\n{s}"
+        s.contains("13 pass"),
+        "expected 13 passes (11 baseline + #177 pricing.table.fresh + #186 config.pricing_file.loads); got:\n{s}"
     );
     assert!(
         s.contains("[OK] pricing.table.fresh"),
@@ -334,8 +334,8 @@ fn list_checks_is_stable() {
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(
         lines.len(),
-        19,
-        "doctor catalog has 19 checks (phase 1 + #163 claude-code + #166 signing + #177 pricing + #183 index); got {}:\n{s}",
+        20,
+        "doctor catalog has 20 checks (phase 1 + #163 claude-code + #166 signing + #177 pricing + #183 index + #186 pricing-config); got {}:\n{s}",
         lines.len()
     );
 
@@ -360,6 +360,7 @@ fn list_checks_is_stable() {
             "config.user_taperc.parses",
             "config.workspace_taperc.parses",
             "config.rule_ids.valid",
+            "config.pricing_file.loads",
             "permissions.tmpdir.writable",
             "permissions.claude_dir.writable",
             "claude-code.installed",
