@@ -60,12 +60,26 @@ impl DoctorEnv {
         self.install_binary_shim("tape-mcp-wrap", TAPE_VERSION);
     }
 
+    /// Install a `claude` shim alongside the tape shims. Step 2 of #81
+    /// (issue #163) — the `claude-code.installed` check resolves
+    /// against `$PATH` exactly the way the binary checks do.
+    fn install_claude_shim(&self) {
+        write_shim(&self.path_dir, "claude", "0.0.0-test");
+    }
+
     fn write_user_taperc(&self, body: &str) {
         std::fs::write(self.home.join(".taperc"), body).unwrap();
     }
 
     fn enable_claude_dir(&self) {
         std::fs::create_dir_all(self.home.join(".claude")).unwrap();
+    }
+
+    /// Materialise the bundled-plugin directory the `claude-code.plugin.enabled`
+    /// check looks for. Implies `enable_claude_dir` because the plugin
+    /// path is nested under it.
+    fn enable_tape_plugin(&self) {
+        std::fs::create_dir_all(self.home.join(".claude").join("plugins").join("tape")).unwrap();
     }
 
     fn doctor(&self, args: &[&str]) -> std::process::Output {
@@ -100,10 +114,14 @@ fn stdout(out: &std::process::Output) -> String {
 #[test]
 fn known_good_environment_exits_zero() {
     // §"Test plan" item 2: a fully-set-up synthetic install passes every
-    // applicable phase-1 check.
+    // applicable phase-1 check. With #163 (claude-code Step 2) the
+    // "fully-set-up" surface grows to include the `claude` binary on
+    // $PATH and the `~/.claude/plugins/tape/` plugin directory.
     let env = DoctorEnv::new();
     env.install_all_shims();
+    env.install_claude_shim();
     env.enable_claude_dir();
+    env.enable_tape_plugin();
 
     let out = env.doctor(&[]);
     let s = stdout(&out);
@@ -112,7 +130,7 @@ fn known_good_environment_exits_zero() {
         "doctor should exit 0 on a clean install. stdout:\n{s}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(s.contains("9 pass"), "expected 9 passes; got:\n{s}");
+    assert!(s.contains("11 pass"), "expected 11 passes; got:\n{s}");
     assert!(s.contains("0 fail"));
     assert!(s.contains("exit 0"));
 }
@@ -252,8 +270,8 @@ fn list_checks_is_stable() {
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(
         lines.len(),
-        9,
-        "phase-1 has 9 checks; got {}:\n{s}",
+        11,
+        "doctor catalog has 11 checks (phase 1 + #163 claude-code); got {}:\n{s}",
         lines.len()
     );
 
@@ -280,6 +298,8 @@ fn list_checks_is_stable() {
             "config.rule_ids.valid",
             "permissions.tmpdir.writable",
             "permissions.claude_dir.writable",
+            "claude-code.installed",
+            "claude-code.plugin.enabled",
         ]
     );
 }
@@ -347,4 +367,80 @@ fn no_color_strips_ansi_escapes() {
     let out = env.doctor(&["--no-color"]);
     let s = stdout(&out);
     assert!(!s.contains('\u{1b}'), "no ANSI escapes expected; got:\n{s}");
+}
+
+// --- Step 2 of #81 (issue #163): claude-code category --------------
+
+#[test]
+fn claude_code_installed_warns_when_claude_missing() {
+    // AC #2: no `claude` on $PATH → `claude-code.installed` is `warn`,
+    // `claude-code.plugin.enabled` is `n/a`. Exit code stays 0 because
+    // warns don't escalate without `--strict` (which is deferred).
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    // No install_claude_shim → claude is missing.
+
+    let out = env.doctor(&[]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "warn-only output is exit 0: {out:?}");
+    assert!(s.contains("[!!] claude-code.installed"), "stdout:\n{s}");
+    assert!(s.contains("not found on $PATH"));
+    assert!(
+        s.contains("install Claude Code"),
+        "fix string surfaces: {s}"
+    );
+    // Plugin check short-circuits to n/a because the prerequisite check
+    // failed; we should not see a second warn line on the same root.
+    assert!(
+        s.contains("[--] claude-code.plugin.enabled"),
+        "stdout:\n{s}"
+    );
+    assert!(s.contains("see claude-code.installed"));
+}
+
+#[test]
+fn claude_code_plugin_na_when_directory_absent() {
+    // claude on $PATH, $HOME set, but no plugin directory → plugin
+    // check returns n/a. The "feature not in use" branch per §3.2.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.install_claude_shim();
+    env.enable_claude_dir();
+    // No enable_tape_plugin → plugins/tape/ is absent.
+
+    let out = env.doctor(&[]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "{out:?}");
+    assert!(s.contains("[OK] claude-code.installed"), "stdout:\n{s}");
+    assert!(
+        s.contains("[--] claude-code.plugin.enabled"),
+        "stdout:\n{s}"
+    );
+    assert!(s.contains("plugins/tape"));
+    assert!(s.contains("tape plugin not installed"));
+}
+
+#[test]
+fn doctor_include_claude_code_runs_only_those_checks() {
+    // AC #3: `tape doctor --include claude-code` runs only the two new
+    // checks. Healthy environment → exit 0, both pass.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.install_claude_shim();
+    env.enable_claude_dir();
+    env.enable_tape_plugin();
+
+    let out = env.doctor(&["--include", "claude-code"]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "{out:?}");
+    assert!(s.contains("[OK] claude-code.installed"), "stdout:\n{s}");
+    assert!(
+        s.contains("[OK] claude-code.plugin.enabled"),
+        "stdout:\n{s}"
+    );
+    // None of the other categories' checks run under --include.
+    assert!(!s.contains("binary.tape.present"), "stdout:\n{s}");
+    assert!(!s.contains("config.user_taperc.parses"), "stdout:\n{s}");
+    assert!(!s.contains("permissions.tmpdir.writable"), "stdout:\n{s}");
 }
