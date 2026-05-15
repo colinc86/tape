@@ -60,13 +60,6 @@ impl DoctorEnv {
         self.install_binary_shim("tape-mcp-wrap", TAPE_VERSION);
     }
 
-    /// Install a `claude` shim alongside the tape shims. Step 2 of #81
-    /// (issue #163) — the `claude-code.installed` check resolves
-    /// against `$PATH` exactly the way the binary checks do.
-    fn install_claude_shim(&self) {
-        write_shim(&self.path_dir, "claude", "0.0.0-test");
-    }
-
     fn write_user_taperc(&self, body: &str) {
         std::fs::write(self.home.join(".taperc"), body).unwrap();
     }
@@ -75,11 +68,40 @@ impl DoctorEnv {
         std::fs::create_dir_all(self.home.join(".claude")).unwrap();
     }
 
+    /// Install a `claude` shim alongside the tape shims. Step 2 of #81
+    /// (issue #163) — the `claude-code.installed` check resolves
+    /// against `$PATH` exactly the way the binary checks do.
+    fn install_claude_shim(&self) {
+        write_shim(&self.path_dir, "claude", "0.0.0-test");
+    }
+
     /// Materialise the bundled-plugin directory the `claude-code.plugin.enabled`
     /// check looks for. Implies `enable_claude_dir` because the plugin
     /// path is nested under it.
     fn enable_tape_plugin(&self) {
         std::fs::create_dir_all(self.home.join(".claude").join("plugins").join("tape")).unwrap();
+    }
+
+    /// Provision `$HOME/.tape/keys/` at the given mode. Step-3 of #81
+    /// (issue #166). Creates the parent `.tape` dir as well.
+    fn provision_keystore(&self, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.home.join(".tape").join("keys");
+        std::fs::create_dir_all(&path).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+
+    /// Drop a `*.key` file inside the keystore at the given mode.
+    /// Implies `provision_keystore` was called.
+    fn drop_key(&self, name: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.home.join(".tape").join("keys").join(name);
+        std::fs::write(&path, b"fake key bytes").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(&path, perms).unwrap();
     }
 
     fn doctor(&self, args: &[&str]) -> std::process::Output {
@@ -116,7 +138,8 @@ fn known_good_environment_exits_zero() {
     // §"Test plan" item 2: a fully-set-up synthetic install passes every
     // applicable phase-1 check. With #163 (claude-code Step 2) the
     // "fully-set-up" surface grows to include the `claude` binary on
-    // $PATH and the `~/.claude/plugins/tape/` plugin directory.
+    // $PATH and the `~/.claude/plugins/tape/` plugin directory. Signing
+    // (#166) stays as 3 n/a since no keystore is provisioned.
     let env = DoctorEnv::new();
     env.install_all_shims();
     env.install_claude_shim();
@@ -270,8 +293,8 @@ fn list_checks_is_stable() {
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(
         lines.len(),
-        11,
-        "doctor catalog has 11 checks (phase 1 + #163 claude-code); got {}:\n{s}",
+        14,
+        "doctor catalog has 14 checks (phase 1 + #163 claude-code + #166 signing); got {}:\n{s}",
         lines.len()
     );
 
@@ -300,6 +323,9 @@ fn list_checks_is_stable() {
             "permissions.claude_dir.writable",
             "claude-code.installed",
             "claude-code.plugin.enabled",
+            "signing.keystore.readable",
+            "signing.keystore.perms",
+            "signing.trust_store.readable",
         ]
     );
 }
@@ -440,6 +466,93 @@ fn doctor_include_claude_code_runs_only_those_checks() {
         "stdout:\n{s}"
     );
     // None of the other categories' checks run under --include.
+    assert!(!s.contains("binary.tape.present"), "stdout:\n{s}");
+    assert!(!s.contains("config.user_taperc.parses"), "stdout:\n{s}");
+    assert!(!s.contains("permissions.tmpdir.writable"), "stdout:\n{s}");
+}
+
+// --- Step 3 of #81 (issue #166): signing category -------------------
+
+#[test]
+fn signing_no_keystore_reports_all_na_exit_zero() {
+    // AC #1: a machine without `~/.tape/keys/` reports all three
+    // signing checks as `n/a` with the "not in use" message. The
+    // category header still renders so the user can see "what
+    // exists" without ambiguity.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    // No provision_keystore → signing surfaces n/a × 3.
+
+    let out = env.doctor(&[]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "n/a only is exit 0: {out:?}");
+    assert!(s.contains("[--] signing.keystore.readable"), "stdout:\n{s}");
+    assert!(s.contains("[--] signing.keystore.perms"), "stdout:\n{s}");
+    assert!(
+        s.contains("[--] signing.trust_store.readable"),
+        "stdout:\n{s}"
+    );
+    assert!(s.contains("signing not in use"), "stdout:\n{s}");
+}
+
+#[test]
+fn signing_keystore_warns_on_bad_perms() {
+    // AC #3: `~/.tape/keys/` at mode 0755 trips
+    // `signing.keystore.readable` as warn with the chmod-0700 fix
+    // string. Exit 0 (no --strict).
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    env.provision_keystore(0o755);
+
+    let out = env.doctor(&[]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "warn-only is exit 0: {out:?}");
+    assert!(s.contains("[!!] signing.keystore.readable"), "stdout:\n{s}");
+    assert!(s.contains("0755"), "stdout:\n{s}");
+    assert!(s.contains("0700"), "stdout:\n{s}");
+    assert!(s.contains("chmod 0700"), "fix string surfaces: {s}");
+}
+
+#[test]
+fn signing_keys_warn_on_bad_file_mode() {
+    // AC #4: an over-permissive `*.key` trips `signing.keystore.perms`
+    // as warn naming the bad file. Exit 0.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    env.provision_keystore(0o700);
+    env.drop_key("default.key", 0o644);
+
+    let out = env.doctor(&[]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "warn-only is exit 0: {out:?}");
+    assert!(s.contains("[!!] signing.keystore.perms"), "stdout:\n{s}");
+    assert!(s.contains("default.key"), "stdout:\n{s}");
+    assert!(s.contains("0644"), "stdout:\n{s}");
+    assert!(s.contains("chmod 0600"), "fix string surfaces: {s}");
+}
+
+#[test]
+fn doctor_include_signing_runs_only_those_checks() {
+    // AC #5: `--include signing` runs the three new checks only.
+    // No keystore on the fixture → all three surface n/a.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+
+    let out = env.doctor(&["--include", "signing"]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "{out:?}");
+    assert!(s.contains("[--] signing.keystore.readable"), "stdout:\n{s}");
+    assert!(s.contains("[--] signing.keystore.perms"), "stdout:\n{s}");
+    assert!(
+        s.contains("[--] signing.trust_store.readable"),
+        "stdout:\n{s}"
+    );
+    // None of the other categories' checks should run under
+    // --include signing.
     assert!(!s.contains("binary.tape.present"), "stdout:\n{s}");
     assert!(!s.contains("config.user_taperc.parses"), "stdout:\n{s}");
     assert!(!s.contains("permissions.tmpdir.writable"), "stdout:\n{s}");
