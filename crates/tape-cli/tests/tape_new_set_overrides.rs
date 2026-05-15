@@ -127,6 +127,8 @@ fn set_unknown_key_exits_two_with_diagnostic() {
     assert!(stderr.contains("\"foo\""), "{stderr}");
     assert!(stderr.contains("\"minimal\""), "{stderr}");
     assert!(stderr.contains("required-task"), "{stderr}");
+    // AC #3: "stdout is empty" — the diagnostic goes to stderr only.
+    assert!(r.stdout.is_empty(), "stdout={:?}", r.stdout);
     assert!(!out.exists());
 }
 

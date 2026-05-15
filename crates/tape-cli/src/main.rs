@@ -1063,11 +1063,7 @@ fn resolve_and_validate(
     // `--task`, that's `[]`; with `--task "x"`, it's still
     // `["task"]`. Mirrors the issue body's determinism note.
     let placeholders_filled = if task_value.is_some() {
-        bundle
-            .placeholders_filled
-            .iter()
-            .copied()
-            .collect::<Vec<_>>()
+        bundle.placeholders_filled.to_vec()
     } else {
         // No --task supplied: drop "task" from the filled set.
         bundle
@@ -1126,7 +1122,7 @@ fn apply_overrides(bundle: &TemplateBundle, overrides: &[(String, String)]) -> E
         task_required: bundle.task_required,
     };
     for (key, value) in overrides {
-        if !known_keys.iter().any(|k| *k == key.as_str()) {
+        if !known_keys.contains(&key.as_str()) {
             let known_str = if known_keys.is_empty() {
                 "<none>".to_owned()
             } else {
@@ -1171,6 +1167,20 @@ fn known_override_keys(bundle: &TemplateBundle) -> &'static [&'static str] {
         _ => &[],
     }
 }
+
+/// Substitution marker used when `--task` is omitted (only reachable
+/// when effective `task_required` is false — via `--set
+/// required-task=false`). SPEC §5.5.1 rejects an empty `task` event
+/// prompt as `INVALID_PAYLOAD`, so the literal-empty substitution
+/// suggested by the original #188 acceptance text would never pass
+/// the post-write verify gate at step 7. The marker keeps the
+/// rendered cassette valid and makes the "I didn't supply a task"
+/// intent visible in the prompt. Mirrored verbatim by the
+/// `tests/tape_new_set_overrides.rs::NO_TASK_MARKER` fixture
+/// constant — keep the two in sync. (Cannot be shared via `pub` in
+/// a library: `tape-cli` is a bin-only crate; the integration test
+/// directory cannot import items from `main.rs`.)
+const NO_TASK_MARKER: &str = "(no task supplied)";
 
 fn cmd_new(
     out: &std::path::Path,
@@ -1222,16 +1232,9 @@ fn cmd_new(
     //    no expression language — the rule is "grep '{{' templates/`
     //    should always show every active placeholder."
     //
-    //    When `--task` is omitted (only reachable when effective
-    //    `task_required` is false — via `--set required-task=false`
-    //    for #188), substitute a literal `(no task supplied)` marker
-    //    instead of an empty string. SPEC §5.5.1 rejects an empty
-    //    `task` event prompt as `INVALID_PAYLOAD`, so the empty-string
-    //    substitution suggested by the original #188 acceptance text
-    //    would never pass the post-write verify gate at step 7. The
-    //    marker keeps the rendered cassette valid and makes the
-    //    "I didn't supply a task" intent visible in the prompt.
-    const NO_TASK_MARKER: &str = "(no task supplied)";
+    //    `NO_TASK_MARKER` (module scope, declared just above
+    //    `cmd_new`) is used when `--task` is omitted; the rationale
+    //    lives on its declaration site.
     let task_for_sub: &str = task_value.as_deref().unwrap_or(NO_TASK_MARKER);
     let liner_md = if bundle.has_task_placeholder {
         bundle.liner.replace("{{task}}", task_for_sub)
