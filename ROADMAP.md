@@ -19,28 +19,63 @@ The three-year arc:
 
 ---
 
-## Current Milestone — v0.2.1 (finish what v0.2 promised + binary distribution)
+## Current Milestone — v0.2.1 (hotfix: fix workspace path-dep regression)
 
-**Status:** Open. v0.2.0 shipped 2026-05-15 carrying the judge-model
-narration theme + 9 new CLI subcommands + the `RuntimeAdapter`
-infrastructure. v0.2.1 closes the remaining v0.2 promises and resolves
-the binary distribution gap that v0.2.0 explicitly deferred.
+**Status:** Required. v0.2.0 (commit `33aa143`, 2026-05-15) shipped with
+a release-mechanics regression in `Cargo.toml`: the workspace
+`[workspace.package].version` bumped to `0.2.0`, but the internal
+path-dep version constraints at lines 68-75 still read `version =
+"0.1.0"`. `^0.1.0 = >=0.1.0, <0.2.0` does not satisfy `0.2.0`, so
+**fresh clones of main fail `cargo check`** — issue #174 documents the
+break.
 
-**Cut criteria for v0.2.1** (in priority order):
+v0.2.1 is **a hotfix release**. Single-issue scope:
 
-1. **#144 (binary distribution) resolved.** Promote to `priority:current`;
-   build the macOS-aarch64 tarball + `SHA256SUMS` for v0.2.0 and v0.2.1,
-   update the README's `curl` URLs, bump the plugin marketplace entry.
-   This is non-negotiable for v0.2.1 — shipping v0.2.0 source-only was a
-   one-time deferral, not a pattern.
+**Cut criteria for v0.2.1:**
+
+1. **#174 resolved** — bump path-dep constraints in `Cargo.toml:68-75`
+   from `version = "0.1.0"` to `version = "0.2.0"` (the lower bound of
+   the v0.2.x line, so subsequent patch bumps don't re-trigger this).
+   Bump workspace `[workspace.package].version` to `0.2.1`. Bump the
+   9 workspace crates in `Cargo.lock` to match.
+2. `cargo check --workspace` clean on a fresh clone.
+
+That's the whole release. No new features, no Phase-2 PRs gate it, no
+other `priority:current` issues block it. Ship immediately to unbreak
+fresh checkouts.
+
+The originally-planned v0.2.1 scope (binary distribution + finish v0.2
+headline themes) moves to **v0.2.2** below.
+
+### Why a hotfix and not a normal patch
+
+- #174 is a regression from the v0.2.0 cut commit itself, not a bug in
+  the underlying functionality. It needs to land outside the normal
+  feature-cadence window.
+- #174's author (Principal) explicitly assigned it to "the PM/release
+  lane, not Engineer A/B (whose charter forbids touching workspace
+  versions)." PM cuts release-mechanics fixes.
+- Cutting v0.2.2 with `#144 + headline theme + #174` as a combined
+  release would mean fresh clones stay broken until v0.2.2 ships —
+  unbounded delay. Hotfix unblocks engineers immediately.
+
+### Next Milestone after v0.2.1 — v0.2.2 (binary distribution + remaining v0.2 themes)
+
+This was the v0.2.1 plan before #174 surfaced. Now it's v0.2.2.
+
+**Cut criteria for v0.2.2** (in priority order):
+
+1. **#144 (binary distribution) resolved.** Build the macOS-aarch64
+   tarball + `SHA256SUMS` for v0.2.0, v0.2.1, and v0.2.2; update the
+   README's `curl` URLs; bump the plugin marketplace entry.
 2. **At least one more original-v0.2 headline theme landed.** Pick from
    themes #1 (Claude Desktop concrete adapter), #2 (interactive eject),
    #3 (embedding diff alignment), or #5 (liner-notes-at-eject). Principal
    scopes which.
-3. **All open `priority:current` issues closed.**
-
-The Phase-2 PRs in flight at the v0.2.0 cut (#154, #156, #159, #165,
-#167, #168) ship in v0.2.1 as they merge.
+3. **#175 (CI workflow) landed.** Without CI, the next v0.2.x cut
+   risks the same #174-style regression silently surviving. The release
+   pipeline needs a guardrail.
+4. **All open `priority:current` issues closed.**
 
 ### Remaining headline themes from the original v0.2 definition
 
