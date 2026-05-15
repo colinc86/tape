@@ -67,11 +67,7 @@ fn diff_judge_renders_narration_under_substantive_entry() {
                 })
                 .await;
         });
-        (
-            format!("http://{addr}/v1/chat/completions"),
-            tx,
-            counter,
-        )
+        (format!("http://{addr}/v1/chat/completions"), tx, counter)
     });
 
     // Stage a `.taperc` in a temp dir whose `judge::endpoint` points at
@@ -156,11 +152,7 @@ fn diff_judge_budget_caps_calls() {
                 })
                 .await;
         });
-        (
-            format!("http://{addr}/v1/chat/completions"),
-            tx,
-            counter,
-        )
+        (format!("http://{addr}/v1/chat/completions"), tx, counter)
     });
 
     let tmp = tempfile::tempdir().unwrap();

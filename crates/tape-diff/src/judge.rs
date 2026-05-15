@@ -38,7 +38,7 @@ pub async fn narrate_substantive_pairs(
     let mut calls_used: u32 = 0;
     let mut new_records: Vec<JudgeCallRecord> = Vec::new();
 
-    for pair in diff.alignment.iter_mut() {
+    for pair in &mut diff.alignment {
         if pair.class != Class::Substantive {
             continue;
         }

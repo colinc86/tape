@@ -425,7 +425,7 @@ fn load_judge_config(model_override: &str) -> Result<tape_judge::JudgeConfig> {
     } else {
         default_judge_config()
     };
-    config.model = model_override.to_owned();
+    model_override.clone_into(&mut config.model);
     Ok(config)
 }
 
