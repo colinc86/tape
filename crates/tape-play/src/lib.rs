@@ -768,6 +768,7 @@ mod tests {
             recap: None,
             recaps: vec![],
             tags: vec![],
+            relinernotes: vec![],
             new_block: None,
         }
     }
