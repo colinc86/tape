@@ -113,20 +113,31 @@ enum Cmd {
     },
     /// Generate a new `tape/v0` cassette from a bundled template.
     ///
-    /// Phase-1 of issue #99: only the `minimal` template, only literal
-    /// `{{task}}` substitution. The bundled-catalog, `--from` clone-shape,
-    /// `--template-path`, and `.taperc::new` flows are Phase 2+.
+    /// Step-2 of issue #99 (#162) bundles `test-fixture` and
+    /// `bug-investigation` alongside the original `minimal`.
+    /// `--list-templates` / `--describe-template`, the `.taperc::new`
+    /// section, `--set <k>=<v>` for richer placeholders, `--from`
+    /// clone-shape, `--template-path` for user-supplied templates,
+    /// and `--from`/auto-tag emission are still Phase 3+.
     New {
         /// Output cassette path. Refuses if it already exists unless
         /// `--force` is supplied.
         out: std::path::PathBuf,
+        /// Template id. Built-ins: `minimal`, `test-fixture`,
+        /// `bug-investigation`. Unknown values exit 2 with
+        /// `NEW_TEMPLATE_NOT_FOUND`.
+        #[arg(long, default_value = "minimal")]
+        template: String,
         /// One-line description of what the cassette represents. Lands
         /// in `meta.task`, in the task event's `prompt`, and in the
         /// liner-notes. Plain UTF-8; rejected if it contains a `"`,
         /// `\\`, `\n`, `\r`, or control character (keeps the literal
-        /// `{{task}}` substitution JSONL-safe).
+        /// `{{task}}` substitution JSONL-safe). Required for templates
+        /// whose `template.yaml` declares `task: required: true`
+        /// (`minimal`, `bug-investigation`); optional for templates
+        /// with no required placeholders (`test-fixture`).
         #[arg(long)]
-        task: String,
+        task: Option<String>,
         /// Overwrite the output path if it already exists.
         #[arg(short = 'f', long)]
         force: bool,
@@ -137,7 +148,7 @@ enum Cmd {
         #[arg(long)]
         created_at: Option<String>,
         /// Override `meta.recorder.agent`. Defaults to
-        /// `tape-cli/<crate-version>+new+minimal`.
+        /// `tape-cli/<crate-version>+new+<template>`.
         #[arg(long)]
         recorder_agent: Option<String>,
     },
@@ -325,11 +336,12 @@ fn main() -> Result<()> {
         }
         Cmd::New {
             out,
+            template,
             task,
             force,
             created_at,
             recorder_agent,
-        } => cmd_new(&out, &task, force, created_at, recorder_agent),
+        } => cmd_new(&out, &template, task, force, created_at, recorder_agent),
         Cmd::Recap {
             file,
             set,
@@ -567,6 +579,95 @@ mod templates {
     pub const MINIMAL_VERSION: &str = "1";
     pub const MINIMAL_LINER: &str = include_str!("../templates/minimal/liner-notes.md");
     pub const MINIMAL_TRACKS: &str = include_str!("../templates/minimal/tracks.jsonl");
+
+    pub const TEST_FIXTURE_VERSION: &str = "1";
+    pub const TEST_FIXTURE_LINER: &str = include_str!("../templates/test-fixture/liner-notes.md");
+    pub const TEST_FIXTURE_TRACKS: &str = include_str!("../templates/test-fixture/tracks.jsonl");
+
+    pub const BUG_INVESTIGATION_VERSION: &str = "1";
+    pub const BUG_INVESTIGATION_LINER: &str =
+        include_str!("../templates/bug-investigation/liner-notes.md");
+    pub const BUG_INVESTIGATION_TRACKS: &str =
+        include_str!("../templates/bug-investigation/tracks.jsonl");
+}
+
+/// One built-in template entry — the trio of bytes the substitution
+/// pass consumes plus the small set of properties the resolver needs.
+/// Static so `resolve_template` can hand out `&'static` references
+/// without cloning.
+struct TemplateBundle {
+    /// Stable id surfaced in `meta.new.template_id` and the
+    /// `+new+<id>` recorder-agent suffix.
+    id: &'static str,
+    /// Version string surfaced in `meta.new.template_version`. Bump
+    /// when the template's payload bytes change.
+    version: &'static str,
+    /// `liner-notes.md` source bytes (before substitution).
+    liner: &'static str,
+    /// `tracks.jsonl` source bytes (before substitution).
+    tracks: &'static str,
+    /// Whether `--task` is mandatory. `test-fixture` has it false
+    /// because the template hardcodes a literal `"test fixture"` in
+    /// the task event's payload; everything else needs the user's
+    /// one-line headline.
+    task_required: bool,
+    /// Whether the rendered tracks/liner include a `{{task}}`
+    /// placeholder. Used to decide whether to run the
+    /// `String::replace("{{task}}", task)` pass.
+    has_task_placeholder: bool,
+    /// Sorted list of placeholder names that get filled in by the
+    /// substitution pass. Lands in `meta.new.placeholders_filled`.
+    /// Kept stable so the deterministic-byte property holds.
+    placeholders_filled: &'static [&'static str],
+    /// Default `meta.task` when the template hardcodes the task
+    /// event's prompt and `--task` is not supplied. `Some(...)` iff
+    /// `task_required` is false; `None` otherwise. `test-fixture`
+    /// uses the literal `"test fixture"` so the cassette is
+    /// internally consistent (meta.task equals tracks[0].prompt).
+    default_meta_task: Option<&'static str>,
+}
+
+/// Built-in template catalog. Order is documentation only; the
+/// `resolve_template` lookup is by id.
+const BUILTIN_TEMPLATES: &[TemplateBundle] = &[
+    TemplateBundle {
+        id: "minimal",
+        version: templates::MINIMAL_VERSION,
+        liner: templates::MINIMAL_LINER,
+        tracks: templates::MINIMAL_TRACKS,
+        task_required: true,
+        has_task_placeholder: true,
+        placeholders_filled: &["task"],
+        default_meta_task: None,
+    },
+    TemplateBundle {
+        id: "test-fixture",
+        version: templates::TEST_FIXTURE_VERSION,
+        liner: templates::TEST_FIXTURE_LINER,
+        tracks: templates::TEST_FIXTURE_TRACKS,
+        task_required: false,
+        has_task_placeholder: false,
+        placeholders_filled: &[],
+        default_meta_task: Some("test fixture"),
+    },
+    TemplateBundle {
+        id: "bug-investigation",
+        version: templates::BUG_INVESTIGATION_VERSION,
+        liner: templates::BUG_INVESTIGATION_LINER,
+        tracks: templates::BUG_INVESTIGATION_TRACKS,
+        task_required: true,
+        has_task_placeholder: true,
+        placeholders_filled: &["task"],
+        default_meta_task: None,
+    },
+];
+
+fn resolve_template(id: &str) -> Option<&'static TemplateBundle> {
+    BUILTIN_TEMPLATES.iter().find(|t| t.id == id)
+}
+
+fn known_template_ids() -> Vec<&'static str> {
+    BUILTIN_TEMPLATES.iter().map(|t| t.id).collect()
 }
 
 /// Validate the `--task` value for `tape new`. Rejects empty strings,
@@ -599,24 +700,58 @@ fn validate_new_task(task: &str) {
     }
 }
 
-/// Phase-1 of issue #99. Materializes a new cassette from the bundled
-/// `minimal` template via literal `{{...}}` substitution, builds a
-/// fresh `Meta` with a `meta.new` provenance block, and writes the
-/// result through `PendingTape::write_to`. `tape verify` runs as a
-/// post-write gate so any future template-content mistake is caught
-/// before the file is left on disk.
+/// Step-2 of issue #99 (#162). Materializes a new cassette from one
+/// of the bundled templates via literal `{{...}}` substitution,
+/// builds a fresh `Meta` with a `meta.new` provenance block, and
+/// writes the result through `PendingTape::write_to`. `tape verify`
+/// runs as a post-write gate so any template-content mistake is
+/// caught before the file is left on disk.
 fn cmd_new(
     out: &std::path::Path,
-    task: &str,
+    template_id: &str,
+    task: Option<String>,
     force: bool,
     created_at_override: Option<String>,
     recorder_agent_override: Option<String>,
 ) -> Result<()> {
-    // 1. Validate --task. Literal substitution forbids characters that
-    //    would un-balance the JSONL or smuggle in another track, and
-    //    forbids `{{` so the value can't cascade through later
-    //    placeholder substitutions.
-    validate_new_task(task);
+    // 1a. Resolve the template. Unknown id is a clean exit-2 with the
+    //     valid-ids list inline so the user doesn't have to read the
+    //     --help text to recover.
+    let bundle = match resolve_template(template_id) {
+        Some(b) => b,
+        None => {
+            eprintln!(
+                "tape new: NEW_TEMPLATE_NOT_FOUND — unknown template {template_id:?} \
+                 (valid: {})",
+                known_template_ids().join(", ")
+            );
+            std::process::exit(2);
+        }
+    };
+
+    // 1b. Validate --task per the template's placeholder spec.
+    //     `task_required` templates rely on the existing
+    //     `NEW_MISSING_PLACEHOLDER` surface; templates with no
+    //     required placeholders accept a missing `--task` and only
+    //     run the char-class validator when a value is supplied.
+    let task_value: Option<String> = match (bundle.task_required, task.as_deref()) {
+        (true, Some(t)) => {
+            validate_new_task(t);
+            Some(t.to_owned())
+        }
+        (true, None) => {
+            eprintln!(
+                "tape new: NEW_MISSING_PLACEHOLDER — --task is required for template {:?}",
+                bundle.id
+            );
+            std::process::exit(2);
+        }
+        (false, Some(t)) => {
+            validate_new_task(t);
+            Some(t.to_owned())
+        }
+        (false, None) => None,
+    };
 
     // 2. Output-exists check.
     if out.exists() && !force {
@@ -646,33 +781,62 @@ fn cmd_new(
     };
     let ejected_at = created_at.clone();
     let recorder_agent = recorder_agent_override
-        .unwrap_or_else(|| format!("tape-cli/{}+new+minimal", env!("CARGO_PKG_VERSION")));
+        .unwrap_or_else(|| format!("tape-cli/{}+new+{}", env!("CARGO_PKG_VERSION"), bundle.id));
 
     // 4. Substitute template placeholders. Literal `String::replace`,
     //    no expression language — the rule is "grep '{{' templates/`
     //    should always show every active placeholder."
-    let liner_md = templates::MINIMAL_LINER.replace("{{task}}", task);
-    let tracks_jsonl = templates::MINIMAL_TRACKS
-        .replace("{{task}}", task)
+    let task_for_sub = task_value.as_deref().unwrap_or("");
+    let liner_md = if bundle.has_task_placeholder {
+        bundle.liner.replace("{{task}}", task_for_sub)
+    } else {
+        bundle.liner.to_owned()
+    };
+    let mut tracks_jsonl = bundle
+        .tracks
         .replace("{{created_at}}", &created_at)
         .replace("{{ejected_at}}", &ejected_at);
+    if bundle.has_task_placeholder {
+        tracks_jsonl = tracks_jsonl.replace("{{task}}", task_for_sub);
+    }
 
-    // 5. Build the Meta. The id is a deterministic UUIDv7 derived from
-    //    (created_at, recorder_agent, task) so that two runs with the
-    //    same overrides produce byte-identical track / meta content
-    //    (the deterministic-output property in Principal's test plan).
-    let id = derive_uuid_v7(&created_at, &recorder_agent, task);
+    // 5. Build the Meta. The id is a deterministic UUIDv7 derived
+    //    from (created_at, recorder_agent, task-or-empty) so that two
+    //    runs with the same overrides produce byte-identical track /
+    //    meta content (the deterministic-output property in
+    //    Principal's test plan). For `test-fixture` the empty task
+    //    string keeps the derivation total.
+    let id = derive_uuid_v7(&created_at, &recorder_agent, task_for_sub);
+    // For `meta.task`: use the user-supplied task when present;
+    // otherwise the template's `default_meta_task` (set when the
+    // template hardcodes the task event's prompt). Templates that
+    // require `--task` would have failed the validation gate above,
+    // so the unwrap_or_default fallback is reached only on the
+    // (task_required: false, default_meta_task: None) shape — none
+    // of the built-ins are wired that way today.
+    let meta_task = task_value
+        .clone()
+        .or_else(|| bundle.default_meta_task.map(str::to_owned))
+        .unwrap_or_default();
+    // `meta.outcome` MUST match the eject event's `payload.outcome`
+    // (SPEC §10.5 OUTCOME_MISMATCH) — peek at the rendered tracks
+    // before the verify gate so a template can declare a non-default
+    // outcome (e.g. `test-fixture` ships `success`). Falls back to
+    // `Unknown` if the eject can't be located, which keeps the
+    // minimal template's existing shape working.
+    let outcome =
+        outcome_from_rendered_tracks(&tracks_jsonl).unwrap_or(tape_format::meta::Outcome::Unknown);
     let meta = tape_format::meta::Meta {
         tape_version: tape_format::TAPE_VERSION.into(),
         id,
         created_at: created_at.clone(),
         ejected_at: ejected_at.clone(),
-        task: task.to_owned(),
+        task: meta_task,
         recorder: tape_format::meta::Recorder {
             agent: recorder_agent.clone(),
             user: None,
         },
-        outcome: tape_format::meta::Outcome::Unknown,
+        outcome,
         models: vec![],
         tools: vec![],
         tool_budget: None,
@@ -682,10 +846,14 @@ fn cmd_new(
         recaps: vec![],
         tags: vec![],
         new_block: Some(tape_format::meta::NewBlock {
-            template_id: "minimal".into(),
-            template_version: templates::MINIMAL_VERSION.into(),
+            template_id: bundle.id.into(),
+            template_version: bundle.version.into(),
             generated_at: created_at.clone(),
-            placeholders_filled: vec!["task".into()],
+            placeholders_filled: bundle
+                .placeholders_filled
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
         }),
     };
     let meta_yaml = meta
@@ -730,6 +898,34 @@ fn cmd_new(
 
     println!("ok: wrote {} (template=minimal)", out.display());
     Ok(())
+}
+
+/// Parse the eject event's `payload.outcome` from a rendered
+/// `tracks.jsonl` body so the synthesized `meta.outcome` matches what
+/// the template's eject declares (SPEC §10.5 OUTCOME_MISMATCH). Best-
+/// effort — returns `None` if the eject can't be found or the
+/// outcome value is missing / unknown. Cheap because the eject is
+/// always the final line (`SPEC §5.4`); we scan the tail.
+fn outcome_from_rendered_tracks(jsonl: &str) -> Option<tape_format::meta::Outcome> {
+    let last_line = jsonl.lines().last()?.trim();
+    if last_line.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    if value.get("kind").and_then(|v| v.as_str()) != Some("eject") {
+        return None;
+    }
+    let outcome_str = value
+        .get("payload")
+        .and_then(|p| p.get("outcome"))
+        .and_then(|v| v.as_str())?;
+    match outcome_str {
+        "success" => Some(tape_format::meta::Outcome::Success),
+        "failure" => Some(tape_format::meta::Outcome::Failure),
+        "abandoned" => Some(tape_format::meta::Outcome::Abandoned),
+        "unknown" => Some(tape_format::meta::Outcome::Unknown),
+        _ => None,
+    }
 }
 
 /// Derive a deterministic UUIDv7-shaped id from the three inputs that
