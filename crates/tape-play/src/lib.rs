@@ -86,6 +86,29 @@ pub fn render_stats(
     redactions_count: Option<u64>,
     with_cost: bool,
 ) -> String {
+    render_stats_with_pricing(
+        meta,
+        tracks,
+        redactions_count,
+        with_cost,
+        &pricing::PricingTable::bundled(),
+    )
+}
+
+/// Sibling of [`render_stats`] that consumes an explicit pricing
+/// table. Step-4 of #31 (issue #181): the CLI's `--pricing-file`
+/// path loads a user-supplied table and routes it here; everything
+/// else (e.g. `tape stats --with-cost` with no override) calls
+/// [`render_stats`] which substitutes
+/// [`pricing::PricingTable::bundled`].
+#[allow(clippy::module_name_repetitions)]
+pub fn render_stats_with_pricing(
+    meta: &tape_format::meta::Meta,
+    tracks: &[Track],
+    redactions_count: Option<u64>,
+    with_cost: bool,
+    pricing_table: &pricing::PricingTable,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "id: {}", meta.id);
     let _ = writeln!(out, "task: {}", meta.task);
@@ -150,8 +173,10 @@ pub fn render_stats(
     // Step-3 of #31 (issue #168): opt-in dollar-cost estimate column.
     // When `with_cost` is false this block is suppressed entirely,
     // keeping the Phase-1 / Phase-2 output byte-for-byte identical.
+    // The bundled table is consumed for callers that don't specify
+    // one; `render_stats_with_pricing` is the override path (#181).
     if with_cost && !model_calls.is_empty() {
-        render_cost_block(&mut out, &model_calls);
+        render_cost_block(&mut out, &model_calls, pricing_table);
     }
 
     let mcp_n = hist[Kind::McpCall as usize];
@@ -476,47 +501,61 @@ pub struct CostResult {
 }
 
 /// Append the `cost:` line (and optional stale-guard warning) for the
-/// given `model_calls`. Extracted from `render_stats` to keep that
-/// function under clippy's `too_many_lines` threshold. The three text
-/// branches (no-priceable / N-of-M / full) and the >90-day warning
-/// follow the issue #168 body's spec exactly.
-fn render_cost_block(out: &mut String, model_calls: &[&Track]) {
-    let cost = cost_total(model_calls);
+/// given `model_calls` using the supplied pricing table. The three
+/// text branches (no-priceable / N-of-M / full) and the >90-day
+/// warning follow the issue #168 / #181 bodies' specs.
+fn render_cost_block(
+    out: &mut String,
+    model_calls: &[&Track],
+    pricing_table: &pricing::PricingTable,
+) {
+    let cost = cost_total_in(model_calls, pricing_table);
     if cost.priced == 0 {
         let _ = writeln!(out, "cost: (no priceable model_call events)");
     } else {
         let qualifier = if cost.priced < cost.total {
             format!(
                 "estimate; {} of {} model_calls priced; pricing table {}",
-                cost.priced,
-                cost.total,
-                pricing::PRICING_TABLE_LAST_UPDATED,
+                cost.priced, cost.total, pricing_table.last_updated,
             )
         } else {
-            format!(
-                "estimate; pricing table {}",
-                pricing::PRICING_TABLE_LAST_UPDATED
-            )
+            format!("estimate; pricing table {}", pricing_table.last_updated)
         };
         let _ = writeln!(out, "cost: ${:.4}  ({qualifier})", cost.dollars);
     }
-    if let Some(days) = pricing_table_age_days() {
+    if let Some(days) = pricing_age_days(pricing_table) {
         if days > pricing::PRICING_STALENESS_DAYS {
+            let label = pricing_table.source_path.as_ref().map_or_else(
+                || "bundled pricing table".to_owned(),
+                |p| format!("pricing table {}", p.display()),
+            );
             let _ = writeln!(
                 out,
-                "warning: pricing table is {days} days old (>{} day threshold); cost figures may be stale",
+                "warning: {label} is {days} days old (>{} day threshold); cost figures may be stale",
                 pricing::PRICING_STALENESS_DAYS,
             );
         }
     }
 }
 
+/// Bundled-table cost-totaling. Preserved for backward compatibility;
+/// new call sites use [`cost_total_in`] with an explicit table.
+#[must_use]
 pub fn cost_total(model_calls: &[&Track]) -> CostResult {
+    cost_total_in(model_calls, &pricing::PricingTable::bundled())
+}
+
+/// Total cost across a slice of `model_call` events, consulting an
+/// arbitrary [`pricing::PricingTable`]. The replace-not-merge
+/// semantics (issue #181) live here: events whose vendor/model
+/// aren't in `table` fall through to the unpriced bucket even if the
+/// bundled table would have priced them.
+pub fn cost_total_in(model_calls: &[&Track], table: &pricing::PricingTable) -> CostResult {
     let mut dollars: f64 = 0.0;
     let mut priced: u64 = 0;
     let total = model_calls.len() as u64;
     for t in model_calls {
-        if let Some((_, _, d)) = pricing::price_event(&t.payload) {
+        if let Some((_, _, d)) = table.price_event(&t.payload) {
             dollars += d;
             priced += 1;
         }
@@ -528,13 +567,12 @@ pub fn cost_total(model_calls: &[&Track]) -> CostResult {
     }
 }
 
-/// Days elapsed since [`pricing::PRICING_TABLE_LAST_UPDATED`]. Used
-/// for the >90-day stale-guard warning in `render_stats`. Returns
-/// `None` if the last-updated string is unparseable or the system
-/// clock predates the Unix epoch — in either case the caller skips
-/// the stale-guard rather than panicking.
-fn pricing_table_age_days() -> Option<i64> {
-    let updated = chrono_lite::parse_date(pricing::PRICING_TABLE_LAST_UPDATED)?;
+/// Days elapsed since `table.last_updated`. Used for the >90-day
+/// stale-guard warning. Returns `None` if the date is unparseable or
+/// the system clock predates the Unix epoch — in either case the
+/// caller skips the stale-guard rather than panicking.
+pub fn pricing_age_days(table: &pricing::PricingTable) -> Option<i64> {
+    let updated = chrono_lite::parse_date(&table.last_updated)?;
     let today = chrono_lite::today_days_since_epoch()?;
     Some(today - updated)
 }

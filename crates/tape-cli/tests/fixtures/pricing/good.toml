@@ -1,0 +1,30 @@
+# Step-4 of #31 (issue #181). User-supplied pricing table used by
+# the integration tests to prove the file (not the bundled table) is
+# what got consulted. The `last_updated` date is deliberately 6
+# weeks behind the bundled table so the rendered cost-line qualifier
+# tells the test which source was consulted — bundled = today,
+# loaded = 2026-04-01. Still well within the 90-day stale-guard
+# window so the warning does not fire.
+#
+# Haiku rates are also deliberately doubled vs the bundled table
+# (which ships $1/$5 per Mtok) so a dollar-amount-checking test can
+# distinguish the two sources by value.
+last_updated = "2026-04-01"
+
+[[model]]
+vendor = "anthropic"
+model = "claude-opus-4-7"
+input_per_mtok = 15.00
+output_per_mtok = 75.00
+
+[[model]]
+vendor = "anthropic"
+model = "claude-haiku-4-5"
+input_per_mtok = 2.00
+output_per_mtok = 10.00
+
+[[model]]
+vendor = "openai"
+model = "gpt-5"
+input_per_mtok = 5.00
+output_per_mtok = 25.00

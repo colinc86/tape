@@ -1,0 +1,9 @@
+# Negative price — rejected by `PricingLoadError::BadPrice`. Exit
+# 2 with the file path named in the diagnostic.
+last_updated = "2026-05-15"
+
+[[model]]
+vendor = "anthropic"
+model = "claude-opus-4-7"
+input_per_mtok = -1.0
+output_per_mtok = 75.00
