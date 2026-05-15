@@ -334,14 +334,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::New {
-            out,
-            template,
-            task,
-            force,
-            created_at,
-            recorder_agent,
-        } => cmd_new(&out, &template, task, force, created_at, recorder_agent),
+        cmd @ Cmd::New { .. } => dispatch_new(cmd),
         Cmd::Recap {
             file,
             set,
@@ -369,6 +362,26 @@ fn main() -> Result<()> {
             json,
         } => cmd_annotate(&file, &note, step, actor, &by, out, ts, json),
     }
+}
+
+/// Thin trampoline from the `Cmd::New` match arm into `cmd_new`.
+/// Exists only so `main()` stays under the workspace
+/// `clippy::too_many_lines` ceiling — by binding the whole variant
+/// via `cmd @ Cmd::New { .. }` and destructuring here, `main`'s arm
+/// collapses to a single source line.
+fn dispatch_new(cmd: Cmd) -> Result<()> {
+    let Cmd::New {
+        out,
+        template,
+        task,
+        force,
+        created_at,
+        recorder_agent,
+    } = cmd
+    else {
+        unreachable!("dispatch_new only called with Cmd::New");
+    };
+    cmd_new(&out, &template, task, force, created_at, recorder_agent)
 }
 
 fn cmd_record(
@@ -706,36 +719,32 @@ fn validate_new_task(task: &str) {
 /// writes the result through `PendingTape::write_to`. `tape verify`
 /// runs as a post-write gate so any template-content mistake is
 /// caught before the file is left on disk.
-fn cmd_new(
-    out: &std::path::Path,
+/// Resolve `--template <id>` against the built-in catalog and validate
+/// `--task` per the template's placeholder spec. Unknown ids exit `2`
+/// with `NEW_TEMPLATE_NOT_FOUND`; templates with a required `task`
+/// placeholder exit `2` with `NEW_MISSING_PLACEHOLDER` when `--task` is
+/// absent. Extracted from `cmd_new` to keep that function under the
+/// workspace `clippy::too_many_lines` ceiling and to give the
+/// resolution/validation matrix a single test seam.
+fn resolve_and_validate(
     template_id: &str,
     task: Option<String>,
-    force: bool,
-    created_at_override: Option<String>,
-    recorder_agent_override: Option<String>,
-) -> Result<()> {
-    // 1a. Resolve the template. Unknown id is a clean exit-2 with the
-    //     valid-ids list inline so the user doesn't have to read the
-    //     --help text to recover.
-    let bundle = match resolve_template(template_id) {
-        Some(b) => b,
-        None => {
-            eprintln!(
-                "tape new: NEW_TEMPLATE_NOT_FOUND — unknown template {template_id:?} \
-                 (valid: {})",
-                known_template_ids().join(", ")
-            );
-            std::process::exit(2);
-        }
+) -> (&'static TemplateBundle, Option<String>) {
+    let Some(bundle) = resolve_template(template_id) else {
+        eprintln!(
+            "tape new: NEW_TEMPLATE_NOT_FOUND — unknown template {template_id:?} \
+             (valid: {})",
+            known_template_ids().join(", ")
+        );
+        std::process::exit(2);
     };
 
-    // 1b. Validate --task per the template's placeholder spec.
-    //     `task_required` templates rely on the existing
-    //     `NEW_MISSING_PLACEHOLDER` surface; templates with no
-    //     required placeholders accept a missing `--task` and only
-    //     run the char-class validator when a value is supplied.
+    // `task_required` templates rely on the existing
+    // `NEW_MISSING_PLACEHOLDER` surface; templates with no required
+    // placeholders accept a missing `--task` and only run the
+    // char-class validator when a value is supplied.
     let task_value: Option<String> = match (bundle.task_required, task.as_deref()) {
-        (true, Some(t)) => {
+        (_, Some(t)) => {
             validate_new_task(t);
             Some(t.to_owned())
         }
@@ -746,12 +755,24 @@ fn cmd_new(
             );
             std::process::exit(2);
         }
-        (false, Some(t)) => {
-            validate_new_task(t);
-            Some(t.to_owned())
-        }
         (false, None) => None,
     };
+
+    (bundle, task_value)
+}
+
+fn cmd_new(
+    out: &std::path::Path,
+    template_id: &str,
+    task: Option<String>,
+    force: bool,
+    created_at_override: Option<String>,
+    recorder_agent_override: Option<String>,
+) -> Result<()> {
+    // 1. Resolve the template + validate `--task` against its
+    //    placeholder spec. Errors exit `2` with the appropriate
+    //    `NEW_*` diagnostic code; we only return on the happy path.
+    let (bundle, task_value) = resolve_and_validate(template_id, task);
 
     // 2. Output-exists check.
     if out.exists() && !force {
@@ -800,62 +821,17 @@ fn cmd_new(
         tracks_jsonl = tracks_jsonl.replace("{{task}}", task_for_sub);
     }
 
-    // 5. Build the Meta. The id is a deterministic UUIDv7 derived
-    //    from (created_at, recorder_agent, task-or-empty) so that two
-    //    runs with the same overrides produce byte-identical track /
-    //    meta content (the deterministic-output property in
-    //    Principal's test plan). For `test-fixture` the empty task
-    //    string keeps the derivation total.
-    let id = derive_uuid_v7(&created_at, &recorder_agent, task_for_sub);
-    // For `meta.task`: use the user-supplied task when present;
-    // otherwise the template's `default_meta_task` (set when the
-    // template hardcodes the task event's prompt). Templates that
-    // require `--task` would have failed the validation gate above,
-    // so the unwrap_or_default fallback is reached only on the
-    // (task_required: false, default_meta_task: None) shape — none
-    // of the built-ins are wired that way today.
-    let meta_task = task_value
-        .clone()
-        .or_else(|| bundle.default_meta_task.map(str::to_owned))
-        .unwrap_or_default();
-    // `meta.outcome` MUST match the eject event's `payload.outcome`
-    // (SPEC §10.5 OUTCOME_MISMATCH) — peek at the rendered tracks
-    // before the verify gate so a template can declare a non-default
-    // outcome (e.g. `test-fixture` ships `success`). Falls back to
-    // `Unknown` if the eject can't be located, which keeps the
-    // minimal template's existing shape working.
-    let outcome =
-        outcome_from_rendered_tracks(&tracks_jsonl).unwrap_or(tape_format::meta::Outcome::Unknown);
-    let meta = tape_format::meta::Meta {
-        tape_version: tape_format::TAPE_VERSION.into(),
-        id,
-        created_at: created_at.clone(),
-        ejected_at: ejected_at.clone(),
-        task: meta_task,
-        recorder: tape_format::meta::Recorder {
-            agent: recorder_agent.clone(),
-            user: None,
-        },
-        outcome,
-        models: vec![],
-        tools: vec![],
-        tool_budget: None,
-        redaction_summary: None,
-        label: None,
-        recap: None,
-        recaps: vec![],
-        tags: vec![],
-        new_block: Some(tape_format::meta::NewBlock {
-            template_id: bundle.id.into(),
-            template_version: bundle.version.into(),
-            generated_at: created_at.clone(),
-            placeholders_filled: bundle
-                .placeholders_filled
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
-        }),
-    };
+    // 5. Build the Meta. Extracted to `build_new_meta` so `cmd_new`
+    //    stays under the workspace `clippy::too_many_lines` ceiling.
+    let meta = build_new_meta(
+        bundle,
+        task_value.as_deref(),
+        task_for_sub,
+        &created_at,
+        &ejected_at,
+        &recorder_agent,
+        &tracks_jsonl,
+    );
     let meta_yaml = meta
         .to_yaml()
         .map_err(|e| anyhow::anyhow!("serialize meta.yaml: {e}"))?;
@@ -896,14 +872,83 @@ fn cmd_new(
         std::process::exit(3);
     }
 
-    println!("ok: wrote {} (template=minimal)", out.display());
+    println!("ok: wrote {} (template={})", out.display(), bundle.id);
     Ok(())
+}
+
+/// Synthesize the `Meta` block for `tape new`. The id is a
+/// deterministic `UUIDv7` derived from
+/// `(created_at, recorder_agent, task-or-empty)` so two runs with
+/// pinned overrides produce byte-identical track / meta content (the
+/// deterministic-output property in Principal's test plan). For
+/// `test-fixture` the empty task string keeps the derivation total.
+///
+/// `meta.task` uses the user-supplied task when present; otherwise
+/// the template's `default_meta_task` (set when the template
+/// hardcodes the task event's prompt). Templates that require
+/// `--task` would have failed `resolve_and_validate`'s gate, so the
+/// `unwrap_or_default` fallback is reached only on the
+/// `(task_required: false, default_meta_task: None)` shape — none of
+/// the built-ins are wired that way today.
+///
+/// `meta.outcome` MUST match the eject event's `payload.outcome`
+/// (SPEC §10.5 `OUTCOME_MISMATCH`) — we peek at the rendered tracks
+/// before the verify gate so a template can declare a non-default
+/// outcome (e.g. `test-fixture` ships `success`). Falls back to
+/// `Unknown` if the eject can't be located, which keeps the
+/// `minimal` template's existing shape working.
+fn build_new_meta(
+    bundle: &TemplateBundle,
+    task_value: Option<&str>,
+    task_for_sub: &str,
+    created_at: &str,
+    ejected_at: &str,
+    recorder_agent: &str,
+    tracks_jsonl: &str,
+) -> tape_format::meta::Meta {
+    let id = derive_uuid_v7(created_at, recorder_agent, task_for_sub);
+    let meta_task = task_value
+        .map(str::to_owned)
+        .or_else(|| bundle.default_meta_task.map(str::to_owned))
+        .unwrap_or_default();
+    let outcome =
+        outcome_from_rendered_tracks(tracks_jsonl).unwrap_or(tape_format::meta::Outcome::Unknown);
+    tape_format::meta::Meta {
+        tape_version: tape_format::TAPE_VERSION.into(),
+        id,
+        created_at: created_at.to_owned(),
+        ejected_at: ejected_at.to_owned(),
+        task: meta_task,
+        recorder: tape_format::meta::Recorder {
+            agent: recorder_agent.to_owned(),
+            user: None,
+        },
+        outcome,
+        models: vec![],
+        tools: vec![],
+        tool_budget: None,
+        redaction_summary: None,
+        label: None,
+        recap: None,
+        recaps: vec![],
+        tags: vec![],
+        new_block: Some(tape_format::meta::NewBlock {
+            template_id: bundle.id.into(),
+            template_version: bundle.version.into(),
+            generated_at: created_at.to_owned(),
+            placeholders_filled: bundle
+                .placeholders_filled
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+        }),
+    }
 }
 
 /// Parse the eject event's `payload.outcome` from a rendered
 /// `tracks.jsonl` body so the synthesized `meta.outcome` matches what
-/// the template's eject declares (SPEC §10.5 OUTCOME_MISMATCH). Best-
-/// effort — returns `None` if the eject can't be found or the
+/// the template's eject declares (SPEC §10.5 `OUTCOME_MISMATCH`).
+/// Best-effort — returns `None` if the eject can't be found or the
 /// outcome value is missing / unknown. Cheap because the eject is
 /// always the final line (`SPEC §5.4`); we scan the tail.
 fn outcome_from_rendered_tracks(jsonl: &str) -> Option<tape_format::meta::Outcome> {
