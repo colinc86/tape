@@ -139,12 +139,18 @@ enum Cmd {
     /// and `--from`/auto-tag emission are still Phase 3+.
     New {
         /// Output cassette path. Refuses if it already exists unless
-        /// `--force` is supplied.
-        out: std::path::PathBuf,
+        /// `--force` is supplied. Not consumed when `--list-templates`
+        /// or `--describe-template` is set (those introspection flags
+        /// exit before the generation path).
+        out: Option<std::path::PathBuf>,
         /// Template id. Built-ins: `minimal`, `test-fixture`,
         /// `bug-investigation`. Unknown values exit 2 with
         /// `NEW_TEMPLATE_NOT_FOUND`.
-        #[arg(long, default_value = "minimal")]
+        #[arg(
+            long,
+            default_value = "minimal",
+            conflicts_with_all = ["list_templates", "describe_template"],
+        )]
         template: String,
         /// One-line description of what the cassette represents. Lands
         /// in `meta.task`, in the task event's `prompt`, and in the
@@ -154,21 +160,34 @@ enum Cmd {
         /// whose `template.yaml` declares `task: required: true`
         /// (`minimal`, `bug-investigation`); optional for templates
         /// with no required placeholders (`test-fixture`).
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["list_templates", "describe_template"])]
         task: Option<String>,
         /// Overwrite the output path if it already exists.
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, conflicts_with_all = ["list_templates", "describe_template"])]
         force: bool,
         /// Override `meta.created_at` / the task event's `ts`. Defaults
         /// to `now()`. The `--created-at <RFC3339>` + `--recorder-agent`
         /// pair exists so fixture-regeneration tests get a deterministic
         /// output for the same inputs.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["list_templates", "describe_template"])]
         created_at: Option<String>,
         /// Override `meta.recorder.agent`. Defaults to
         /// `tape-cli/<crate-version>+new+<template>`.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["list_templates", "describe_template"])]
         recorder_agent: Option<String>,
+        /// Print the bundled template catalog (one line per template:
+        /// id, version, required-task flag, description) and exit 0.
+        /// Mutually exclusive with `--describe-template` and with the
+        /// generation flags. Writes nothing to disk. (Issue #179.)
+        #[arg(long, conflicts_with = "describe_template")]
+        list_templates: bool,
+        /// Print a full description of one bundled template
+        /// (placeholders, track count, rendered liner-notes) and exit 0.
+        /// Unknown ids exit 2. Mutually exclusive with
+        /// `--list-templates` and with the generation flags. Writes
+        /// nothing to disk. (Issue #179.)
+        #[arg(long, value_name = "ID")]
+        describe_template: Option<String>,
     },
     /// Manage the `meta.recap` field — a 1–2 sentence summary suitable
     /// for pasting into Slack / Linear / Jira / PR descriptions.
@@ -494,9 +513,28 @@ fn dispatch_new(cmd: Cmd) -> Result<()> {
         force,
         created_at,
         recorder_agent,
+        list_templates,
+        describe_template,
     } = cmd
     else {
         unreachable!("dispatch_new only called with Cmd::New");
+    };
+    // Introspection flags short-circuit before any path validation.
+    // clap's `conflicts_with_all` already rejects combinations with the
+    // generation flags at parse time, so reaching here means exactly
+    // one of `list_templates` / `describe_template` / generation-path
+    // is active.
+    if list_templates {
+        cmd_new_list();
+        return Ok(());
+    }
+    if let Some(id) = describe_template {
+        cmd_new_describe(&id);
+        return Ok(());
+    }
+    let Some(out) = out else {
+        eprintln!("tape new: <out> is required (or use --list-templates / --describe-template)");
+        std::process::exit(2);
     };
     cmd_new(&out, &template, task, force, created_at, recorder_agent)
 }
@@ -755,6 +793,12 @@ struct TemplateBundle {
     /// uses the literal `"test fixture"` so the cassette is
     /// internally consistent (meta.task equals tracks[0].prompt).
     default_meta_task: Option<&'static str>,
+    /// One-line catalog description surfaced by
+    /// `tape new --list-templates` / `--describe-template`. Source of
+    /// truth is the `description:` field in the template's
+    /// `template.yaml`; mirrored here as a `&'static str` to avoid a
+    /// runtime YAML parse for introspection. (Issue #179.)
+    description: &'static str,
 }
 
 /// Built-in template catalog. Order is documentation only; the
@@ -769,6 +813,7 @@ const BUILTIN_TEMPLATES: &[TemplateBundle] = &[
         has_task_placeholder: true,
         placeholders_filled: &["task"],
         default_meta_task: None,
+        description: "Smallest valid v0 cassette — one task, one eject.",
     },
     TemplateBundle {
         id: "test-fixture",
@@ -779,6 +824,7 @@ const BUILTIN_TEMPLATES: &[TemplateBundle] = &[
         has_task_placeholder: false,
         placeholders_filled: &[],
         default_meta_task: Some("test fixture"),
+        description: "Deterministic 5-track fixture; safe for regen tests.",
     },
     TemplateBundle {
         id: "bug-investigation",
@@ -789,6 +835,7 @@ const BUILTIN_TEMPLATES: &[TemplateBundle] = &[
         has_task_placeholder: true,
         placeholders_filled: &["task"],
         default_meta_task: None,
+        description: "12-track bug-hunt archetype with annotations.",
     },
 ];
 
@@ -798,6 +845,92 @@ fn resolve_template(id: &str) -> Option<&'static TemplateBundle> {
 
 fn known_template_ids() -> Vec<&'static str> {
     BUILTIN_TEMPLATES.iter().map(|t| t.id).collect()
+}
+
+/// Count non-empty lines in a `tracks.jsonl` bundle. The runtime
+/// equivalent of `wc -l` over the embedded string; surfaced by
+/// `--describe-template` so a user sees the actual track count
+/// rather than a hand-maintained property that could drift.
+fn count_tracks_lines(jsonl: &str) -> usize {
+    jsonl.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+/// `tape new --list-templates` body. One line per built-in template
+/// in `BUILTIN_TEMPLATES` order: id, version, required-task marker,
+/// description. Column widths pad to the longest id present so the
+/// description column lines up. Pure-stdout; the caller exits 0.
+fn cmd_new_list() {
+    let id_w = BUILTIN_TEMPLATES
+        .iter()
+        .map(|t| t.id.len())
+        .max()
+        .unwrap_or(0);
+    for t in BUILTIN_TEMPLATES {
+        let task_flag = if t.task_required {
+            "required-task"
+        } else {
+            "no-task      "
+        };
+        println!(
+            "{:<id_w$}  v{}  {}  {}",
+            t.id,
+            t.version,
+            task_flag,
+            t.description,
+            id_w = id_w,
+        );
+    }
+}
+
+/// `tape new --describe-template <id>` body. Prints the full
+/// human-readable description block to stdout and returns. Unknown
+/// ids exit 2 with stderr listing the valid ids.
+fn cmd_new_describe(id: &str) {
+    let Some(t) = resolve_template(id) else {
+        eprintln!(
+            "tape new: --describe-template: unknown template '{id}'; known: {}",
+            known_template_ids().join(", ")
+        );
+        std::process::exit(2);
+    };
+    println!("template: {}", t.id);
+    println!("version:  v{}", t.version);
+    let required = if t.task_required { "--task" } else { "(none)" };
+    println!("required: {required}");
+    println!("optional: --created-at, --recorder-agent, --force");
+    println!("tracks:   {}", count_tracks_lines(t.tracks));
+    println!();
+    println!("description:");
+    println!("  {}", t.description);
+    println!();
+    println!("placeholders:");
+    if t.placeholders_filled.is_empty() {
+        if let Some(default) = t.default_meta_task {
+            println!("  (none) \u{2014} default meta.task is the literal {default:?}");
+        } else {
+            println!("  (none)");
+        }
+    } else {
+        for ph in t.placeholders_filled {
+            let suffix = if t.task_required && *ph == "task" {
+                "required"
+            } else {
+                "optional"
+            };
+            let blurb = match *ph {
+                "task" => {
+                    "fills meta.task, tracks[0].payload.prompt, and the liner-notes \"## Task\" section."
+                }
+                other => other,
+            };
+            println!("  {ph} ({suffix}) \u{2014} {blurb}");
+        }
+    }
+    println!();
+    println!("liner-notes preview:");
+    for line in t.liner.lines() {
+        println!("  {line}");
+    }
 }
 
 /// Validate the `--task` value for `tape new`. Rejects empty strings,
