@@ -1507,6 +1507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tape-judge",
  "tempfile",
  "thiserror",
  "uuid",
