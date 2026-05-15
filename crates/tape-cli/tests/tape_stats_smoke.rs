@@ -241,3 +241,79 @@ fn stats_format_json_exits_nonzero_on_missing_file() {
         "no JSON should be on stdout on error path: {stdout}"
     );
 }
+
+// --- Phase 3 (issue #168): --with-cost ------------------------------
+
+#[test]
+fn stats_with_cost_emits_a_cost_line() {
+    // `--with-cost` must emit a `cost:` line whenever there's at
+    // least one model_call event, regardless of whether the events
+    // are priceable. The minimal fixture's model_call lacks token
+    // counts so the branch is the "(no priceable model_call events)"
+    // form, not the dollar form — both are valid shapes of the new
+    // line, and the test pins on the line marker only.
+    let out = Command::new(binary_path())
+        .args([
+            "stats",
+            "--with-cost",
+            fixture("minimal-success.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tape stats --with-cost failed: {out:?}"
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("cost:"), "missing cost line:\n{text}");
+}
+
+#[test]
+fn stats_default_omits_cost_line() {
+    // Backwards-compat guard: without `--with-cost`, the cost line
+    // does not appear. Phase-1 / Phase-2 byte-for-byte preservation.
+    let out = Command::new(binary_path())
+        .args(["stats", fixture("minimal-success.tape").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !text.contains("cost:"),
+        "default output must omit cost line:\n{text}"
+    );
+}
+
+#[test]
+fn stats_with_cost_and_format_json_is_rejected() {
+    // `--with-cost --format json` is rejected up front per Principal's
+    // spec — the JSON schema bump lives with the per-model breakdown
+    // in Phase 4. No partial JSON on stdout; the diagnostic names
+    // the follow-on so the user can find it.
+    let out = Command::new(binary_path())
+        .args([
+            "stats",
+            "--with-cost",
+            "--format",
+            "json",
+            fixture("minimal-success.tape").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "should reject: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("text-only"),
+        "diagnostic should explain text-only constraint: {stderr}"
+    );
+    assert!(
+        stderr.contains("Phase 4") || stderr.contains("#31"),
+        "diagnostic should name the follow-on: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty()
+            || serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
+        "no JSON should leak to stdout on rejection: {stdout}"
+    );
+}

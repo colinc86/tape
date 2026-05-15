@@ -8,6 +8,8 @@ use std::fmt::Write;
 use serde_json::Value;
 use tape_format::tracks::{Kind, Track};
 
+pub mod pricing;
+
 /// Render one line per track for `tape ls`.
 ///
 /// Format: `  <step:3> <kind:13> <label>`
@@ -74,10 +76,15 @@ pub fn render_summary_view(meta_yaml: &str, liner_md: &str, tracks: &[Track]) ->
 /// engine with no hits vs an empty line for a tape that pre-dates the
 /// redactions.json convention. (Roughly per the issue body's
 /// "honest reporting" rule for `tokens: (none recorded)`.)
+///
+/// `with_cost` (Step-3 of #31, issue #168) opts into the dollar
+/// estimate column. Off by default keeps Phase-1 / Phase-2 output
+/// byte-for-byte identical.
 pub fn render_stats(
     meta: &tape_format::meta::Meta,
     tracks: &[Track],
     redactions_count: Option<u64>,
+    with_cost: bool,
 ) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "id: {}", meta.id);
@@ -138,6 +145,13 @@ pub fn render_stats(
             out,
             "tokens: in={tin} + out={tout} across {known} model_call event(s){unknown_note}"
         );
+    }
+
+    // Step-3 of #31 (issue #168): opt-in dollar-cost estimate column.
+    // When `with_cost` is false this block is suppressed entirely,
+    // keeping the Phase-1 / Phase-2 output byte-for-byte identical.
+    if with_cost && !model_calls.is_empty() {
+        render_cost_block(&mut out, &model_calls);
     }
 
     let mcp_n = hist[Kind::McpCall as usize];
@@ -378,7 +392,7 @@ mod chrono_lite {
     /// (Unix epoch) for a given (year, month, day). Correct over the
     /// full proleptic Gregorian range. Cited from
     /// <https://howardhinnant.github.io/date_algorithms.html>.
-    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
         let y = if m <= 2 { y - 1 } else { y };
         let era = if y >= 0 { y } else { y - 399 } / 400;
         let yoe = (y - era * 400) as i64;
@@ -387,6 +401,43 @@ mod chrono_lite {
         let doy = (153 * if m > 2 { m - 3 } else { m + 9 } + 2) / 5 + d - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
         era * 146097 + doe - 719468
+    }
+
+    /// Parse a `YYYY-MM-DD` date string into days-since-epoch (UTC).
+    /// Used by the pricing stale-guard at issue #168. Returns `None`
+    /// on any malformed input; the caller treats an unparseable
+    /// `PRICING_TABLE_LAST_UPDATED` as "stale check unavailable" and
+    /// skips the warning rather than crashing.
+    pub fn parse_date(s: &str) -> Option<i64> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+            return None;
+        }
+        let year: i64 = s.get(0..4)?.parse().ok()?;
+        let month: u32 = s.get(5..7)?.parse().ok()?;
+        let day: u32 = s.get(8..10)?.parse().ok()?;
+        if !(1..=12).contains(&month) {
+            return None;
+        }
+        if !(1..=31).contains(&day) {
+            return None;
+        }
+        Some(days_from_civil(year, month, day))
+    }
+
+    /// Today's date in days-since-Unix-epoch, derived from
+    /// `SystemTime::now()`. Floors to UTC midnight; the caller's
+    /// staleness threshold operates in whole-day units, so any sub-
+    /// day precision would be lost anyway. Returns `None` if the
+    /// system clock is set before 1970 (impossible in practice; the
+    /// caller skips the stale-guard rather than panicking).
+    pub fn today_days_since_epoch() -> Option<i64> {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        let secs = i64::try_from(secs).ok()?;
+        Some(secs / 86_400)
     }
 }
 
@@ -406,6 +457,86 @@ fn token_totals(model_calls: &[&Track]) -> (u64, u64, u64) {
         }
     }
     (tin, tout, unknown)
+}
+
+/// Aggregate cost across a slice of `model_call` events. Step-3 of
+/// #31 (issue #168). `priced` is the count that matched the bundled
+/// pricing table AND had both `tokens_in` and `tokens_out`; `total`
+/// is `model_calls.len()`. The caller renders one of three lines
+/// depending on whether `priced` is 0 / partial / full.
+///
+/// The dollar total is accumulated as `f64` and rounded once at the
+/// rendered-output boundary — per-event rounding would compound a
+/// fraction-of-a-cent error across many calls.
+#[derive(Debug, Clone, Copy)]
+pub struct CostResult {
+    pub dollars: f64,
+    pub priced: u64,
+    pub total: u64,
+}
+
+/// Append the `cost:` line (and optional stale-guard warning) for the
+/// given `model_calls`. Extracted from `render_stats` to keep that
+/// function under clippy's `too_many_lines` threshold. The three text
+/// branches (no-priceable / N-of-M / full) and the >90-day warning
+/// follow the issue #168 body's spec exactly.
+fn render_cost_block(out: &mut String, model_calls: &[&Track]) {
+    let cost = cost_total(model_calls);
+    if cost.priced == 0 {
+        let _ = writeln!(out, "cost: (no priceable model_call events)");
+    } else {
+        let qualifier = if cost.priced < cost.total {
+            format!(
+                "estimate; {} of {} model_calls priced; pricing table {}",
+                cost.priced,
+                cost.total,
+                pricing::PRICING_TABLE_LAST_UPDATED,
+            )
+        } else {
+            format!(
+                "estimate; pricing table {}",
+                pricing::PRICING_TABLE_LAST_UPDATED
+            )
+        };
+        let _ = writeln!(out, "cost: ${:.4}  ({qualifier})", cost.dollars);
+    }
+    if let Some(days) = pricing_table_age_days() {
+        if days > pricing::PRICING_STALENESS_DAYS {
+            let _ = writeln!(
+                out,
+                "warning: pricing table is {days} days old (>{} day threshold); cost figures may be stale",
+                pricing::PRICING_STALENESS_DAYS,
+            );
+        }
+    }
+}
+
+pub fn cost_total(model_calls: &[&Track]) -> CostResult {
+    let mut dollars: f64 = 0.0;
+    let mut priced: u64 = 0;
+    let total = model_calls.len() as u64;
+    for t in model_calls {
+        if let Some((_, _, d)) = pricing::price_event(&t.payload) {
+            dollars += d;
+            priced += 1;
+        }
+    }
+    CostResult {
+        dollars,
+        priced,
+        total,
+    }
+}
+
+/// Days elapsed since [`pricing::PRICING_TABLE_LAST_UPDATED`]. Used
+/// for the >90-day stale-guard warning in `render_stats`. Returns
+/// `None` if the last-updated string is unparseable or the system
+/// clock predates the Unix epoch — in either case the caller skips
+/// the stale-guard rather than panicking.
+fn pricing_table_age_days() -> Option<i64> {
+    let updated = chrono_lite::parse_date(pricing::PRICING_TABLE_LAST_UPDATED)?;
+    let today = chrono_lite::today_days_since_epoch()?;
+    Some(today - updated)
 }
 
 /// One-line semantic label for a track. Used by `tape ls`,
@@ -658,7 +789,7 @@ mod tests {
             t(4, Kind::Shell, json!({"command": "ls"})),
             t(5, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("tracks: 5"), "{s}");
         assert!(s.contains("task: 1"), "{s}");
         assert!(s.contains("model_call: 2"), "{s}");
@@ -677,7 +808,7 @@ mod tests {
             t(2, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
             t(5, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("(4000 ms)"), "{s}");
     }
 
@@ -700,7 +831,7 @@ mod tests {
             mk(3, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
             mk(4, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("time accounting: N/A"), "{s}");
         assert!(s.contains("issue #5"), "{s}");
         // The other sections still render.
@@ -725,7 +856,7 @@ mod tests {
             t(4, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
             t(5, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("tokens: in=300 + out=130"), "{s}");
         assert!(s.contains("across 2 model_call event(s)"), "{s}");
         assert!(
@@ -741,7 +872,7 @@ mod tests {
             t(2, Kind::Shell, json!({"command": "ls"})),
             t(3, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("tokens: (none recorded)"), "{s}");
     }
 
@@ -757,7 +888,7 @@ mod tests {
             t(7, Kind::FileWrite, json!({"path": "/c"})),
             t(8, Kind::Eject, json!({"outcome": "success"})),
         ];
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("tools: 2 mcp_call, 1 shell"), "{s}");
         assert!(s.contains("files: 2 read, 1 write"), "{s}");
     }
@@ -769,15 +900,15 @@ mod tests {
             t(2, Kind::Eject, json!({"outcome": "success"})),
         ];
         // Engine ran, zero hits.
-        let s = render_stats(&fresh_meta(), &tracks, Some(0));
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
         assert!(s.contains("redactions: 0"), "{s}");
 
         // No redactions.json at all (older cassette format).
-        let s = render_stats(&fresh_meta(), &tracks, None);
+        let s = render_stats(&fresh_meta(), &tracks, None, false);
         assert!(s.contains("redactions: (none recorded)"), "{s}");
 
         // Non-zero count.
-        let s = render_stats(&fresh_meta(), &tracks, Some(3));
+        let s = render_stats(&fresh_meta(), &tracks, Some(3), false);
         assert!(s.contains("redactions: 3"), "{s}");
     }
 
@@ -787,6 +918,7 @@ mod tests {
             &fresh_meta(),
             &[t(1, Kind::Task, json!({"prompt": "x"}))],
             Some(0),
+            false,
         );
         assert!(
             s.contains("id: 01h8xy00-0000-7000-b8aa-000000000031"),
@@ -819,6 +951,196 @@ mod tests {
     fn chrono_lite_rejects_malformed() {
         assert!(chrono_lite::parse("not-a-timestamp").is_none());
         assert!(chrono_lite::parse("2026-05-06T10:00:00").is_none()); // no Z
+    }
+
+    // --- chrono_lite::parse_date (issue #168 stale-guard) --------------
+
+    #[test]
+    fn parse_date_returns_days_since_epoch() {
+        // 1970-01-01 is day 0; 1970-01-02 is day 1.
+        assert_eq!(chrono_lite::parse_date("1970-01-01"), Some(0));
+        assert_eq!(chrono_lite::parse_date("1970-01-02"), Some(1));
+    }
+
+    #[test]
+    fn parse_date_handles_leap_year_boundary() {
+        // Feb 29, 2024 — the day after Feb 28 in a leap year.
+        let feb28 = chrono_lite::parse_date("2024-02-28").unwrap();
+        let feb29 = chrono_lite::parse_date("2024-02-29").unwrap();
+        let mar01 = chrono_lite::parse_date("2024-03-01").unwrap();
+        assert_eq!(feb29 - feb28, 1);
+        assert_eq!(mar01 - feb29, 1);
+    }
+
+    #[test]
+    fn parse_date_rejects_malformed() {
+        assert!(chrono_lite::parse_date("not-a-date").is_none());
+        assert!(chrono_lite::parse_date("2026/05/15").is_none());
+        assert!(chrono_lite::parse_date("2026-13-01").is_none()); // month out of range
+        assert!(chrono_lite::parse_date("2026-05-32").is_none()); // day out of range
+        assert!(chrono_lite::parse_date("2026-5-15").is_none()); // unpadded month
+    }
+
+    // --- cost_total / render_stats with_cost (issue #168) --------------
+
+    #[test]
+    fn cost_total_priced_full_when_all_pairs_known() {
+        let tracks = [
+            t(
+                1,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "tokens_in": 1_000_000_u64,
+                    "tokens_out": 100_000_u64,
+                }),
+            ),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-haiku-4-5",
+                    "tokens_in": 500_000_u64,
+                    "tokens_out": 50_000_u64,
+                }),
+            ),
+        ];
+        let model_calls: Vec<&Track> = tracks.iter().collect();
+        let res = cost_total(&model_calls);
+        assert_eq!(res.priced, 2);
+        assert_eq!(res.total, 2);
+        // Opus: 1M*$15 + 100k*$75 = $15 + $7.50 = $22.50
+        // Haiku: 500k*$1 + 50k*$5 = $0.50 + $0.25 = $0.75
+        // Total: $23.25
+        assert!((res.dollars - 23.25).abs() < 0.0001, "got {}", res.dollars);
+    }
+
+    #[test]
+    fn cost_total_priced_partial_when_some_unknown() {
+        let tracks = [
+            t(
+                1,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "tokens_in": 1_000_000_u64,
+                    "tokens_out": 100_000_u64,
+                }),
+            ),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "unknown-model"}),
+            ),
+        ];
+        let model_calls: Vec<&Track> = tracks.iter().collect();
+        let res = cost_total(&model_calls);
+        assert_eq!(res.priced, 1);
+        assert_eq!(res.total, 2);
+        assert!((res.dollars - 22.50).abs() < 0.0001);
+    }
+
+    #[test]
+    fn cost_total_priced_zero_when_all_unknown() {
+        let tracks = [t(
+            1,
+            Kind::ModelCall,
+            json!({"vendor": "anthropic", "model": "no-such-model"}),
+        )];
+        let model_calls: Vec<&Track> = tracks.iter().collect();
+        let res = cost_total(&model_calls);
+        assert_eq!(res.priced, 0);
+        assert_eq!(res.total, 1);
+        // priced==0 already proves the dollar accumulator never ran;
+        // checking it directly hits `clippy::float_cmp`. Leave the
+        // priced/total assertions as the load-bearing contract.
+    }
+
+    #[test]
+    fn render_stats_with_cost_off_has_no_cost_line() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "tokens_in": 1_000_u64,
+                    "tokens_out": 200_u64,
+                }),
+            ),
+            t(3, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), false);
+        assert!(!s.contains("cost:"), "default output omits cost line: {s}");
+    }
+
+    #[test]
+    fn render_stats_with_cost_on_emits_dollar_line() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "tokens_in": 1_000_000_u64,
+                    "tokens_out": 100_000_u64,
+                }),
+            ),
+            t(3, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), true);
+        assert!(s.contains("cost: $22.5000"), "got:\n{s}");
+        assert!(
+            s.contains("pricing table"),
+            "should name the pricing table date: {s}"
+        );
+    }
+
+    #[test]
+    fn render_stats_with_cost_no_priceable_branch() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "no-such-model"}),
+            ),
+            t(3, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), true);
+        assert!(s.contains("cost: (no priceable model_call events)"), "{s}");
+    }
+
+    #[test]
+    fn render_stats_with_cost_partial_branch_shows_n_of_m() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({
+                    "vendor": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "tokens_in": 1_000_u64,
+                    "tokens_out": 200_u64,
+                }),
+            ),
+            t(
+                3,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "unknown-model"}),
+            ),
+            t(4, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_stats(&fresh_meta(), &tracks, Some(0), true);
+        assert!(s.contains("1 of 2 model_calls priced"), "{s}");
     }
 
     // --- render_stats_json (issue #157 / Phase 2) ----------------------

@@ -34,10 +34,10 @@ enum Cmd {
     },
     /// One-line-per-track listing.
     Ls { file: std::path::PathBuf },
-    /// Read-only analytics over a single cassette. Phase-2 of #31:
-    /// adds `--format json` with a pinned `schema_version` so CI /
-    /// dashboards / scripts can pin against a stable wire shape.
-    /// Library/compare and pricing remain Phase-3+ work.
+    /// Read-only analytics over a single cassette. Phase-3 of #31:
+    /// adds `--with-cost` for the bundled pricing-table dollar
+    /// estimate column. Library/compare and the user-supplied
+    /// `--pricing-file` flow remain Phase-4+ work.
     Stats {
         file: std::path::PathBuf,
         /// Output format. `text` (default) preserves Phase-1
@@ -46,6 +46,14 @@ enum Cmd {
         /// newline (matches `tape verify --json`'s convention).
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
+        /// Enable the dollar-cost estimate column. Uses the bundled
+        /// pricing table; appends a stale-guard warning when the
+        /// table is older than 90 days. Text-only for now; pairing
+        /// with `--format json` is rejected (the JSON schema bump
+        /// lands with the per-model breakdown in Phase 4). Issue
+        /// #168.
+        #[arg(long)]
+        with_cost: bool,
     },
     /// Compare two tapes.
     Diff {
@@ -331,7 +339,11 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Verify { file, json } => cmd_verify(&file, json),
         Cmd::Ls { file } => cmd_ls(&file),
-        Cmd::Stats { file, format } => cmd_stats(&file, &format),
+        Cmd::Stats {
+            file,
+            format,
+            with_cost,
+        } => cmd_stats(&file, &format, with_cost),
         Cmd::Play {
             file,
             step,
@@ -2329,7 +2341,16 @@ fn cmd_ls(file: &std::path::Path) -> Result<()> {
 /// `load_tracks`), pull a redaction count out of the optional
 /// `redactions.json`, and hand off to `tape_play::render_stats`. No I/O
 /// beyond what `load_tracks` already does.
-fn cmd_stats(file: &std::path::Path, format: &str) -> Result<()> {
+fn cmd_stats(file: &std::path::Path, format: &str, with_cost: bool) -> Result<()> {
+    // Phase-3 of #31 (issue #168): `--with-cost` is text-only for now.
+    // The JSON schema would need a `1.1` bump to add `cost_usd`, which
+    // is the Phase-4 follow-on. Rejecting up front (before any output)
+    // mirrors `tape verify --json`'s no-partial-output posture.
+    if with_cost && format == "json" {
+        anyhow::bail!(
+            "--with-cost is text-only in this release; JSON cost field lands in a follow-on (Phase 4 of issue #31)"
+        );
+    }
     let (raw, tracks) = load_tracks(file)?;
     let meta_yaml = raw
         .meta_yaml
@@ -2348,7 +2369,7 @@ fn cmd_stats(file: &std::path::Path, format: &str) -> Result<()> {
         // `_` arm here would be dead code.
         "text" => print!(
             "{}",
-            tape_play::render_stats(&meta, &tracks, redactions_count)
+            tape_play::render_stats(&meta, &tracks, redactions_count, with_cost)
         ),
         "json" => {
             let value = tape_play::render_stats_json(&meta, &tracks, redactions_count);
