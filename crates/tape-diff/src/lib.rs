@@ -18,12 +18,20 @@ use serde_json::Value;
 use tape_format::reader::RawTape;
 use tape_format::tracks::{self, Kind, Track};
 
+pub mod judge;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Diff {
     pub task: String,
     pub outcome: Outcomes,
     pub alignment: Vec<AlignedPair>,
     pub summary: Summary,
+    /// Audit rows for every successful judge call when `--judge` ran.
+    /// Empty on a structural-only diff. Lands in JSON output for tooling
+    /// consumers (#149 AC #6); text output keeps the narration inline
+    /// only.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub judge_calls: Vec<tape_judge::JudgeCallRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -151,6 +159,7 @@ pub fn compute(a_path: &std::path::Path, b_path: &std::path::Path) -> anyhow::Re
         },
         alignment,
         summary,
+        judge_calls: Vec::new(),
     })
 }
 
@@ -376,8 +385,13 @@ pub fn render_text(diff: &Diff, show_all: bool) -> String {
             let _ = writeln!(out, "    before: {label_a}");
             let _ = writeln!(out, "    after:  {label_b}");
         }
+        // #149 AC #1: the marker for judge-sourced narration is a
+        // 2-space-indented `judge:` line, distinct from the structural
+        // `before:`/`after:` fields above. Non-judge callers that fill
+        // `narration` in the future would land here too — the renderer
+        // doesn't peek at the source.
         if let Some(narr) = &pair.narration {
-            let _ = writeln!(out, "    why:    {narr}");
+            let _ = writeln!(out, "  judge: {narr}");
         }
         if !pair.downstream_b.is_empty() {
             let _ = writeln!(out, "    impact: flows into Track {:?}", pair.downstream_b);
