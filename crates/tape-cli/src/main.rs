@@ -250,6 +250,28 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Render a cassette to a portable, non-Claude-Code-friendly format.
+    ///
+    /// Step-1 vertical slice of issue #8: GitHub-flavored Markdown only,
+    /// written to `<basename>.md` by default. `--format html` /
+    /// `--format both`, themes, filter chips, the post-render
+    /// defense-in-depth re-scan, `--audience` presets, `--strip-internal`,
+    /// `--include-payloads`, `--inline-images`, the `.taperc::export:`
+    /// section, and the `/tape:tape-export` plugin slash command are all
+    /// Step 2–4 follow-ons.
+    Export {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Output format. Step 1 only supports `md`; the `html` /
+        /// `both` values exit 2 with a TODO diagnostic naming the
+        /// follow-on step until Step 2 lands.
+        #[arg(short = 'f', long, default_value = "md")]
+        format: String,
+        /// Output path. Default: `<basename>.md` next to the input.
+        /// Refuses if equal to the input path.
+        #[arg(short = 'o', long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -356,6 +378,7 @@ fn main() -> Result<()> {
             ts,
             json,
         } => cmd_annotate(&file, &note, step, actor, &by, out, ts, json),
+        Cmd::Export { file, format, out } => cmd_export(&file, &format, out),
     }
 }
 
@@ -1595,4 +1618,78 @@ fn cmd_verify(file: &std::path::Path, json: bool) -> Result<()> {
     } else {
         std::process::exit(2);
     }
+}
+
+/// Step-1 of issue #8. Renders the cassette to GitHub-flavored
+/// Markdown via `tape_export::render_markdown` and writes the result
+/// to the resolved output path. No defense-in-depth re-scan (Step 3),
+/// no HTML output (Step 2), no audience presets (Step 3).
+///
+/// The output path resolution mirrors `cmd_recap` / `cmd_annotate`:
+/// explicit `-o` wins, otherwise `<basename>.md` next to the input,
+/// refusing if it equals the input. Errors during render are reported
+/// to stderr with `EXPORT_*` codes for forward-compatible stable
+/// diagnostics; the writer itself can only fail with IO errors,
+/// which `anyhow` carries up to `main`.
+fn cmd_export(file: &std::path::Path, format: &str, out: Option<std::path::PathBuf>) -> Result<()> {
+    // 1. Step-1 hard-blocks `html` / `both`. The flag accepts them at
+    //    parse time so the CLI surface doesn't need to change when
+    //    Step 2 lands — only this guard moves.
+    match format {
+        "md" => {}
+        "html" | "both" => {
+            eprintln!(
+                "tape export: EXPORT_FORMAT_UNAVAILABLE — `--format {format}` lands in \
+                 Step 2 (HTML renderer). Step 1 ships `--format md` only."
+            );
+            std::process::exit(2);
+        }
+        _ => {
+            eprintln!("tape export: --format must be one of `md`, `html`, `both` (got {format:?})");
+            std::process::exit(2);
+        }
+    }
+
+    // 2. Resolve the output path. The default extension matches
+    //    `--format md`; Step 2's HTML default will be `.html`.
+    let out_path = if let Some(p) = out {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.md"))
+    };
+    if same_path(file, &out_path) {
+        eprintln!("tape export: --out must differ from <file>");
+        std::process::exit(2);
+    }
+
+    // 3. Load the cassette and render. `render_markdown` is pure;
+    //    every error here is a malformed-input refusal (missing
+    //    meta.yaml / tracks.jsonl, parse failures).
+    let raw = open_input(file, "tape export");
+    let md = match tape_export::render_markdown(&raw) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("tape export: cannot render {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+
+    // 4. Write. Parent-dir creation matches `cmd_recap`'s posture so a
+    //    caller can point `-o` into a non-existent sub-directory and
+    //    have it materialise.
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    std::fs::write(&out_path, md.as_bytes())
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    println!("ok: wrote {}", out_path.display());
+    Ok(())
 }
