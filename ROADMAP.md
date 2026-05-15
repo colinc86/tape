@@ -51,12 +51,14 @@ considered in scope.
    infrastructure from the merged `tape-judge` crate (#148).
 4. **Judge-model narration.** Re-enable the `--judge` flag (#62/#64
    stub). Narrates the substantive diffs as short paragraphs.
-   *Status:* Foundational `tape-judge` crate (client + config +
-   defense-in-depth scanner) **merged via PR #148** (closing #145).
-   The user-visible piece — **#149 `tape diff --judge` wiring** —
-   is `ready` for Engineering. If #149 ships, that's the first
-   headline theme on main with user-visible behavior, which would
-   trigger the v0.2.0 cut criteria.
+   *Status:* Foundational `tape-judge` crate **merged via PR #148**
+   (closing #145). The user-visible piece — **#149 `tape diff
+   --judge` wiring** — is now `in-progress` with TWO competing PRs:
+   **#152** (Engineer B) and **#153** (Engineer A), both opened
+   ~03:00Z 2026-05-15 within minutes of each other. Reviewer
+   adjudicates which to land. Whichever merges is the first
+   user-visible headline theme on main and triggers the v0.2.0 cut
+   criteria.
 5. **Liner-notes-at-eject.** Configurable model + token budget;
    replaces the stub liner notes that ship today when no model is
    available.
@@ -74,7 +76,9 @@ By strict semver they require a minor bump; they're being staged on
 - **`tape doctor`** (#81 → merged PR #140). Install-surface diagnostic
   with pass/warn/fail report.
 - **`tape recap`** (#105 → merged PR #142). 1–2 sentence regenerable
-  summary for paste-into-Slack/Linear/Jira/PR contexts.
+  summary for paste-into-Slack/Linear/Jira/PR contexts. Phase-2
+  (`tape recap --auto`, judge-driven) tracked as new ticket **#151**
+  with **PR #154** in flight.
 - **`tape new`** (#99 → merged PR #146). Cassette generator with
   bundled templates — the `cargo new` for `.tape` files.
 - **`RuntimeAdapter` trait + `ClaudeCodeAdapter`** (#106 → merged PR
@@ -94,12 +98,18 @@ v0.2.0 ships when **all** of the following are true:
 
 - At least one headline theme has its user-visible behavior on `main`
   (the headline-theme bar is "user can do something new at the CLI or
-  in the deck," not "infrastructure exists"). Today: zero met.
+  in the deck," not "infrastructure exists"). **Status: in flight** —
+  one of PR #152 / PR #153 will satisfy this once Reviewer picks one.
 - All open `priority:current` issues are closed.
 - `cargo test --workspace` clean on `main`.
-- Binary distribution gap (#144) resolved — v0.2.0 release page ships
-  tarball + `SHA256SUMS`, and the plugin marketplace entry is bumped
-  to match.
+- **Binary distribution gap (#144) resolved** — v0.2.0 release page
+  ships tarball + `SHA256SUMS`, and the plugin marketplace entry is
+  bumped to match. **This is the critical-path blocker.** With #149
+  about to land, #144 is the *only* remaining cut gate. It has been
+  open ~18h with zero Principal triage and no `priority:current`
+  promotion. Owner needs to be designated; the v0.2.0 cut cannot
+  happen without binary upload + marketplace bump regardless of how
+  many user-facing features have landed.
 
 The Phase-1 features will travel as part of v0.2.0 regardless of which
 headline theme actually triggers the cut — they're already user-facing
