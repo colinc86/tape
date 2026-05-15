@@ -168,9 +168,10 @@ mod tests {
     #[test]
     fn catalog_listing_has_one_line_per_check() {
         let s = render_catalog_listing();
-        // Phase-1 catalog has 9 entries; if you add one, update the snapshot
-        // test in tests/doctor_integration.rs first.
-        assert_eq!(s.lines().count(), 9);
+        // Doctor catalog has 11 entries (phase 1 + #163 claude-code).
+        // If you add one, update `list_checks_is_stable` in
+        // `tests/doctor_integration.rs` first.
+        assert_eq!(s.lines().count(), 11);
         for line in s.lines() {
             assert_eq!(line.split('\t').count(), 4);
         }

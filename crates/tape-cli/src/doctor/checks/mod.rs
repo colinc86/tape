@@ -1,5 +1,6 @@
-//! Concrete check implementations. One file per category in phase 1.
+//! Concrete check implementations. One file per category.
 
 pub mod binary;
+pub mod claude_code;
 pub mod config;
 pub mod permissions;
