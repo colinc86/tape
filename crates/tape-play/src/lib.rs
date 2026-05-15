@@ -37,8 +37,8 @@ pub fn render_play(tracks: &[Track]) -> String {
             kind_name(t.kind),
             t.ts
         );
-        let pretty = serde_json::to_string_pretty(&t.payload)
-            .unwrap_or_else(|_| t.payload.to_string());
+        let pretty =
+            serde_json::to_string_pretty(&t.payload).unwrap_or_else(|_| t.payload.to_string());
         out.push_str(&pretty);
         out.push_str("\n\n");
     }
@@ -157,6 +157,117 @@ pub fn render_stats(
         }
     }
     out
+}
+
+/// Pinned wire-version for the JSON output of [`render_stats_json`].
+/// **Load-bearing**: once `1.0` ships, the shape is frozen — adding a
+/// new field requires bumping to `1.1`, never patching `1.0` in
+/// place. Consumers pin against this string. (Issue #157.)
+pub const STATS_SCHEMA_VERSION: &str = "1.0";
+
+/// Issue #157 / Phase-2 of #31. JSON sibling of [`render_stats`].
+/// Reuses every computation the text path already does — `kind_histogram`,
+/// `wall_clock_ms`, `token_totals`, `outcome_name`, `kind_name` — and
+/// projects the result into the pinned `1.0` schema. No new numbers,
+/// no parsing, no IO.
+///
+/// Omit-when-absent semantics mirror the text path's `(none recorded)`
+/// convention:
+///
+/// - Zero `model_call` events → `tokens.recorded == false`, sub-fields
+///   omitted.
+/// - `redactions_count` is `None` → `redactions.recorded == false`,
+///   `count` omitted.
+/// - `wall_clock_ms` is `Unknown` or `CollapsedSnapshot` →
+///   `span.wall_clock_ms` is JSON `null`; `span.time_accounting`
+///   carries the distinguishing label.
+pub fn render_stats_json(
+    meta: &tape_format::meta::Meta,
+    tracks: &[Track],
+    redactions_count: Option<u64>,
+) -> serde_json::Value {
+    let hist = kind_histogram(tracks);
+
+    // `by_kind` only includes kinds with count > 0. The fixed iteration
+    // order matches `render_stats`'s text output for legibility — the
+    // resulting JSON object key order is determined by `serde_json::Map`
+    // insertion order when serialised with `to_string_pretty`.
+    let mut by_kind = serde_json::Map::new();
+    for k in [
+        Kind::Task,
+        Kind::ModelCall,
+        Kind::McpCall,
+        Kind::Shell,
+        Kind::FileRead,
+        Kind::FileWrite,
+        Kind::Annotation,
+        Kind::Eject,
+    ] {
+        let n = hist[k as usize];
+        if n > 0 {
+            by_kind.insert(kind_name(k).into(), serde_json::Value::from(n));
+        }
+    }
+
+    let (wall_ms, time_accounting) = match wall_clock_ms(tracks) {
+        WallClock::Span(ms) => (Some(ms), "ok"),
+        WallClock::CollapsedSnapshot => (None, "snapshot_collapsed"),
+        WallClock::Unknown => (None, "unknown"),
+    };
+    let wall_ms_json = match wall_ms {
+        Some(ms) => serde_json::Value::from(ms),
+        None => serde_json::Value::Null,
+    };
+
+    let model_calls: Vec<&Track> = tracks
+        .iter()
+        .filter(|t| t.kind == Kind::ModelCall)
+        .collect();
+    let tokens_obj = if model_calls.is_empty() {
+        serde_json::json!({ "recorded": false })
+    } else {
+        let (tin, tout, unknown) = token_totals(&model_calls);
+        let known = model_calls.len() as u64 - unknown;
+        serde_json::json!({
+            "recorded": true,
+            "input": tin,
+            "output": tout,
+            "known_model_calls": known,
+            "missing_model_calls": unknown,
+        })
+    };
+
+    let redactions_obj = match redactions_count {
+        Some(n) => serde_json::json!({ "recorded": true, "count": n }),
+        None => serde_json::json!({ "recorded": false }),
+    };
+
+    serde_json::json!({
+        "schema_version": STATS_SCHEMA_VERSION,
+        "id": meta.id,
+        "task": meta.task,
+        "outcome": outcome_name(meta.outcome),
+        "span": {
+            "created_at": meta.created_at,
+            "ejected_at": meta.ejected_at,
+            "wall_clock_ms": wall_ms_json,
+            "time_accounting": time_accounting,
+        },
+        "tracks": {
+            "total": tracks.len() as u64,
+            "by_kind": serde_json::Value::Object(by_kind),
+        },
+        "tokens": tokens_obj,
+        "tools": {
+            "mcp_call": hist[Kind::McpCall as usize],
+            "shell": hist[Kind::Shell as usize],
+        },
+        "files": {
+            "read": hist[Kind::FileRead as usize],
+            "write": hist[Kind::FileWrite as usize],
+        },
+        "redactions": redactions_obj,
+    })
 }
 
 fn outcome_name(o: tape_format::meta::Outcome) -> &'static str {
@@ -303,11 +414,22 @@ pub fn label(t: &Track) -> String {
     match t.kind {
         Kind::Task => format!(
             "{:?}",
-            t.payload.get("prompt").and_then(Value::as_str).unwrap_or("")
+            t.payload
+                .get("prompt")
+                .and_then(Value::as_str)
+                .unwrap_or("")
         ),
         Kind::ModelCall => {
-            let vendor = t.payload.get("vendor").and_then(Value::as_str).unwrap_or("?");
-            let model = t.payload.get("model").and_then(Value::as_str).unwrap_or("?");
+            let vendor = t
+                .payload
+                .get("vendor")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let model = t
+                .payload
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
             let tin = t
                 .payload
                 .get("tokens_in")
@@ -323,7 +445,11 @@ pub fn label(t: &Track) -> String {
             format!("{vendor}/{model}{tin}{tout}")
         }
         Kind::McpCall => {
-            let server = t.payload.get("server").and_then(Value::as_str).unwrap_or("?");
+            let server = t
+                .payload
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
             let tool = t.payload.get("tool").and_then(Value::as_str).unwrap_or("?");
             let args_summary = t
                 .payload
@@ -333,7 +459,11 @@ pub fn label(t: &Track) -> String {
             format!("{server}.{tool}{args_summary}")
         }
         Kind::Shell => {
-            let cmd = t.payload.get("command").and_then(Value::as_str).unwrap_or("");
+            let cmd = t
+                .payload
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             truncate(cmd, 80)
         }
         Kind::FileRead => {
@@ -688,5 +818,181 @@ mod tests {
     fn chrono_lite_rejects_malformed() {
         assert!(chrono_lite::parse("not-a-timestamp").is_none());
         assert!(chrono_lite::parse("2026-05-06T10:00:00").is_none()); // no Z
+    }
+
+    // --- render_stats_json (issue #157 / Phase 2) ----------------------
+
+    #[test]
+    fn json_pins_schema_version_1_0() {
+        // The whole point of the pin is that this assertion fails
+        // loudly if anyone bumps the const without an intentional
+        // schema migration. The Phase-2 PR ships `1.0`.
+        assert_eq!(STATS_SCHEMA_VERSION, "1.0");
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        assert_eq!(v["schema_version"], "1.0");
+    }
+
+    #[test]
+    fn json_carries_top_level_fields() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x",
+                                          "tokens_in": 10, "tokens_out": 5}),
+            ),
+            t(3, Kind::Shell, json!({"command": "ls"})),
+            t(4, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, Some(4));
+        assert_eq!(v["id"], fresh_meta().id);
+        assert_eq!(v["task"], fresh_meta().task);
+        assert_eq!(v["outcome"], "success");
+        assert_eq!(v["span"]["created_at"], fresh_meta().created_at);
+        assert_eq!(v["span"]["ejected_at"], fresh_meta().ejected_at);
+        assert_eq!(v["span"]["time_accounting"], "ok");
+        assert_eq!(v["tracks"]["total"], 4);
+        assert_eq!(v["tools"]["mcp_call"], 0);
+        assert_eq!(v["tools"]["shell"], 1);
+        assert_eq!(v["files"]["read"], 0);
+        assert_eq!(v["files"]["write"], 0);
+        assert_eq!(v["redactions"]["recorded"], true);
+        assert_eq!(v["redactions"]["count"], 4);
+    }
+
+    #[test]
+    fn json_by_kind_only_includes_nonzero_kinds() {
+        // The §3 schema says "only kinds with count > 0" — a tape with
+        // a `task` and an `eject` must not surface `model_call: 0`,
+        // `shell: 0`, etc. serde_json's default Map backing is
+        // alphabetical (no insertion-order feature), so this assertion
+        // is set-style rather than order-pinned.
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        let by_kind = v["tracks"]["by_kind"].as_object().unwrap();
+        let keys: std::collections::BTreeSet<&str> = by_kind.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> = ["task", "eject"].into_iter().collect();
+        assert_eq!(keys, expected);
+        // None of the zero-count kinds should sneak in.
+        for absent in [
+            "model_call",
+            "mcp_call",
+            "shell",
+            "file_read",
+            "file_write",
+            "annotation",
+        ] {
+            assert!(
+                !by_kind.contains_key(absent),
+                "{absent} must be omitted when count is 0"
+            );
+        }
+        assert_eq!(by_kind["task"], 1);
+        assert_eq!(by_kind["eject"], 1);
+    }
+
+    #[test]
+    fn json_tokens_recorded_false_when_no_model_calls() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, Some(0));
+        assert_eq!(v["tokens"]["recorded"], false);
+        // Sub-fields MUST be omitted (not null) when recorded=false.
+        let tokens = v["tokens"].as_object().unwrap();
+        assert!(!tokens.contains_key("input"), "tokens={tokens:?}");
+        assert!(!tokens.contains_key("output"), "tokens={tokens:?}");
+        assert!(
+            !tokens.contains_key("known_model_calls"),
+            "tokens={tokens:?}"
+        );
+        assert!(
+            !tokens.contains_key("missing_model_calls"),
+            "tokens={tokens:?}"
+        );
+    }
+
+    #[test]
+    fn json_tokens_aggregates_when_model_calls_present() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(
+                2,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x",
+                     "tokens_in": 100, "tokens_out": 25}),
+            ),
+            t(
+                3,
+                Kind::ModelCall,
+                json!({"vendor": "anthropic", "model": "x",
+                     "tokens_in": 50, "tokens_out": 10}),
+            ),
+            t(4, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            t(5, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        assert_eq!(v["tokens"]["recorded"], true);
+        assert_eq!(v["tokens"]["input"], 150);
+        assert_eq!(v["tokens"]["output"], 35);
+        assert_eq!(v["tokens"]["known_model_calls"], 2);
+        assert_eq!(v["tokens"]["missing_model_calls"], 1);
+    }
+
+    #[test]
+    fn json_redactions_recorded_false_when_redactions_count_none() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        assert_eq!(v["redactions"]["recorded"], false);
+        let red = v["redactions"].as_object().unwrap();
+        assert!(!red.contains_key("count"), "red={red:?}");
+    }
+
+    #[test]
+    fn json_snapshot_collapse_marks_time_accounting_and_nulls_wall_clock() {
+        let same_ts = "2026-05-06T10:00:30Z";
+        let mk = |step: u64, kind: Kind, payload: Value| Track {
+            step,
+            kind,
+            ts: same_ts.to_string(),
+            payload,
+            parent_step: None,
+            refs: vec![],
+            annotations: vec![],
+        };
+        let tracks = vec![
+            mk(1, Kind::Task, json!({"prompt": "x"})),
+            mk(2, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            mk(3, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            mk(4, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        assert!(
+            v["span"]["wall_clock_ms"].is_null(),
+            "wall_clock_ms must be null on snapshot-collapse, got {v:?}"
+        );
+        assert_eq!(v["span"]["time_accounting"], "snapshot_collapsed");
+    }
+
+    #[test]
+    fn json_wall_clock_ms_unknown_when_one_track() {
+        // A single-event tape has no body diff; wall_clock_ms must be
+        // null with time_accounting `unknown`.
+        let tracks = vec![t(1, Kind::Task, json!({"prompt": "x"}))];
+        let v = render_stats_json(&fresh_meta(), &tracks, None);
+        assert!(v["span"]["wall_clock_ms"].is_null());
+        assert_eq!(v["span"]["time_accounting"], "unknown");
     }
 }
