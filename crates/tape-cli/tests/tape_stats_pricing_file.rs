@@ -1,7 +1,7 @@
 //! `tape stats --with-cost --pricing-file <PATH>` integration coverage.
 //! Step-4 of #31 (issue #181). Mirrors the AC bullets in the issue
 //! body. Generates a priceable fixture via `tape new --template
-//! test-fixture` so the model_call events carry tokens_in / tokens_out
+//! test-fixture` so the `model_call` events carry `tokens_in` / `tokens_out`
 //! — the bundled `minimal-success.tape` fixture lacks them.
 
 use std::process::Command;
