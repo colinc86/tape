@@ -253,21 +253,33 @@ enum Cmd {
     /// Append an annotation to an existing tape, writing a new cassette.
     ///
     /// CLI counterpart to the deck's `tape.annotate` tool (issue #74).
-    /// `--import` and `--force-resign` remain follow-ups.
+    /// `--force-resign` remains a follow-up.
     Annotate {
         /// Input cassette to annotate.
         file: std::path::PathBuf,
         /// Annotation body. SPEC §5.5.7 `note` field. Mutually exclusive
-        /// with `--editor`; exactly one of the two MUST be supplied.
-        #[arg(long, required_unless_present = "editor", conflicts_with = "editor")]
+        /// with `--editor` / `--import`; exactly one of the three MUST
+        /// be supplied.
+        #[arg(
+            long,
+            required_unless_present_any = ["editor", "import"],
+            conflicts_with_all = ["editor", "import"],
+        )]
         note: Option<String>,
         /// Compose the annotation body in `$VISUAL` / `$EDITOR` / `vi`
-        /// (in that resolution order). Mutually exclusive with `--note`;
-        /// exactly one of the two MUST be supplied. An empty body
-        /// (after comment-strip) cancels the operation cleanly with
-        /// exit 0 and no output cassette. (Issue #158.)
-        #[arg(long, conflicts_with = "note")]
+        /// (in that resolution order). Mutually exclusive with `--note`
+        /// and `--import`; exactly one of the three MUST be supplied. An
+        /// empty body (after comment-strip) cancels the operation
+        /// cleanly with exit 0 and no output cassette. (Issue #158.)
+        #[arg(long, conflicts_with_all = ["note", "import"])]
         editor: bool,
+        /// Read the annotation body verbatim from `<PATH>`. UTF-8;
+        /// trailing whitespace and newlines are trimmed but no `#`
+        /// comment stripping. Empty-after-trim cancels with exit 0.
+        /// 16 KiB cap. Mutually exclusive with `--note` and `--editor`;
+        /// exactly one of the three MUST be supplied. (Issue #173.)
+        #[arg(long, conflicts_with_all = ["note", "editor"])]
+        import: Option<std::path::PathBuf>,
         /// Parent step the annotation hangs off. Validated against the
         /// tape's existing tracks: 1 ≤ N < new_step.
         #[arg(long)]
@@ -448,6 +460,7 @@ fn main() -> Result<()> {
             file,
             note,
             editor,
+            import,
             step,
             actor,
             by,
@@ -456,7 +469,7 @@ fn main() -> Result<()> {
             ts,
             json,
         } => cmd_annotate(
-            &file, note, editor, step, actor, &by, out, in_place, ts, json,
+            &file, note, editor, import, step, actor, &by, out, in_place, ts, json,
         ),
         Cmd::Export { file, format, out } => cmd_export(&file, &format, out),
         Cmd::Relinernote {
@@ -1833,6 +1846,7 @@ fn resolve_note_body(
     file: &std::path::Path,
     note: Option<String>,
     editor: bool,
+    import: Option<std::path::PathBuf>,
     by: &str,
 ) -> Option<String> {
     if editor {
@@ -1857,9 +1871,38 @@ fn resolve_note_body(
                 std::process::exit(2);
             }
         }
+    } else if let Some(path) = import {
+        match compose_note_via_import(&path) {
+            Ok(Some(body)) => Some(body),
+            Ok(None) => {
+                eprintln!("tape annotate: nothing to annotate (empty body)");
+                None
+            }
+            Err(ImportError::ReadFailed(path, e)) => {
+                eprintln!(
+                    "tape annotate: failed to read --import file {}: {e}",
+                    path.display()
+                );
+                std::process::exit(2);
+            }
+            Err(ImportError::NonUtf8(path)) => {
+                eprintln!(
+                    "tape annotate: --import file {} is not valid UTF-8",
+                    path.display()
+                );
+                std::process::exit(2);
+            }
+            Err(ImportError::OversizeBody(path, n)) => {
+                eprintln!(
+                    "tape annotate: body exceeds 16 KiB limit (--import {} is {n} bytes)",
+                    path.display()
+                );
+                std::process::exit(2);
+            }
+        }
     } else {
         Some(note.expect(
-            "clap required_unless_present('editor') guarantees note is Some when editor is false",
+            "clap required_unless_present_any guarantees note is Some when editor/import unset",
         ))
     }
 }
@@ -1886,6 +1929,7 @@ fn cmd_annotate(
     file: &std::path::Path,
     note: Option<String>,
     editor: bool,
+    import: Option<std::path::PathBuf>,
     step: Option<u64>,
     actor: Option<String>,
     by: &str,
@@ -1895,9 +1939,9 @@ fn cmd_annotate(
     json: bool,
 ) -> Result<()> {
     // 1a. Acquire the note body. clap already enforces the
-    //     mutually-exclusive / required-unless-present pair, so exactly
-    //     one branch fires.
-    let Some(note) = resolve_note_body(file, note, editor, by) else {
+    //     mutually-exclusive / required-unless-present-any set, so
+    //     exactly one of note/editor/import fires.
+    let Some(note) = resolve_note_body(file, note, editor, import, by) else {
         // `None` is the empty-body cancel from `--editor`. The helper
         // already printed the cancel message; exit 0 with no output.
         return Ok(());
@@ -2217,6 +2261,51 @@ fn compose_note_via_editor(
     // `tmp` drops here on every Ok path; on the `Err(...)` returns
     // above it drops as the `?` / `return` unwinds the function frame,
     // *before* the caller maps the variant to `std::process::exit(2)`.
+}
+
+/// Recoverable failure from the import helper. Mirrors the
+/// `EditorError` indirection so the caller can map each variant to its
+/// AC-specified stderr message and exit code *after* the helper has
+/// returned (cheap insurance against future helpers that hold scratch
+/// resources). The owned `PathBuf` is the user-supplied `--import`
+/// argument, surfaced verbatim in diagnostics per AC #3 / #4 / #7.
+enum ImportError {
+    ReadFailed(std::path::PathBuf, std::io::Error),
+    NonUtf8(std::path::PathBuf),
+    OversizeBody(std::path::PathBuf, usize),
+}
+
+/// `--import` driver. Reads a UTF-8 annotation body from disk,
+/// trims trailing whitespace + newlines (AC #5), enforces the 16 KiB
+/// cap (AC #7), and surfaces empty-after-trim as a clean cancel
+/// (`Ok(None)`, AC #6). Unlike `compose_note_via_editor` there is
+/// *no* `#`-prefixed comment stripping — `--import` is verbatim per
+/// AC #5; the user's file is the body. Non-UTF-8 contents trip the
+/// dedicated `NonUtf8` variant rather than the generic IO error
+/// (AC #4) so the caller can print the explicit `is not valid UTF-8`
+/// diagnostic the AC specifies. The import file is read-only — we
+/// never modify or delete it, even on the redaction-leak failure
+/// path that runs in the caller.
+fn compose_note_via_import(
+    path: &std::path::Path,
+) -> std::result::Result<Option<String>, ImportError> {
+    let body = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(ImportError::NonUtf8(path.to_path_buf()));
+        }
+        Err(e) => return Err(ImportError::ReadFailed(path.to_path_buf(), e)),
+    };
+    let trimmed = body
+        .trim_end_matches(|c: char| c.is_whitespace())
+        .to_owned();
+    if trimmed.len() > 16 * 1024 {
+        return Err(ImportError::OversizeBody(path.to_path_buf(), trimmed.len()));
+    }
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed))
 }
 
 /// Strip lines whose first non-whitespace character is `#`, then trim

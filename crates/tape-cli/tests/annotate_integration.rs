@@ -990,3 +990,314 @@ fn editor_oversized_cleans_up_temp_file() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_tmpdir_clean(tmp_for_editor.path());
 }
+
+// --- Phase 2 (issue #173) — --import <file> -------------------------
+
+/// Helper that runs `tape annotate <input> --import <note.md> -o <out>` and
+/// returns the std `Output`. Mirrors `Command::new(binary_path()).args(...)`
+/// inline so failures point at the call site rather than into a wrapper.
+fn run_import(
+    input: &std::path::Path,
+    note: &std::path::Path,
+    out_path: &std::path::Path,
+) -> std::process::Output {
+    Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--import",
+            note.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn import_happy_path_trims_trailing_newline_and_writes_annotation() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "hello from file\n").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert!(out.status.success(), "import happy-path failed: {out:?}");
+
+    let tracks = read_tracks(&output);
+    let annot = last_annotation(&tracks);
+    assert_eq!(annot.payload["note"], "hello from file");
+
+    let v = Command::new(binary_path())
+        .args(["verify", output.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        v.status.success(),
+        "tape verify failed on import output: {v:?}"
+    );
+}
+
+#[test]
+fn import_trims_trailing_whitespace_and_newlines() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "body text   \n\n\n").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert!(out.status.success(), "import failed: {out:?}");
+
+    let tracks = read_tracks(&output);
+    let annot = last_annotation(&tracks);
+    assert_eq!(annot.payload["note"], "body text");
+}
+
+#[test]
+fn import_does_not_strip_hash_prefixed_lines() {
+    // `--import` is verbatim — unlike `--editor`, leading `#` lines are
+    // body content, not template comments.
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "# heading\nactual text\n").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert!(out.status.success(), "import failed: {out:?}");
+
+    let tracks = read_tracks(&output);
+    let annot = last_annotation(&tracks);
+    assert_eq!(annot.payload["note"], "# heading\nactual text");
+}
+
+#[test]
+fn import_empty_file_cleanly_cancels_exit_zero() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("empty.md");
+    std::fs::write(&note_path, "").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nothing to annotate"),
+        "expected cancel message: {stderr}"
+    );
+    assert!(
+        !output.exists(),
+        "no cassette should be written on empty import"
+    );
+}
+
+#[test]
+fn import_whitespace_only_file_cleanly_cancels_exit_zero() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("ws.md");
+    std::fs::write(&note_path, "   \n\n\t\n").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("nothing to annotate"), "{stderr}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_missing_file_exits_two_with_io_diagnostic() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("does-not-exist.md");
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("failed to read --import file"),
+        "expected io diagnostic: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_non_utf8_file_exits_two_with_utf8_diagnostic() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("bin.bin");
+    std::fs::write(&note_path, [0xFF_u8, 0xFE, 0x00]).unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("is not valid UTF-8"),
+        "expected utf-8 diagnostic: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_oversize_file_exits_two_with_byte_count() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("big.md");
+    // 17 KiB of ASCII — well above the 16 KiB cap, no trailing whitespace
+    // so the trim doesn't shrink it below the threshold.
+    let body = vec![b'x'; 17 * 1024];
+    std::fs::write(&note_path, &body).unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("body exceeds 16 KiB"), "{stderr}");
+    assert!(
+        stderr.contains("17408 bytes"),
+        "expected byte count: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_with_redaction_hit_exits_six_and_leaves_source_file_untouched() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("leak.md");
+    let fake_key = format!("sk-ant-{}", "A".repeat(95));
+    let body = format!("key is {fake_key}\n");
+    std::fs::write(&note_path, &body).unwrap();
+    let before = std::fs::read(&note_path).unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = run_import(&input, &note_path, &output);
+    assert_eq!(out.status.code(), Some(6), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ANNOT_LEAK"), "{stderr}");
+    assert!(!output.exists(), "no cassette on leak");
+
+    // The import file is the user's file — it must be untouched.
+    let after = std::fs::read(&note_path).unwrap();
+    assert_eq!(before, after, "import file must be untouched on leak");
+}
+
+#[test]
+fn import_with_note_is_rejected_at_parse_time() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "hello").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--note",
+            "inline",
+            "--import",
+            note_path.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should be a clap parse error: {out:?}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_with_editor_is_rejected_at_parse_time() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "hello").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "--import",
+            note_path.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should be a clap parse error: {out:?}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn annotate_with_no_body_source_is_rejected_at_parse_time() {
+    let (_dir, input) = isolated_minimal();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should be a clap parse error: {out:?}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn import_with_in_place_atomically_replaces_input() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "imported via in-place\n").unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--import",
+            note_path.to_str().unwrap(),
+            "--in-place",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "--import --in-place failed: {out:?}");
+
+    let tracks = read_tracks(&input);
+    let annot = last_annotation(&tracks);
+    assert_eq!(annot.payload["note"], "imported via in-place");
+}
+
+#[test]
+fn import_with_json_emits_resolved_output_path_and_schema_version() {
+    let (_dir, input) = isolated_minimal();
+    let note_path = input.with_file_name("note.md");
+    std::fs::write(&note_path, "json shape check\n").unwrap();
+    let output = input.with_file_name("annotated.tape");
+
+    let out = Command::new(binary_path())
+        .args([
+            "annotate",
+            input.to_str().unwrap(),
+            "--import",
+            note_path.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "--import --json failed: {out:?}");
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema_version"], "1");
+    assert_eq!(v["output_path"].as_str().unwrap(), output.to_string_lossy());
+}
