@@ -506,6 +506,7 @@ mod tests {
             label: None,
             recap: None,
             recaps: vec![],
+            tags: vec![],
             new_block: None,
         }
     }
