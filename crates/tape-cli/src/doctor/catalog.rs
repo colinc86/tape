@@ -37,6 +37,14 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
         // One `Warn`-severity check, real-not-`Na` from day one since
         // the pricing table is compiled into the binary.
         Box::new(checks::pricing::TableFresh),
+        // Step-5 of #81 (issue #183): local-library `index.*` checks.
+        // Four soft-dependency checks; all surface `Na` until #2's
+        // SQLite layer ships. Severity-on-fail mix is `Warn` /
+        // `Fail` per §3.2 (integrity is `Fail`, the rest `Warn`).
+        Box::new(checks::index::Exists),
+        Box::new(checks::index::SqliteIntegrity),
+        Box::new(checks::index::LockStale),
+        Box::new(checks::index::LastRescanFresh),
     ]
 }
 
@@ -52,4 +60,5 @@ pub const PHASE_1_CATEGORIES: &[&str] = &[
     "claude-code",
     "signing",
     "pricing",
+    "index",
 ];

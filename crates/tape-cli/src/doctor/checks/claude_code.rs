@@ -96,6 +96,7 @@ mod tests {
     fn env_with(home: Option<PathBuf>, path_dirs: Vec<PathBuf>) -> Env {
         Env {
             home,
+            cache_dir: None,
             tmpdir: PathBuf::from("/tmp"),
             path_dirs,
             cwd: PathBuf::from("."),

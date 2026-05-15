@@ -139,6 +139,11 @@ pub struct Env {
     /// `$HOME` (or its test-time override). Used to resolve `~/.taperc`,
     /// `~/.claude/`, and similar paths.
     pub home: Option<PathBuf>,
+    /// Cache root for user-cache paths (e.g. `<cache>/tape/index/`). Resolved
+    /// from `$XDG_CACHE_HOME` first; falls back to `<home>/Library/Caches` on
+    /// macOS and `<home>/.cache` elsewhere. `None` when `$HOME` is also
+    /// unset. Added by issue #183 for the `index.*` doctor checks.
+    pub cache_dir: Option<PathBuf>,
     /// `$TMPDIR` (or `/tmp` fallback / test override). Used by tempdir
     /// writability checks.
     pub tmpdir: PathBuf,
@@ -155,6 +160,7 @@ impl Env {
     /// Resolve a process-real environment.
     pub fn from_process() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
+        let cache_dir = resolve_cache_dir(home.as_deref());
         let tmpdir = std::env::var_os("TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
         let path_dirs = std::env::var_os("PATH")
             .map(|raw| std::env::split_paths(&raw).collect())
@@ -162,6 +168,7 @@ impl Env {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             home,
+            cache_dir,
             tmpdir,
             path_dirs,
             cwd,
@@ -200,6 +207,33 @@ pub trait Check: Send + Sync {
 
     /// Run the check against the given environment.
     fn run(&self, env: &Env) -> CheckOutcome;
+}
+
+/// Resolve the user-cache root used by the `index.*` checks. The
+/// rules mirror the XDG / platform defaults the rest of the Tape
+/// surface uses: `$XDG_CACHE_HOME` first (any platform); else
+/// `<home>/Library/Caches` on macOS; else `<home>/.cache`. Returns
+/// `None` when `$HOME` is also unset (the test harness always
+/// overrides both, so the production-only `None` branch is only
+/// reachable on a misconfigured environment). Centralised here so
+/// `Env::from_process` and the test helpers both round-trip
+/// against the same logic.
+fn resolve_cache_dir(home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+        let xdg = PathBuf::from(xdg);
+        if !xdg.as_os_str().is_empty() {
+            return Some(xdg);
+        }
+    }
+    let home = home?;
+    #[cfg(target_os = "macos")]
+    {
+        Some(home.join("Library").join("Caches"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(home.join(".cache"))
+    }
 }
 
 fn is_executable_file(path: &Path) -> bool {
