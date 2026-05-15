@@ -625,6 +625,44 @@ fn derive_uuid_v7(created_at: &str, recorder_agent: &str, task: &str) -> String 
     )
 }
 
+/// Lift the per-mode decision out of `cmd_recap` so the entry-point
+/// function stays under the pedantic 100-line threshold. Returns the
+/// `RecapKind` to record on the audit row plus an optional
+/// `JudgeCallRecord` (populated only on the `--auto` path). Mutates
+/// `meta.recap` in place so the surrounding write path picks up the
+/// new value without a second match.
+fn resolve_recap_edit(
+    meta: &mut tape_format::meta::Meta,
+    raw: &tape_format::reader::RawTape,
+    out_path: &std::path::Path,
+    set: Option<&str>,
+    auto: bool,
+) -> (
+    tape_format::meta::RecapKind,
+    Option<tape_judge::JudgeCallRecord>,
+) {
+    if auto {
+        let (new_recap, record) = run_recap_auto(meta, raw, out_path);
+        meta.recap = Some(new_recap);
+        return (tape_format::meta::RecapKind::Auto, Some(record));
+    }
+    if let Some(text) = set {
+        if text.is_empty() {
+            eprintln!("tape recap: --set text must be non-empty");
+            std::process::exit(2);
+        }
+        if let Err(msg) = tape_format::meta::validate_recap_text(text) {
+            eprintln!("tape recap: --set rejected: {msg}");
+            std::process::exit(2);
+        }
+        meta.recap = Some(text.to_owned());
+        return (tape_format::meta::RecapKind::Set, None);
+    }
+    // --clear
+    meta.recap = None;
+    (tape_format::meta::RecapKind::Clear, None)
+}
+
 fn cmd_recap(
     file: &std::path::Path,
     set: Option<String>,
@@ -679,32 +717,12 @@ fn cmd_recap(
     let mut meta = parse_meta(&raw, "tape recap");
     let prior_recap = meta.recap.clone();
 
-    // 5. Apply the requested edit. `--auto` is async (the judge call) so
-    //    it has its own driver function; `--set` / `--clear` stay in
-    //    this synchronous body.
-    let (kind, judge_call): (
-        tape_format::meta::RecapKind,
-        Option<tape_judge::JudgeCallRecord>,
-    ) = if auto {
-        let (new_recap, record) = run_recap_auto(&meta, &raw, &out_path)?;
-        meta.recap = Some(new_recap);
-        (tape_format::meta::RecapKind::Auto, Some(record))
-    } else if let Some(text) = set.as_deref() {
-        if text.is_empty() {
-            eprintln!("tape recap: --set text must be non-empty");
-            std::process::exit(2);
-        }
-        if let Err(msg) = tape_format::meta::validate_recap_text(text) {
-            eprintln!("tape recap: --set rejected: {msg}");
-            std::process::exit(2);
-        }
-        meta.recap = Some(text.to_owned());
-        (tape_format::meta::RecapKind::Set, None)
-    } else {
-        // --clear
-        meta.recap = None;
-        (tape_format::meta::RecapKind::Clear, None)
-    };
+    // 5. Decide the new recap text and audit-row kind. `--auto` is async
+    //    (the judge call) so it has its own driver function; `--set` /
+    //    `--clear` stay in this synchronous body. The helper keeps
+    //    `cmd_recap` under the 100-line pedantic threshold by lifting
+    //    the per-mode decision out.
+    let (kind, judge_call) = resolve_recap_edit(&mut meta, &raw, &out_path, set.as_deref(), auto);
 
     let entry = tape_format::meta::RecapEntry {
         applied_at: chrono::Utc::now()
@@ -780,7 +798,7 @@ fn run_recap_auto(
     meta: &tape_format::meta::Meta,
     raw: &tape_format::reader::RawTape,
     out_path: &std::path::Path,
-) -> Result<(String, tape_judge::JudgeCallRecord)> {
+) -> (String, tape_judge::JudgeCallRecord) {
     // a. Load `.taperc::judge:`. Workspace-local takes precedence over
     //    `$HOME/.taperc`, matching the existing tape-judge consumer
     //    pattern.
@@ -850,7 +868,7 @@ fn run_recap_auto(
         std::process::exit(2);
     }
 
-    Ok((trimmed, out.record))
+    (trimmed, out.record)
 }
 
 /// Locate `.taperc` (workspace first, user-level fallback), parse the
@@ -887,6 +905,8 @@ fn render_recap_prompt(
     meta: &tape_format::meta::Meta,
     raw: &tape_format::reader::RawTape,
 ) -> String {
+    use std::fmt::Write as _;
+
     let mut s = String::with_capacity(4096);
     s.push_str(
         "You are summarising one recording of an agent investigating a task. \
@@ -897,18 +917,19 @@ fn render_recap_prompt(
          If the cassette ended with `outcome: failure` or `abandoned`, say so. \
          Output ONLY the recap text. Do not add quotes, prefixes, or trailing notes.\n\n",
     );
-    s.push_str(&format!("Task: {}\n", meta.task));
-    s.push_str(&format!(
-        "Outcome: {}\n",
-        match meta.outcome {
-            tape_format::meta::Outcome::Success => "success",
-            tape_format::meta::Outcome::Failure => "failure",
-            tape_format::meta::Outcome::Abandoned => "abandoned",
-            tape_format::meta::Outcome::Unknown => "unknown",
-        }
-    ));
+    // Writes into a `String` are infallible; the `let _ =` drops the
+    // never-fired Err arm. Avoids the `format_push_string` allocation
+    // per line that `push_str(&format!(...))` would incur.
+    let _ = writeln!(s, "Task: {}", meta.task);
+    let outcome = match meta.outcome {
+        tape_format::meta::Outcome::Success => "success",
+        tape_format::meta::Outcome::Failure => "failure",
+        tape_format::meta::Outcome::Abandoned => "abandoned",
+        tape_format::meta::Outcome::Unknown => "unknown",
+    };
+    let _ = writeln!(s, "Outcome: {outcome}");
     if let Some(label) = meta.label.as_deref() {
-        s.push_str(&format!("Label: {label}\n"));
+        let _ = writeln!(s, "Label: {label}");
     }
     s.push_str("\nTracks (one line per step):\n");
     s.push_str(&render_track_summary(raw, RECAP_TRACK_BUDGET));
@@ -934,15 +955,22 @@ const RECAP_TRACK_BUDGET: usize = 4096;
 /// if the rendered text exceeds the cap, it's head+tail-truncated with a
 /// `… N tracks elided …` marker.
 fn render_track_summary(raw: &tape_format::reader::RawTape, budget: usize) -> String {
+    use std::fmt::Write as _;
+
     let Some(jsonl) = raw.tracks_jsonl.as_deref() else {
         return "(no tracks)\n".to_owned();
     };
-    let tracks = match tape_format::tracks::parse_jsonl(jsonl) {
-        Ok(t) => t,
-        Err(_) => return "(tracks did not parse)\n".to_owned(),
+    let Ok(tracks) = tape_format::tracks::parse_jsonl(jsonl) else {
+        return "(tracks did not parse)\n".to_owned();
     };
     let lines: Vec<String> = tracks.iter().map(render_track_line).collect();
-    let full: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    // Fold the lines into one String with trailing newlines. Avoids the
+    // per-line `format!` allocation that `.map(|l| format!("{l}\n"))`
+    // would do before joining.
+    let mut full = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
+    for l in &lines {
+        let _ = writeln!(full, "{l}");
+    }
     if full.len() <= budget {
         return full;
     }
@@ -973,7 +1001,9 @@ fn render_track_line(t: &tape_format::tracks::Track) -> String {
         tape_format::tracks::Kind::Annotation => "annotation",
         tape_format::tracks::Kind::Eject => "eject",
     };
-    let hint = recap_payload_hint(&t.kind, &t.payload);
+    // `Kind` is a 1-byte `Copy` enum; pass by value (workspace convention)
+    // to silence `clippy::trivially_copy_pass_by_ref`.
+    let hint = recap_payload_hint(t.kind, &t.payload);
     if hint.is_empty() {
         format!("  {:>3}. {kind}", t.step)
     } else {
@@ -981,7 +1011,7 @@ fn render_track_line(t: &tape_format::tracks::Track) -> String {
     }
 }
 
-fn recap_payload_hint(kind: &tape_format::tracks::Kind, payload: &serde_json::Value) -> String {
+fn recap_payload_hint(kind: tape_format::tracks::Kind, payload: &serde_json::Value) -> String {
     let key = match kind {
         tape_format::tracks::Kind::Task => "prompt",
         tape_format::tracks::Kind::ModelCall => "model",
