@@ -198,6 +198,20 @@ enum Cmd {
         /// nothing to disk. (Issue #179.)
         #[arg(long, value_name = "ID")]
         describe_template: Option<String>,
+        /// Override a template default for this invocation. Repeatable.
+        /// `KEY=VALUE` form; the right-hand side may contain further `=`
+        /// (split on the first `=` only). Recognized keys are
+        /// template-scoped — e.g. `--set required-task=false` on
+        /// `minimal` makes `--task` optional. Unknown keys exit 2 with
+        /// `NEW_UNKNOWN_OVERRIDE_KEY`. Duplicate keys: last-wins with a
+        /// stderr warning. (Issue #188 / Step-4 of #99.)
+        #[arg(
+            long = "set",
+            value_name = "KEY=VALUE",
+            value_parser = parse_set_kv,
+            conflicts_with_all = ["list_templates", "describe_template"],
+        )]
+        set: Vec<(String, String)>,
     },
     /// Manage the `meta.recap` field — a 1–2 sentence summary suitable
     /// for pasting into Slack / Linear / Jira / PR descriptions.
@@ -526,6 +540,7 @@ fn dispatch_new(cmd: Cmd) -> Result<()> {
         recorder_agent,
         list_templates,
         describe_template,
+        set,
     } = cmd
     else {
         unreachable!("dispatch_new only called with Cmd::New");
@@ -547,7 +562,15 @@ fn dispatch_new(cmd: Cmd) -> Result<()> {
         eprintln!("tape new: <out> is required (or use --list-templates / --describe-template)");
         std::process::exit(2);
     };
-    cmd_new(&out, &template, task, force, created_at, recorder_agent)
+    cmd_new(
+        &out,
+        &template,
+        task,
+        force,
+        created_at,
+        recorder_agent,
+        set,
+    )
 }
 
 fn cmd_record(
@@ -987,10 +1010,23 @@ fn validate_new_task(task: &str) {
 /// absent. Extracted from `cmd_new` to keep that function under the
 /// workspace `clippy::too_many_lines` ceiling and to give the
 /// resolution/validation matrix a single test seam.
+/// Resolved, override-aware template state passed through `cmd_new`.
+/// The `bundle` is the `&'static` catalog entry; `placeholders_filled`
+/// is the *effective* set after `--set` + `--task` resolution — it
+/// may diverge from the bundle's static slice. Introduced by
+/// issue #188 so `cmd_new` / `build_new_meta` consult one shape
+/// regardless of whether overrides fired.
+struct ResolvedTemplate {
+    bundle: &'static TemplateBundle,
+    placeholders_filled: Vec<&'static str>,
+    task_value: Option<String>,
+}
+
 fn resolve_and_validate(
     template_id: &str,
     task: Option<String>,
-) -> (&'static TemplateBundle, Option<String>) {
+    overrides: &[(String, String)],
+) -> ResolvedTemplate {
     let Some(bundle) = resolve_template(template_id) else {
         eprintln!(
             "tape new: NEW_TEMPLATE_NOT_FOUND — unknown template {template_id:?} \
@@ -1000,11 +1036,14 @@ fn resolve_and_validate(
         std::process::exit(2);
     };
 
+    let effective = apply_overrides(bundle, overrides);
+
     // `task_required` templates rely on the existing
     // `NEW_MISSING_PLACEHOLDER` surface; templates with no required
     // placeholders accept a missing `--task` and only run the
-    // char-class validator when a value is supplied.
-    let task_value: Option<String> = match (bundle.task_required, task.as_deref()) {
+    // char-class validator when a value is supplied. Use the
+    // *effective* `task_required` from the override-resolution above.
+    let task_value: Option<String> = match (effective.task_required, task.as_deref()) {
         (_, Some(t)) => {
             validate_new_task(t);
             Some(t.to_owned())
@@ -1019,7 +1058,118 @@ fn resolve_and_validate(
         (false, None) => None,
     };
 
-    (bundle, task_value)
+    // `meta.new.placeholders_filled` reflects the post-override
+    // effective set. For `minimal --set required-task=false` with no
+    // `--task`, that's `[]`; with `--task "x"`, it's still
+    // `["task"]`. Mirrors the issue body's determinism note.
+    let placeholders_filled = if task_value.is_some() {
+        bundle
+            .placeholders_filled
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+    } else {
+        // No --task supplied: drop "task" from the filled set.
+        bundle
+            .placeholders_filled
+            .iter()
+            .copied()
+            .filter(|ph| *ph != "task")
+            .collect::<Vec<_>>()
+    };
+
+    ResolvedTemplate {
+        bundle,
+        placeholders_filled,
+        task_value,
+    }
+}
+
+/// Effective (post-`--set`) template state. Mirrors only the
+/// fields that can be overridden — the rest stay on the static
+/// `TemplateBundle` and are reached through `bundle` on the
+/// `ResolvedTemplate`.
+struct EffectiveTemplate {
+    task_required: bool,
+}
+
+/// clap value-parser for `--set KEY=VALUE`. Splits on the first `=`
+/// (so values may contain further `=`). Rejects empty `KEY`,
+/// missing `=`, and empty `VALUE`. All three failure modes surface
+/// as plain clap usage errors (exit 2), per AC #6 / #7.
+#[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
+fn parse_set_kv(s: &str) -> std::result::Result<(String, String), String> {
+    let (key, value) = s
+        .split_once('=')
+        .ok_or_else(|| format!("--set expects KEY=VALUE (got {s:?})"))?;
+    if key.is_empty() {
+        return Err(format!("--set: KEY must not be empty (got {s:?})"));
+    }
+    if value.is_empty() {
+        return Err(format!("--set: VALUE must not be empty (got {s:?})"));
+    }
+    Ok((key.to_owned(), value.to_owned()))
+}
+
+/// Apply `--set` overrides to the resolved template. Today only one
+/// override key is recognized (`required-task=true|false`, and only
+/// on templates whose `task_required` was `true` to begin with — we
+/// still recognize it on those for symmetry / forward-compat).
+/// Unknown keys exit 2 with `NEW_UNKNOWN_OVERRIDE_KEY`. Duplicate
+/// keys: last-wins with a stderr warning.
+fn apply_overrides(bundle: &TemplateBundle, overrides: &[(String, String)]) -> EffectiveTemplate {
+    let known_keys = known_override_keys(bundle);
+    // Detect duplicates for the last-wins warning, AC #8.
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(overrides.len());
+    let mut effective = EffectiveTemplate {
+        task_required: bundle.task_required,
+    };
+    for (key, value) in overrides {
+        if !known_keys.iter().any(|k| *k == key.as_str()) {
+            let known_str = if known_keys.is_empty() {
+                "<none>".to_owned()
+            } else {
+                known_keys.join(", ")
+            };
+            eprintln!(
+                "tape new: NEW_UNKNOWN_OVERRIDE_KEY — unknown override key {key:?} \
+                 for template {:?} (known: {known_str})",
+                bundle.id,
+            );
+            std::process::exit(2);
+        }
+        if !seen.insert(key.as_str()) {
+            eprintln!("tape new: --set {key} specified twice; using last value");
+        }
+        match key.as_str() {
+            "required-task" => match value.as_str() {
+                "true" => effective.task_required = true,
+                "false" => effective.task_required = false,
+                other => {
+                    eprintln!(
+                        "tape new: --set required-task: expected 'true' or 'false', got {other:?}"
+                    );
+                    std::process::exit(2);
+                }
+            },
+            // Unknown keys are rejected above; this match is exhaustive
+            // over the known-keys list at the time of writing.
+            _ => unreachable!("known_override_keys / apply_overrides disagree on {key:?}"),
+        }
+    }
+    effective
+}
+
+/// Per-template known override keys. Empty `&[]` means `--set` has
+/// no recognized keys for the template (e.g. `test-fixture`); any
+/// `--set k=v` against it exits 2 with `NEW_UNKNOWN_OVERRIDE_KEY` +
+/// `(known: <none>)` per AC #4.
+fn known_override_keys(bundle: &TemplateBundle) -> &'static [&'static str] {
+    match bundle.id {
+        "minimal" | "bug-investigation" => &["required-task"],
+        _ => &[],
+    }
 }
 
 fn cmd_new(
@@ -1029,11 +1179,14 @@ fn cmd_new(
     force: bool,
     created_at_override: Option<String>,
     recorder_agent_override: Option<String>,
+    overrides: Vec<(String, String)>,
 ) -> Result<()> {
-    // 1. Resolve the template + validate `--task` against its
-    //    placeholder spec. Errors exit `2` with the appropriate
-    //    `NEW_*` diagnostic code; we only return on the happy path.
-    let (bundle, task_value) = resolve_and_validate(template_id, task);
+    // 1. Resolve the template + apply --set overrides + validate
+    //    `--task` against the *effective* placeholder spec. Errors
+    //    exit `2` with the appropriate `NEW_*` diagnostic code.
+    let resolved = resolve_and_validate(template_id, task, &overrides);
+    let bundle = resolved.bundle;
+    let task_value = resolved.task_value;
 
     // 2. Output-exists check.
     if out.exists() && !force {
@@ -1068,7 +1221,18 @@ fn cmd_new(
     // 4. Substitute template placeholders. Literal `String::replace`,
     //    no expression language — the rule is "grep '{{' templates/`
     //    should always show every active placeholder."
-    let task_for_sub = task_value.as_deref().unwrap_or("");
+    //
+    //    When `--task` is omitted (only reachable when effective
+    //    `task_required` is false — via `--set required-task=false`
+    //    for #188), substitute a literal `(no task supplied)` marker
+    //    instead of an empty string. SPEC §5.5.1 rejects an empty
+    //    `task` event prompt as `INVALID_PAYLOAD`, so the empty-string
+    //    substitution suggested by the original #188 acceptance text
+    //    would never pass the post-write verify gate at step 7. The
+    //    marker keeps the rendered cassette valid and makes the
+    //    "I didn't supply a task" intent visible in the prompt.
+    const NO_TASK_MARKER: &str = "(no task supplied)";
+    let task_for_sub: &str = task_value.as_deref().unwrap_or(NO_TASK_MARKER);
     let liner_md = if bundle.has_task_placeholder {
         bundle.liner.replace("{{task}}", task_for_sub)
     } else {
@@ -1084,6 +1248,10 @@ fn cmd_new(
 
     // 5. Build the Meta. Extracted to `build_new_meta` so `cmd_new`
     //    stays under the workspace `clippy::too_many_lines` ceiling.
+    //    Uses `resolved.placeholders_filled` (effective post-override)
+    //    rather than the bundle's static slice — see #188 AC re:
+    //    `meta.new.placeholders_filled` mirroring the post-`--set`
+    //    state.
     let meta = build_new_meta(
         bundle,
         task_value.as_deref(),
@@ -1092,6 +1260,7 @@ fn cmd_new(
         &ejected_at,
         &recorder_agent,
         &tracks_jsonl,
+        &resolved.placeholders_filled,
     );
     let meta_yaml = meta
         .to_yaml()
@@ -1158,6 +1327,7 @@ fn cmd_new(
 /// outcome (e.g. `test-fixture` ships `success`). Falls back to
 /// `Unknown` if the eject can't be located, which keeps the
 /// `minimal` template's existing shape working.
+#[allow(clippy::too_many_arguments)]
 fn build_new_meta(
     bundle: &TemplateBundle,
     task_value: Option<&str>,
@@ -1166,6 +1336,7 @@ fn build_new_meta(
     ejected_at: &str,
     recorder_agent: &str,
     tracks_jsonl: &str,
+    placeholders_filled: &[&'static str],
 ) -> tape_format::meta::Meta {
     let id = derive_uuid_v7(created_at, recorder_agent, task_for_sub);
     let meta_task = task_value
@@ -1198,8 +1369,7 @@ fn build_new_meta(
             template_id: bundle.id.into(),
             template_version: bundle.version.into(),
             generated_at: created_at.to_owned(),
-            placeholders_filled: bundle
-                .placeholders_filled
+            placeholders_filled: placeholders_filled
                 .iter()
                 .map(|s| (*s).to_owned())
                 .collect(),
