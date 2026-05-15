@@ -104,6 +104,27 @@ impl DoctorEnv {
         std::fs::set_permissions(&path, perms).unwrap();
     }
 
+    /// Materialise `<cache>/tape/index/` as an empty directory.
+    /// `<cache>` is the macOS `Library/Caches` subtree under this
+    /// fixture's `$HOME` (matches the production resolver — this
+    /// crate ships on macOS in CI). Used by Step-5 of #81 (#183)
+    /// to exercise the `index.exists` → `Pass` branch.
+    fn provision_index_dir(&self) {
+        let cache = self.cache_root();
+        std::fs::create_dir_all(cache.join("tape").join("index")).unwrap();
+    }
+
+    fn cache_root(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.home.join("Library").join("Caches")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.home.join(".cache")
+        }
+    }
+
     fn doctor(&self, args: &[&str]) -> std::process::Output {
         let mut cmd = Command::new(tape_bin());
         cmd.arg("doctor");
@@ -161,6 +182,19 @@ fn known_good_environment_exits_zero() {
         s.contains("[OK] pricing.table.fresh"),
         "pricing.table.fresh must render as [OK]:\n{s}"
     );
+    // Step-5 of #81 (issue #183): the four `index.*` checks should
+    // all surface as `[--]` on a fixture without `<cache>/tape/index/`.
+    for id in [
+        "index.exists",
+        "index.sqlite.integrity",
+        "index.lock.stale",
+        "index.last_rescan.fresh",
+    ] {
+        assert!(
+            s.contains(&format!("[--] {id}")),
+            "{id} should render as [--] on a no-library fixture:\n{s}"
+        );
+    }
     assert!(s.contains("0 fail"));
     assert!(s.contains("exit 0"));
 }
@@ -300,8 +334,8 @@ fn list_checks_is_stable() {
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(
         lines.len(),
-        15,
-        "doctor catalog has 15 checks (phase 1 + #163 claude-code + #166 signing + #177 pricing); got {}:\n{s}",
+        19,
+        "doctor catalog has 19 checks (phase 1 + #163 claude-code + #166 signing + #177 pricing + #183 index); got {}:\n{s}",
         lines.len()
     );
 
@@ -334,6 +368,10 @@ fn list_checks_is_stable() {
             "signing.keystore.perms",
             "signing.trust_store.readable",
             "pricing.table.fresh",
+            "index.exists",
+            "index.sqlite.integrity",
+            "index.lock.stale",
+            "index.last_rescan.fresh",
         ]
     );
 }
@@ -382,6 +420,65 @@ fn doctor_include_pricing_runs_only_that_check() {
     assert!(!s.contains("binary.tape.present"));
     assert!(!s.contains("config.user_taperc.parses"));
     assert!(!s.contains("signing.keystore.readable"));
+}
+
+#[test]
+fn doctor_include_index_runs_only_those_checks() {
+    // Step-5 of #81 (issue #183): `--include index` narrows to the four
+    // new checks. With no `<cache>/tape/index/` provisioned, every one
+    // surfaces `[--]` (library not in use). Exit 0 either way.
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    let out = env.doctor(&["--include", "index"]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "stdout:\n{s}");
+    for id in [
+        "index.exists",
+        "index.sqlite.integrity",
+        "index.lock.stale",
+        "index.last_rescan.fresh",
+    ] {
+        assert!(
+            s.contains(&format!("[--] {id}")),
+            "{id} should render as [--] without an index dir:\n{s}"
+        );
+    }
+    // Adjacent categories should not have rendered.
+    assert!(!s.contains("binary.tape.present"));
+    assert!(!s.contains("signing.keystore.readable"));
+    assert!(!s.contains("pricing.table.fresh"));
+}
+
+#[test]
+fn index_exists_passes_when_dir_present() {
+    // AC #2 of #183: provisioning `<cache>/tape/index/` as an empty
+    // directory flips `index.exists` to `[OK]` while the other three
+    // index checks stay `[--]` with the "not present" wording (not the
+    // "deferred to #2 follow-up" wording — that's a separate AC #3
+    // branch).
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    env.provision_index_dir();
+    let out = env.doctor(&["--include", "index"]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "stdout:\n{s}");
+    assert!(s.contains("[OK] index.exists"), "stdout:\n{s}");
+    for id in [
+        "index.sqlite.integrity",
+        "index.lock.stale",
+        "index.last_rescan.fresh",
+    ] {
+        assert!(
+            s.contains(&format!("[--] {id}")),
+            "{id} should still render as [--] (no catalog file):\n{s}"
+        );
+    }
+    assert!(
+        !s.contains("deferred to the #2 follow-up"),
+        "no `deferred` wording on a dir-only fixture:\n{s}"
+    );
 }
 
 #[test]

@@ -272,6 +272,7 @@ mod tests {
     fn env_with_home(home: Option<PathBuf>) -> Env {
         Env {
             home,
+            cache_dir: None,
             tmpdir: PathBuf::from("/tmp"),
             path_dirs: vec![],
             cwd: PathBuf::from("."),
