@@ -132,28 +132,36 @@ enum Cmd {
     /// Manage the `meta.recap` field — a 1–2 sentence summary suitable
     /// for pasting into Slack / Linear / Jira / PR descriptions.
     ///
-    /// Phase-1 of issue #105: hand-written recaps only via `--set` /
-    /// `--clear` / `--list`. The LLM-driven `--auto` and template flags
-    /// are deferred to Phase 2 (blocked on the same judge-model wiring
-    /// `tape diff --judge` is waiting on).
+    /// Phase-1 of issue #105 shipped hand-managed `--set` / `--clear` /
+    /// `--list`. Phase-2 (issue #151) adds `--auto`: ask the configured
+    /// judge model in `.taperc::judge:` to draft the recap, validate it
+    /// with the same `validate_recap_text` rules `--set` uses, and write
+    /// through the same single-blob path.
     Recap {
         /// Input cassette.
         file: std::path::PathBuf,
         /// Set `meta.recap` to this text and append a `set` entry to
         /// `meta.recaps[]`. ≤280 chars, no newline, non-empty. Mutually
-        /// exclusive with `--clear` and `--list`.
-        #[arg(long, conflicts_with_all = ["clear", "list"])]
+        /// exclusive with `--clear`, `--list`, and `--auto`.
+        #[arg(long, conflicts_with_all = ["clear", "list", "auto"])]
         set: Option<String>,
         /// Clear `meta.recap` and append a `clear` entry to
-        /// `meta.recaps[]`. Mutually exclusive with `--set` and `--list`.
-        #[arg(long, conflicts_with_all = ["set", "list"])]
+        /// `meta.recaps[]`. Mutually exclusive with `--set`, `--list`,
+        /// and `--auto`.
+        #[arg(long, conflicts_with_all = ["set", "list", "auto"])]
         clear: bool,
         /// Print `meta.recap` to stdout. Exit 4 if the cassette has no
         /// recap set. Read-only — no output cassette is written.
-        /// Mutually exclusive with `--set` and `--clear`.
-        #[arg(long, conflicts_with_all = ["set", "clear"])]
+        /// Mutually exclusive with `--set`, `--clear`, and `--auto`.
+        #[arg(long, conflicts_with_all = ["set", "clear", "auto"])]
         list: bool,
-        /// Output path for `--set` / `--clear`. Default
+        /// Ask the configured judge model (see `.taperc::judge:`) to
+        /// draft a recap and write it after validation + the model
+        /// client's defense-in-depth scan. Mutually exclusive with
+        /// `--set` / `--clear` / `--list`. Issue #151.
+        #[arg(long, conflicts_with_all = ["set", "clear", "list"])]
+        auto: bool,
+        /// Output path for `--set` / `--clear` / `--auto`. Default
         /// `<basename>.recap.tape` next to the input. Refuses if equal
         /// to the input path.
         #[arg(short = 'o', long)]
@@ -284,8 +292,9 @@ fn main() -> Result<()> {
             set,
             clear,
             list,
+            auto,
             out,
-        } => cmd_recap(&file, set, clear, list, out),
+        } => cmd_recap(&file, set, clear, list, auto, out),
         Cmd::Annotate {
             file,
             note,
@@ -621,15 +630,19 @@ fn cmd_recap(
     set: Option<String>,
     clear: bool,
     list: bool,
+    auto: bool,
     out: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // 1. Verify exactly one mode flag is set. clap's `conflicts_with_all`
     //    handles the pairwise-exclusion side; this is the
     //    "at-least-one" half (clap can't model that cleanly when each
     //    flag also has a default like `bool: false` / `Option: None`).
-    let mode_count = [set.is_some(), clear, list].iter().filter(|b| **b).count();
+    let mode_count = [set.is_some(), clear, list, auto]
+        .iter()
+        .filter(|b| **b)
+        .count();
     if mode_count == 0 {
-        eprintln!("tape recap: one of --set <text>, --clear, --list is required");
+        eprintln!("tape recap: one of --set <text>, --clear, --list, --auto is required");
         std::process::exit(2);
     }
 
@@ -666,8 +679,17 @@ fn cmd_recap(
     let mut meta = parse_meta(&raw, "tape recap");
     let prior_recap = meta.recap.clone();
 
-    // 5. Apply the requested edit.
-    let kind: tape_format::meta::RecapKind = if let Some(text) = set.as_deref() {
+    // 5. Apply the requested edit. `--auto` is async (the judge call) so
+    //    it has its own driver function; `--set` / `--clear` stay in
+    //    this synchronous body.
+    let (kind, judge_call): (
+        tape_format::meta::RecapKind,
+        Option<tape_judge::JudgeCallRecord>,
+    ) = if auto {
+        let (new_recap, record) = run_recap_auto(&meta, &raw, &out_path)?;
+        meta.recap = Some(new_recap);
+        (tape_format::meta::RecapKind::Auto, Some(record))
+    } else if let Some(text) = set.as_deref() {
         if text.is_empty() {
             eprintln!("tape recap: --set text must be non-empty");
             std::process::exit(2);
@@ -677,11 +699,11 @@ fn cmd_recap(
             std::process::exit(2);
         }
         meta.recap = Some(text.to_owned());
-        tape_format::meta::RecapKind::Set
+        (tape_format::meta::RecapKind::Set, None)
     } else {
         // --clear
         meta.recap = None;
-        tape_format::meta::RecapKind::Clear
+        (tape_format::meta::RecapKind::Clear, None)
     };
 
     let entry = tape_format::meta::RecapEntry {
@@ -691,6 +713,7 @@ fn cmd_recap(
         kind,
         prior_recap,
         new_recap: meta.recap.clone(),
+        judge_call,
     };
     meta.recaps.push(entry);
 
@@ -733,9 +756,277 @@ fn cmd_recap(
         std::process::exit(3);
     }
 
-    let action_label = if set.is_some() { "set" } else { "cleared" };
+    let action_label = if auto {
+        "auto-set"
+    } else if set.is_some() {
+        "set"
+    } else {
+        "cleared"
+    };
     println!("ok: {action_label} recap on {}", out_path.display());
     Ok(())
+}
+
+/// `--auto` driver. Builds the prompt, runs the judge call inside a
+/// fresh tokio runtime, validates the response with the same
+/// `validate_recap_text` rules `--set` uses, and propagates structured
+/// exit codes for the two failure modes Principal called out in #151:
+/// `RECAP_AUTO_INVALID_OUTPUT` (exit 2, validator rejected the model's
+/// text) and `RECAP_AUTO_LEAK` (exit 6, defense-in-depth scanner inside
+/// the judge client flagged the output). The original cassette is
+/// preserved untouched on both error paths — the post-write `tape verify`
+/// at step 7 is the next gate, so we never reach it if we exit here.
+fn run_recap_auto(
+    meta: &tape_format::meta::Meta,
+    raw: &tape_format::reader::RawTape,
+    out_path: &std::path::Path,
+) -> Result<(String, tape_judge::JudgeCallRecord)> {
+    // a. Load `.taperc::judge:`. Workspace-local takes precedence over
+    //    `$HOME/.taperc`, matching the existing tape-judge consumer
+    //    pattern.
+    let config = match load_judge_config_for_recap() {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("tape recap: RECAP_AUTO_CONFIG — {msg}");
+            std::process::exit(2);
+        }
+    };
+
+    // b. Build the prompt up front so a 0-byte tracks.jsonl can't
+    //    silently feed the model an empty context.
+    let prompt = render_recap_prompt(meta, raw);
+
+    // c. Construct the client and run one judge call. `JudgeOpts::default()`
+    //    inherits `max_tokens` from config; #151 forbids re-sampling on
+    //    validator failure (let the client's own retry handle transients).
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tape recap: RECAP_AUTO_CONFIG — build tokio runtime: {e}");
+            std::process::exit(2);
+        }
+    };
+    let result = rt.block_on(async move {
+        let client = tape_judge::JudgeClient::new(config)?;
+        client
+            .complete(&prompt, tape_judge::JudgeOpts::default())
+            .await
+    });
+
+    let out = match result {
+        Ok(o) => o,
+        Err(tape_judge::JudgeError::Rejected(hit)) => {
+            // Defense-in-depth scanner inside the client flagged the
+            // output before it crossed back into the caller. AC #5.
+            // No cassette is written; the original at `file` is
+            // already untouched and `out_path` was never created.
+            let _ = out_path; // explicitly: nothing to clean up.
+            eprintln!(
+                "tape recap: RECAP_AUTO_LEAK — judge output rejected by defense-in-depth: {}",
+                hit.rule_id
+            );
+            std::process::exit(6);
+        }
+        Err(e) => {
+            eprintln!("tape recap: RECAP_AUTO_CONFIG — judge call failed: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // d. Validate the trimmed text against the same invariants
+    //    `--set` enforces. The validator is the source of truth for
+    //    "what fits in `meta.recap`"; a model that ignores the
+    //    instructions still gets rejected here.
+    let trimmed = out.text.trim().to_owned();
+    if trimmed.is_empty() {
+        eprintln!("tape recap: RECAP_AUTO_INVALID_OUTPUT — model returned empty text");
+        std::process::exit(2);
+    }
+    if let Err(msg) = tape_format::meta::validate_recap_text(&trimmed) {
+        eprintln!("tape recap: RECAP_AUTO_INVALID_OUTPUT — {msg}");
+        std::process::exit(2);
+    }
+
+    Ok((trimmed, out.record))
+}
+
+/// Locate `.taperc` (workspace first, user-level fallback), parse the
+/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`].
+/// Returns a CLI-shaped error message when no `judge:` block is found
+/// anywhere — without one, `--auto` has nowhere to send the call.
+fn load_judge_config_for_recap() -> std::result::Result<tape_judge::JudgeConfig, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user);
+    let Some(p) = path else {
+        return Err(".taperc not found (looked in workspace and $HOME); \
+             needed for --auto to know the judge model + endpoint"
+            .into());
+    };
+    let yaml = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+    let cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+        .map_err(|e| format!("parse {}: {e}", p.display()))?
+        .ok_or_else(|| {
+            format!(
+                "{}: no `judge:` block; add one (model + api_key_env) and re-run",
+                p.display()
+            )
+        })?;
+    Ok(cfg)
+}
+
+/// Compose the prompt the judge model receives for `--auto`. Hardcoded
+/// per Principal's pitfall callout — bundled templates are a follow-on
+/// once two `--auto` consumers have shipped. The order is deliberate:
+/// the instructions go first so an oversized tracks summary can't push
+/// them out of the model's effective context.
+fn render_recap_prompt(
+    meta: &tape_format::meta::Meta,
+    raw: &tape_format::reader::RawTape,
+) -> String {
+    let mut s = String::with_capacity(4096);
+    s.push_str(
+        "You are summarising one recording of an agent investigating a task. \
+         Produce a 1–2 sentence recap suitable for pasting into a Slack message, \
+         a Linear ticket, or a PR description. Hard constraints: \
+         ≤280 characters, single line (no newline characters), plain UTF-8, no markdown. \
+         Be concrete — name the user-visible outcome, not a meta description of the recording. \
+         If the cassette ended with `outcome: failure` or `abandoned`, say so. \
+         Output ONLY the recap text. Do not add quotes, prefixes, or trailing notes.\n\n",
+    );
+    s.push_str(&format!("Task: {}\n", meta.task));
+    s.push_str(&format!(
+        "Outcome: {}\n",
+        match meta.outcome {
+            tape_format::meta::Outcome::Success => "success",
+            tape_format::meta::Outcome::Failure => "failure",
+            tape_format::meta::Outcome::Abandoned => "abandoned",
+            tape_format::meta::Outcome::Unknown => "unknown",
+        }
+    ));
+    if let Some(label) = meta.label.as_deref() {
+        s.push_str(&format!("Label: {label}\n"));
+    }
+    s.push_str("\nTracks (one line per step):\n");
+    s.push_str(&render_track_summary(raw, RECAP_TRACK_BUDGET));
+    if let Some(liner) = raw.liner_md.as_deref() {
+        if !liner.trim().is_empty() {
+            s.push_str("\nLiner notes:\n");
+            s.push_str(liner.trim());
+            s.push('\n');
+        }
+    }
+    s
+}
+
+/// 4 KiB cap on the tracks summary section of the recap prompt, per
+/// Principal scoping in #151. Tracks above the cap are head+tail-
+/// truncated so both ends of long investigations remain visible.
+const RECAP_TRACK_BUDGET: usize = 4096;
+
+/// Render one line per track in JSONL ordering. Each line carries the
+/// step number, kind, and a compact payload hint extracted from the
+/// JSON payload (`prompt` / `cmd` / `path` / `outcome` — whichever the
+/// kind owns). Returns a `String` capped at [`RECAP_TRACK_BUDGET`] bytes;
+/// if the rendered text exceeds the cap, it's head+tail-truncated with a
+/// `… N tracks elided …` marker.
+fn render_track_summary(raw: &tape_format::reader::RawTape, budget: usize) -> String {
+    let Some(jsonl) = raw.tracks_jsonl.as_deref() else {
+        return "(no tracks)\n".to_owned();
+    };
+    let tracks = match tape_format::tracks::parse_jsonl(jsonl) {
+        Ok(t) => t,
+        Err(_) => return "(tracks did not parse)\n".to_owned(),
+    };
+    let lines: Vec<String> = tracks.iter().map(render_track_line).collect();
+    let full: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    if full.len() <= budget {
+        return full;
+    }
+    // Head+tail truncation. Reserve room for the elision marker; aim
+    // for ~45% of the budget per side so both ends fit comfortably.
+    let elide_marker = format!(
+        "… {} tracks elided (budget {budget} bytes) …\n",
+        lines.len()
+    );
+    let side = budget.saturating_sub(elide_marker.len()) / 2;
+    let head = take_chars_bytes(&full, side);
+    let tail = take_chars_bytes_from_end(&full, side);
+    let mut out = String::with_capacity(budget);
+    out.push_str(&head);
+    out.push_str(&elide_marker);
+    out.push_str(&tail);
+    out
+}
+
+fn render_track_line(t: &tape_format::tracks::Track) -> String {
+    let kind = match t.kind {
+        tape_format::tracks::Kind::Task => "task",
+        tape_format::tracks::Kind::ModelCall => "model_call",
+        tape_format::tracks::Kind::McpCall => "mcp_call",
+        tape_format::tracks::Kind::Shell => "shell",
+        tape_format::tracks::Kind::FileRead => "file_read",
+        tape_format::tracks::Kind::FileWrite => "file_write",
+        tape_format::tracks::Kind::Annotation => "annotation",
+        tape_format::tracks::Kind::Eject => "eject",
+    };
+    let hint = recap_payload_hint(&t.kind, &t.payload);
+    if hint.is_empty() {
+        format!("  {:>3}. {kind}", t.step)
+    } else {
+        format!("  {:>3}. {kind}: {hint}", t.step)
+    }
+}
+
+fn recap_payload_hint(kind: &tape_format::tracks::Kind, payload: &serde_json::Value) -> String {
+    let key = match kind {
+        tape_format::tracks::Kind::Task => "prompt",
+        tape_format::tracks::Kind::ModelCall => "model",
+        tape_format::tracks::Kind::McpCall => "tool",
+        tape_format::tracks::Kind::Shell => "cmd",
+        tape_format::tracks::Kind::FileRead | tape_format::tracks::Kind::FileWrite => "path",
+        tape_format::tracks::Kind::Annotation => "note",
+        tape_format::tracks::Kind::Eject => "outcome",
+    };
+    let raw = payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .replace(['\n', '\r'], " ");
+    let truncated: String = raw.chars().take(120).collect();
+    if raw.chars().count() > 120 {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+/// Take a UTF-8-safe prefix of `s` containing at most `byte_cap` bytes.
+/// Walks character boundaries so we never split a multi-byte codepoint.
+fn take_chars_bytes(s: &str, byte_cap: usize) -> String {
+    if s.len() <= byte_cap {
+        return s.to_owned();
+    }
+    let mut end = byte_cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
+}
+
+/// Like [`take_chars_bytes`] but from the end.
+fn take_chars_bytes_from_end(s: &str, byte_cap: usize) -> String {
+    if s.len() <= byte_cap {
+        return s.to_owned();
+    }
+    let mut start = s.len().saturating_sub(byte_cap);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_owned()
 }
 
 /// Wrap `RawTape::open` with a CLI-facing exit-2 on failure. Used by

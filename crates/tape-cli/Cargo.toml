@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 tape-format.workspace = true
 tape-play.workspace = true
 tape-diff.workspace = true
+tape-judge.workspace = true
 tape-mcp.workspace = true
 tape-record.workspace = true
 tape-redact.workspace = true
