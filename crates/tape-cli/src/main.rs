@@ -2634,55 +2634,16 @@ fn cmd_relinernote(
     }
 
     // 5. Load config and call the judge.
-    let mut config = match load_judge_config_for_relinernote() {
-        Ok(c) => c,
-        Err(msg) => {
-            eprintln!("tape relinernote: RELINER_CONFIG — {msg}");
-            std::process::exit(2);
-        }
-    };
-    if let Some(m) = model_override.as_deref().filter(|s| !s.is_empty()) {
-        config.model = m.to_owned();
-    }
-    let model_id = config.model.clone();
-
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("tape relinernote: RELINER_CONFIG — build tokio runtime: {e}");
-            std::process::exit(2);
-        }
-    };
-    let result = rt.block_on(async move {
-        let client = tape_judge::JudgeClient::new(config)?;
-        client
-            .complete(&prompt, tape_judge::JudgeOpts::default())
-            .await
-    });
-
-    let out = match result {
-        Ok(o) => o,
-        Err(tape_judge::JudgeError::Rejected(hit)) => {
-            eprintln!(
-                "tape relinernote: RELINER_LEAK — judge output rejected by defense-in-depth: {}",
-                hit.rule_id
-            );
-            std::process::exit(6);
-        }
-        Err(e) => {
-            eprintln!("tape relinernote: RELINER_CONFIG — judge call failed: {e}");
-            std::process::exit(2);
-        }
+    let (model_id, judge_out) = match run_relinernote_judge(&prompt, model_override) {
+        Ok(pair) => pair,
+        Err(code) => std::process::exit(code),
     };
 
     // 6. Validate the output. Both validators must pass — missing or
     //    empty sections AND order. SPEC §4.1 is "in order"; the
     //    canonical four-section liner notes are what every reader
     //    (including `tape verify`) assumes.
-    let new_liner = out.text.trim_end().to_owned();
+    let new_liner = judge_out.text.trim_end().to_owned();
     let missing = tape_format::liner::missing_or_empty_sections(&new_liner);
     if !missing.is_empty() {
         eprintln!(
@@ -2710,7 +2671,7 @@ fn cmd_relinernote(
         template_id: "default".to_owned(),
         prior_liner_notes_sha256: prior_sha,
         new_liner_notes_sha256: new_sha,
-        judge_call: out.record,
+        judge_call: judge_out.record,
     });
 
     // 8. Rewrite the zip. Everything but meta.yaml + liner-notes.md
@@ -2754,6 +2715,62 @@ fn cmd_relinernote(
 
     println!("ok: regenerated liner-notes.md on {}", out_path.display());
     Ok(())
+}
+
+/// Helper extracted from `cmd_relinernote` to keep the driver under the
+/// workspace `clippy::too_many_lines` ceiling. Resolves the judge config,
+/// applies `--model` if non-empty, drives a single `complete` call, and
+/// translates the result into either `(model_id, JudgeOutput)` or the
+/// structured exit code the caller should propagate. Diagnostics are
+/// emitted to stderr before returning the `Err` arm.
+fn run_relinernote_judge(
+    prompt: &str,
+    model_override: Option<String>,
+) -> std::result::Result<(String, tape_judge::JudgeOutput), i32> {
+    let mut config = match load_judge_config_for_relinernote() {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — {msg}");
+            return Err(2);
+        }
+    };
+    if let Some(m) = model_override.as_deref().filter(|s| !s.is_empty()) {
+        m.clone_into(&mut config.model);
+    }
+    let model_id = config.model.clone();
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — build tokio runtime: {e}");
+            return Err(2);
+        }
+    };
+    let prompt_owned = prompt.to_owned();
+    let result = rt.block_on(async move {
+        let client = tape_judge::JudgeClient::new(config)?;
+        client
+            .complete(&prompt_owned, tape_judge::JudgeOpts::default())
+            .await
+    });
+
+    match result {
+        Ok(o) => Ok((model_id, o)),
+        Err(tape_judge::JudgeError::Rejected(hit)) => {
+            eprintln!(
+                "tape relinernote: RELINER_LEAK — judge output rejected by defense-in-depth: {}",
+                hit.rule_id
+            );
+            Err(6)
+        }
+        Err(e) => {
+            eprintln!("tape relinernote: RELINER_CONFIG — judge call failed: {e}");
+            Err(2)
+        }
+    }
 }
 
 /// Locate `.taperc` (workspace first, user-level fallback), parse the
@@ -2834,12 +2851,15 @@ fn render_relinernote_prompt(
 const RELINER_PROMPT_CAP: usize = 8 * 1024;
 
 fn relinernote_track_summary(tracks_jsonl: &str, byte_cap: usize) -> String {
-    let tracks = match tape_format::tracks::parse_jsonl(tracks_jsonl) {
-        Ok(t) => t,
-        Err(_) => return "(tracks did not parse)\n".to_owned(),
+    let Ok(tracks) = tape_format::tracks::parse_jsonl(tracks_jsonl) else {
+        return "(tracks did not parse)\n".to_owned();
     };
     let lines: Vec<String> = tracks.iter().map(relinernote_track_line).collect();
-    let full: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    let mut full = String::new();
+    for l in &lines {
+        full.push_str(l);
+        full.push('\n');
+    }
     if full.len() <= byte_cap {
         return full;
     }
@@ -2868,7 +2888,7 @@ fn relinernote_track_line(t: &tape_format::tracks::Track) -> String {
         tape_format::tracks::Kind::Annotation => "annotation",
         tape_format::tracks::Kind::Eject => "eject",
     };
-    let hint = relinernote_payload_hint(&t.kind, &t.payload);
+    let hint = relinernote_payload_hint(t.kind, &t.payload);
     if hint.is_empty() {
         format!("  {:>3}. {kind}", t.step)
     } else {
@@ -2877,7 +2897,7 @@ fn relinernote_track_line(t: &tape_format::tracks::Track) -> String {
 }
 
 fn relinernote_payload_hint(
-    kind: &tape_format::tracks::Kind,
+    kind: tape_format::tracks::Kind,
     payload: &serde_json::Value,
 ) -> String {
     let key = match kind {

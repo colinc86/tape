@@ -409,6 +409,7 @@ fn build_empty_task_cassette(path: &std::path::Path) {
         label: None,
         recap: None,
         recaps: vec![],
+        tags: vec![],
         relinernotes: vec![],
         new_block: None,
     };
