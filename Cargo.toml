@@ -19,7 +19,7 @@ rust-version = "1.82"
 license = "Apache-2.0"
 authors = ["tape contributors"]
 repository = "https://github.com/colinc86/tape"
-version = "0.2.0"
+version = "0.2.1"
 
 [workspace.dependencies]
 # Errors
@@ -64,15 +64,18 @@ similar = "2"
 # Bitflags (RuntimeCapabilities)
 bitflags = "2"
 
-# Internal — workspace crates can refer to each other via path
-tape-format = { path = "crates/tape-format", version = "0.1.0" }
-tape-record = { path = "crates/tape-record", version = "0.1.0" }
-tape-redact = { path = "crates/tape-redact", version = "0.1.0" }
-tape-play = { path = "crates/tape-play", version = "0.1.0" }
-tape-diff = { path = "crates/tape-diff", version = "0.1.0" }
-tape-mcp = { path = "crates/tape-mcp", version = "0.1.0" }
-tape-judge = { path = "crates/tape-judge", version = "0.1.0" }
-tape-export = { path = "crates/tape-export", version = "0.1.0" }
+# Internal — workspace crates can refer to each other via path.
+# Constraint at 0.2.0 (the lower bound of the v0.2.x line) so subsequent
+# patch bumps don't need a re-edit here — fixes #174 where the v0.1.0
+# constraint survived the v0.2.0 release and blocked fresh clones.
+tape-format = { path = "crates/tape-format", version = "0.2.0" }
+tape-record = { path = "crates/tape-record", version = "0.2.0" }
+tape-redact = { path = "crates/tape-redact", version = "0.2.0" }
+tape-play = { path = "crates/tape-play", version = "0.2.0" }
+tape-diff = { path = "crates/tape-diff", version = "0.2.0" }
+tape-mcp = { path = "crates/tape-mcp", version = "0.2.0" }
+tape-judge = { path = "crates/tape-judge", version = "0.2.0" }
+tape-export = { path = "crates/tape-export", version = "0.2.0" }
 
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }

@@ -19,49 +19,12 @@ The three-year arc:
 
 ---
 
-## Current Milestone — v0.2.1 (hotfix: fix workspace path-dep regression)
+## Current Milestone — v0.2.2 (binary distribution + remaining v0.2 themes)
 
-**Status:** Required. v0.2.0 (commit `33aa143`, 2026-05-15) shipped with
-a release-mechanics regression in `Cargo.toml`: the workspace
-`[workspace.package].version` bumped to `0.2.0`, but the internal
-path-dep version constraints at lines 68-75 still read `version =
-"0.1.0"`. `^0.1.0 = >=0.1.0, <0.2.0` does not satisfy `0.2.0`, so
-**fresh clones of main fail `cargo check`** — issue #174 documents the
-break.
-
-v0.2.1 is **a hotfix release**. Single-issue scope:
-
-**Cut criteria for v0.2.1:**
-
-1. **#174 resolved** — bump path-dep constraints in `Cargo.toml:68-75`
-   from `version = "0.1.0"` to `version = "0.2.0"` (the lower bound of
-   the v0.2.x line, so subsequent patch bumps don't re-trigger this).
-   Bump workspace `[workspace.package].version` to `0.2.1`. Bump the
-   9 workspace crates in `Cargo.lock` to match.
-2. `cargo check --workspace` clean on a fresh clone.
-
-That's the whole release. No new features, no Phase-2 PRs gate it, no
-other `priority:current` issues block it. Ship immediately to unbreak
-fresh checkouts.
-
-The originally-planned v0.2.1 scope (binary distribution + finish v0.2
-headline themes) moves to **v0.2.2** below.
-
-### Why a hotfix and not a normal patch
-
-- #174 is a regression from the v0.2.0 cut commit itself, not a bug in
-  the underlying functionality. It needs to land outside the normal
-  feature-cadence window.
-- #174's author (Principal) explicitly assigned it to "the PM/release
-  lane, not Engineer A/B (whose charter forbids touching workspace
-  versions)." PM cuts release-mechanics fixes.
-- Cutting v0.2.2 with `#144 + headline theme + #174` as a combined
-  release would mean fresh clones stay broken until v0.2.2 ships —
-  unbounded delay. Hotfix unblocks engineers immediately.
-
-### Next Milestone after v0.2.1 — v0.2.2 (binary distribution + remaining v0.2 themes)
-
-This was the v0.2.1 plan before #174 surfaced. Now it's v0.2.2.
+**Status:** Open. v0.2.0 shipped 2026-05-15 with the judge-model
+narration theme + 9 new CLI subcommands; v0.2.1 shipped same day as a
+hotfix for #174's workspace path-dep regression. v0.2.2 picks up the
+originally-planned v0.2.1 scope.
 
 **Cut criteria for v0.2.2** (in priority order):
 
@@ -226,6 +189,15 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 ---
 
 ## Recently Shipped
+
+### v0.2.1 — 2026-05-15 — Hotfix: workspace path-dep regression
+
+Single-issue hotfix for #174. v0.2.0 bumped `workspace.package.version`
+0.1.2 → 0.2.0 but left internal path-dep version constraints at
+`version = "0.1.0"`; `^0.1.0` doesn't satisfy `0.2.0`, so fresh
+clones failed `cargo check`. v0.2.1 lifts the constraints to `0.2.0`
+(the v0.2.x lower bound), bumps workspace to 0.2.1, and updates all
+10 lockfile entries. No source changes. Full notes in RELEASE_NOTES.md.
 
 ### v0.2.0 — 2026-05-15 — Judge-model narration + nine new commands
 

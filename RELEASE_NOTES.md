@@ -4,6 +4,70 @@ A cassette tape for agent runs. Record once, replay anywhere, share as a file.
 
 ---
 
+## v0.2.1 — 2026-05-15 — Hotfix: fix workspace path-dep regression
+
+A single-issue hotfix. v0.2.0 (cut earlier today) shipped with a
+release-mechanics bug: the workspace `[workspace.package].version`
+bumped to `0.2.0`, but the **internal path-dep version constraints**
+at `Cargo.toml:68-75` were left reading `version = "0.1.0"`. Cargo
+treats `^0.1.0` as `>=0.1.0, <0.2.0` — that range doesn't include
+`0.2.0`. **Fresh clones of v0.2.0 source therefore fail `cargo
+check`** with `failed to select a version for the requirement
+'tape-diff = "^0.1.0"'`. Existing checkouts with cached `target/`
+were unaffected, which is why the regression survived nine merged
+PRs after v0.2.0 before #174 caught it.
+
+### What changed
+
+- `Cargo.toml:68-75` — internal path-dep constraints lifted from
+  `version = "0.1.0"` to `version = "0.2.0"`. The constraint at the
+  v0.2.x lower bound means subsequent patch bumps (v0.2.2, v0.2.3,
+  …) don't need a re-edit here. Cargo's caret matching satisfies
+  `0.2.0` against any `0.2.x`.
+- `[workspace.package].version` bumped 0.2.0 → 0.2.1.
+- `Cargo.lock` — all 10 workspace crates (`tape-cli`, `tape-diff`,
+  `tape-format`, `tape-judge`, `tape-mcp`, `tape-mcp-wrap`,
+  `tape-play`, `tape-record`, `tape-redact`, `tape-export`) bumped to
+  0.2.1.
+
+### What didn't change
+
+No source code touched. No format changes. No SPEC changes. No new
+features. Every `.tape` file produced by v0.1.x or v0.2.0 continues
+to verify identically. Plugin marketplace consumers don't need
+to update existing tapes.
+
+If you have v0.2.0 source already building (cached `target/`), you
+won't notice a difference at the binary level — `tape --version`
+will report `0.2.1` but the behavior is identical.
+
+### How this slipped past
+
+Two root causes, both documented as v0.2.2-blocking work:
+
+1. **No CI** (#175). PR open against `.github/workflows/build.yml`
+   isn't filed yet; the `priority:current` ticket exists. Without a
+   CI workflow that runs `cargo check --workspace` on every PR
+   against a *fresh* (uncached) checkout, this class of regression
+   has nothing catching it. v0.2.2 includes the CI workflow as
+   criterion #3.
+2. **Release-mechanics audit gap.** The v0.2.0 cut commit
+   (`33aa143`) edited Cargo.toml in three places (workspace version,
+   Cargo.lock entries, README badge) but missed the path-dep section.
+   The post-v0.2.0 review of the cut diff happens here, in the
+   v0.2.1 release notes; future cuts should include a `cargo check
+   --workspace` from a fresh `git worktree add /tmp/...` as part of
+   the PM cut checklist.
+
+### Acknowledgment
+
+Filed by `@colinc86` (Principal role) as issue #174 with full repro,
+fix sketch, and explicit assignment to "the PM/release lane, not
+Engineer A/B (whose charter forbids touching workspace versions)."
+Turnaround was ~3 hours from filing to hotfix tag.
+
+---
+
 ## v0.2.0 — 2026-05-15 — Judge-model narration + nine new commands
 
 The first minor bump since v0.1 — and the first non-patch release. v0.1.x
