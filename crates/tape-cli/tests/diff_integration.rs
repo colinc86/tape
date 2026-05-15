@@ -62,11 +62,20 @@ fn diff_json_output_parses() {
 }
 
 #[test]
-fn diff_judge_flag_is_rejected_not_silently_ignored() {
-    // Issue #62: --judge was destructured as `judge: _` and silently dropped.
-    // Until judge-narration ships, the flag must fail loudly rather than
-    // pretend to work.
+fn diff_judge_flag_emits_actionable_config_error_when_no_api_key() {
+    // #149 AC #7: the old `not yet implemented` reject path is gone.
+    // Without `.taperc::judge:` and without the env var
+    // `JudgeConfig::api_key_env` names (default `OPENAI_API_KEY`),
+    // `--judge` should still fail — but with a clear actionable
+    // "config: env var ... is not set" error, not the legacy stub
+    // message. The structural diff is not produced in this case;
+    // the flag is opt-in and asking for it without credentials is an
+    // error, not a silent fallback.
+    //
+    // We forcibly clear the env var to make this hermetic on a dev
+    // machine that happens to have OPENAI_API_KEY exported.
     let out = Command::new(binary_path())
+        .env_remove("OPENAI_API_KEY")
         .args([
             "diff",
             "--judge",
@@ -78,13 +87,16 @@ fn diff_judge_flag_is_rejected_not_silently_ignored() {
         .unwrap();
     assert!(
         !out.status.success(),
-        "tape diff --judge should exit non-zero, got success: {:?}",
-        out
+        "tape diff --judge with no config should exit non-zero: {out:?}",
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        stderr.contains("judge") && stderr.contains("not yet implemented"),
-        "stderr should mention 'judge' and 'not yet implemented'; got:\n{stderr}"
+        !stderr.contains("not yet implemented"),
+        "the legacy stub error must be gone:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("OPENAI_API_KEY") || stderr.contains("api_key_env"),
+        "stderr should name the missing config knob:\n{stderr}"
     );
 }
 
