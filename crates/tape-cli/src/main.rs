@@ -45,8 +45,20 @@ enum Cmd {
         all: bool,
         #[arg(long, default_value = "text")]
         format: String,
-        #[arg(long)]
+        /// Enable judge-narrated alignment. Substantive diff entries
+        /// get a one-to-three-sentence behavioral summary attached
+        /// from the configured judge model. Overrides
+        /// `JudgeConfig::model` from `.taperc` for this invocation.
+        /// Requires a `judge:` block in `.taperc` and the API-key
+        /// env var named in `judge.api_key_env`.
+        #[arg(long, value_name = "MODEL")]
         judge: Option<String>,
+        /// Cap the number of judge calls made by this invocation
+        /// (default 25). Substantive entries beyond the cap render
+        /// with `[narration skipped — budget exceeded]`. Ignored
+        /// when `--judge` is not supplied.
+        #[arg(long, value_name = "N", default_value_t = 25)]
+        judge_budget: u32,
     },
     /// Record a Claude Code session into a `.tape` file.
     Record {
@@ -223,16 +235,13 @@ fn main() -> Result<()> {
             all,
             format,
             judge,
+            judge_budget,
         } => {
-            if let Some(j) = judge {
-                anyhow::bail!(
-                    "tape diff --judge is not yet implemented (got: {j}). \
-                     The judge-narrated alignment is on the roadmap; until then, \
-                     tape diff produces structural alignment only. \
-                     Re-run without --judge to get the structural diff."
-                );
+            if let Some(model) = judge {
+                cmd_diff_with_judge(&a, &b, all, &format, model, judge_budget)
+            } else {
+                cmd_diff(&a, &b, all, &format)
             }
-            cmd_diff(&a, &b, all, &format)
         }
         Cmd::Record {
             label,
@@ -371,6 +380,117 @@ fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -
         }
     }
     Ok(())
+}
+
+/// Issue #149: `tape diff --judge <MODEL>`. Runs the existing
+/// structural diff, loads `JudgeConfig` from `.taperc` (CLI `--judge`
+/// value overrides `JudgeConfig::model` for this invocation —
+/// matching the CLI > .taperc > built-in default resolution other
+/// judge-using commands follow), then iterates substantive entries
+/// in order and asks the judge to narrate each. Budget, truncation,
+/// and defense-in-depth rules are enforced inside
+/// `tape_diff::narrate::narrate_diff`.
+fn cmd_diff_with_judge(
+    a: &std::path::Path,
+    b: &std::path::Path,
+    all: bool,
+    format: &str,
+    model_override: String,
+    budget: u32,
+) -> Result<()> {
+    // 1. Structural pass first — `--judge` is purely additive.
+    let mut diff = tape_diff::compute(a, b)?;
+
+    // 2. Load `.taperc::judge:` from cwd (walk-up) or `$HOME` fallback,
+    //    same locator semantics `tape-redact` uses. Failing to find a
+    //    `judge:` block is an explicit, actionable error per AC7 — the
+    //    flag must not silently no-op.
+    let cwd = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("could not resolve current working directory: {e}"))?;
+    let Some(mut judge_config) = load_judge_config(&cwd)? else {
+        anyhow::bail!(
+            "tape diff --judge: no `judge:` block found in .taperc \
+             (searched workspace ancestors of {} and $HOME). \
+             Add one like:\n\n  judge:\n    model: gpt-4o\n\n\
+             then set the API key env var named in `judge.api_key_env` \
+             (default OPENAI_API_KEY).",
+            cwd.display()
+        );
+    };
+
+    // 3. CLI override: `--judge <MODEL>` wins over `.taperc::judge.model`.
+    judge_config.model = model_override;
+
+    // 4. Construct the client. Surfaces a clean "env var not set"
+    //    error here rather than failing mid-narration on the first
+    //    HTTP request.
+    let max_input_chars = judge_config.max_input_chars;
+    let client = tape_judge::JudgeClient::new(judge_config)
+        .map_err(|e| anyhow::anyhow!("tape diff --judge: {e}"))?;
+
+    // 5. Narrate. The async work runs on a fresh single-thread
+    //    runtime — `tape diff` is otherwise sync, and the narration
+    //    path doesn't share any state with a wider tokio context.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut budget = tape_diff::narrate::Budget::new(budget);
+    rt.block_on(tape_diff::narrate::narrate_diff(
+        &mut diff,
+        &client,
+        max_input_chars,
+        &mut budget,
+    ))
+    .map_err(|e| anyhow::anyhow!("tape diff --judge: judge call failed: {e}"))?;
+
+    // 6. Render. JSON path serializes the `judge_calls[]` audit rows
+    //    via the `Diff` struct (AC6 — visible if the user redirects
+    //    to a file; cassettes themselves are untouched).
+    match format {
+        "json" => {
+            println!("{}", tape_diff::render_json(&diff));
+        }
+        _ => {
+            print!("{}", tape_diff::render_text(&diff, all));
+        }
+    }
+    Ok(())
+}
+
+/// Locate the workspace `.taperc` (walk from `cwd` up to `$HOME`), or
+/// fall back to `$HOME/.taperc`. Read it as YAML and parse only the
+/// `judge:` block. Returns `Ok(None)` when no file exists OR the file
+/// has no `judge:` block — same shape as `tape_judge::JudgeConfig::from_taperc_yaml`.
+fn load_judge_config(cwd: &std::path::Path) -> Result<Option<tape_judge::JudgeConfig>> {
+    let path = locate_taperc(cwd);
+    let Some(p) = path else {
+        return Ok(None);
+    };
+    let yaml =
+        std::fs::read_to_string(&p).map_err(|e| anyhow::anyhow!("read {}: {e}", p.display()))?;
+    tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+        .map_err(|e| anyhow::anyhow!("parse {}: {e}", p.display()))
+}
+
+/// Mirror of `tape_redact::config::TapeRcConfig::locate_workspace` +
+/// `locate_user`, kept local so we don't bend `tape-redact`'s public
+/// surface to leak a `.taperc` locator. If we ever add a third
+/// consumer, factor this into a shared `tape-config` crate.
+fn locate_taperc(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let mut current = Some(cwd.to_path_buf());
+    while let Some(dir) = current {
+        let candidate = dir.join(".taperc");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if home.as_deref() == Some(dir.as_path()) {
+            return None;
+        }
+        current = dir.parent().map(std::path::Path::to_path_buf);
+    }
+    let candidate = home?.join(".taperc");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Phase-1 of issue #105. Hand-managed `meta.recap` via three pairwise
