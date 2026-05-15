@@ -873,3 +873,120 @@ fn editor_combined_with_in_place_writes_through_to_input() {
         .unwrap();
     assert_eq!(annot.payload["note"], "composed via editor + in-place");
 }
+
+/// Issue #158 AC #6 / #8 / #9: the editor scratch file must be removed
+/// before `tape annotate` exits on every failure path. We point
+/// `TMPDIR` at a fresh dir, run each failure mode, and assert that no
+/// `tempfile`-named entry survives the run.
+///
+/// `tempfile::NamedTempFile`'s Drop is the only thing that performs the
+/// unlink, and `std::process::exit` skips destructors — so this test
+/// catches the regression where the editor helper called `exit(2)`
+/// directly from inside its own scope.
+fn assert_tmpdir_clean(tmpdir: &std::path::Path) {
+    let entries: Vec<_> = std::fs::read_dir(tmpdir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    // The mock editor script and its body file are expected residents;
+    // everything else means a tempfile leaked.
+    let leaked: Vec<_> = entries
+        .iter()
+        .filter(|n| {
+            let s = n.to_string_lossy();
+            s != "mock-editor.sh" && s != "mock-editor.body" && s != "input.tape"
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "editor scratch file lingered in TMPDIR: {leaked:?}"
+    );
+}
+
+fn run_annotate_with_editor_and_tmpdir(
+    binary: &std::path::Path,
+    args: &[&str],
+    editor: &std::path::Path,
+    tmpdir: &std::path::Path,
+) -> std::process::Output {
+    std::process::Command::new(binary)
+        .args(args)
+        .env_remove("VISUAL")
+        .env("EDITOR", editor.as_os_str())
+        .env("TMPDIR", tmpdir.as_os_str())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn editor_nonzero_exit_cleans_up_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp_for_editor = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let editor = make_mock_editor(tmp_for_editor.path(), b"unused\n", 1);
+
+    let out = run_annotate_with_editor_and_tmpdir(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            dir.path().join("out.tape").to_str().unwrap(),
+        ],
+        &editor,
+        tmp_for_editor.path(),
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_tmpdir_clean(tmp_for_editor.path());
+}
+
+#[test]
+fn editor_non_utf8_cleans_up_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp_for_editor = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let editor = make_mock_editor(tmp_for_editor.path(), &[0xFF, 0xFE, 0x00], 0);
+
+    let out = run_annotate_with_editor_and_tmpdir(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            dir.path().join("out.tape").to_str().unwrap(),
+        ],
+        &editor,
+        tmp_for_editor.path(),
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_tmpdir_clean(tmp_for_editor.path());
+}
+
+#[test]
+fn editor_oversized_cleans_up_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp_for_editor = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tape");
+    std::fs::copy(fixture("minimal-success.tape"), &input).unwrap();
+    let big = vec![b'x'; 17 * 1024];
+    let editor = make_mock_editor(tmp_for_editor.path(), &big, 0);
+
+    let out = run_annotate_with_editor_and_tmpdir(
+        &binary_path(),
+        &[
+            "annotate",
+            input.to_str().unwrap(),
+            "--editor",
+            "-o",
+            dir.path().join("out.tape").to_str().unwrap(),
+        ],
+        &editor,
+        tmp_for_editor.path(),
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_tmpdir_clean(tmp_for_editor.path());
+}
