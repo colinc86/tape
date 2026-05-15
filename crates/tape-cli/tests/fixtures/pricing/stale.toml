@@ -1,0 +1,13 @@
+# Pinned more than 90 days into the past so the stale-guard fires
+# deterministically regardless of when the test runs. 2024-01-01 is
+# safely outside the 90-day window through the v0.2.x line; any
+# future Engineer who refreshes this fixture should pick a date at
+# least 200 days before today rather than letting it drift up to
+# the threshold.
+last_updated = "2024-01-01"
+
+[[model]]
+vendor = "anthropic"
+model = "claude-opus-4-7"
+input_per_mtok = 15.00
+output_per_mtok = 75.00

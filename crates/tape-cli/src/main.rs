@@ -54,6 +54,16 @@ enum Cmd {
         /// #168.
         #[arg(long)]
         with_cost: bool,
+        /// Override the bundled pricing table with one loaded from
+        /// the given TOML file. Same schema as the bundled table
+        /// (`last_updated = "YYYY-MM-DD"` plus one or more
+        /// `[[model]]` rows with `vendor` / `model` / `input_per_mtok`
+        /// / `output_per_mtok`). Replace-not-merge: rows the file
+        /// omits land in the unpriced bucket for this invocation.
+        /// Stale-guard uses the file's `last_updated`. No effect
+        /// without `--with-cost`. Issue #181.
+        #[arg(long, value_name = "PATH")]
+        pricing_file: Option<std::path::PathBuf>,
     },
     /// Compare two tapes.
     Diff {
@@ -398,7 +408,8 @@ fn main() -> Result<()> {
             file,
             format,
             with_cost,
-        } => cmd_stats(&file, &format, with_cost),
+            pricing_file,
+        } => cmd_stats(&file, &format, with_cost, pricing_file.as_deref()),
         Cmd::Play {
             file,
             step,
@@ -2594,7 +2605,12 @@ fn cmd_ls(file: &std::path::Path) -> Result<()> {
 /// `load_tracks`), pull a redaction count out of the optional
 /// `redactions.json`, and hand off to `tape_play::render_stats`. No I/O
 /// beyond what `load_tracks` already does.
-fn cmd_stats(file: &std::path::Path, format: &str, with_cost: bool) -> Result<()> {
+fn cmd_stats(
+    file: &std::path::Path,
+    format: &str,
+    with_cost: bool,
+    pricing_file: Option<&std::path::Path>,
+) -> Result<()> {
     // Phase-3 of #31 (issue #168): `--with-cost` is text-only for now.
     // The JSON schema would need a `1.1` bump to add `cost_usd`, which
     // is the Phase-4 follow-on. Rejecting up front (before any output)
@@ -2602,6 +2618,17 @@ fn cmd_stats(file: &std::path::Path, format: &str, with_cost: bool) -> Result<()
     if with_cost && format == "json" {
         anyhow::bail!(
             "--with-cost is text-only in this release; JSON cost field lands in a follow-on (Phase 4 of issue #31)"
+        );
+    }
+    // Step-4 of #31 (issue #181): `--pricing-file` without
+    // `--with-cost` would silently load+validate a TOML file whose
+    // contents the run never consults. Soft-warn so the user notices
+    // the typo instead of debugging why their custom rates don't show
+    // up in the output — but still proceed (the bundled table path
+    // would have suppressed cost anyway, so this is informational).
+    if pricing_file.is_some() && !with_cost {
+        eprintln!(
+            "tape stats: --pricing-file has no effect without --with-cost (the cost column is suppressed)"
         );
     }
     let (raw, tracks) = load_tracks(file)?;
@@ -2616,14 +2643,39 @@ fn cmd_stats(file: &std::path::Path, format: &str, with_cost: bool) -> Result<()
             .and_then(|v| v.as_array().map(|a| a.len() as u64))
             .unwrap_or(0)
     });
+    // Resolve the pricing table. `render_stats` (no override) uses
+    // the bundled table internally; the `_with_pricing` path is
+    // exercised whenever `--pricing-file` is set, even when
+    // `--with-cost` is absent — in that case the table is loaded for
+    // its validation side effect (so `--pricing-file <bad>` still
+    // exits 2 even without `--with-cost`).
+    let pricing_table = match pricing_file {
+        Some(path) => match tape_play::pricing::PricingTable::load_from_file(path) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("tape stats: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
     match format {
         // Phase-1 byte-for-byte text. clap's value_parser already
         // rejects anything other than `text` / `json`, so a bare
         // `_` arm here would be dead code.
-        "text" => print!(
-            "{}",
-            tape_play::render_stats(&meta, &tracks, redactions_count, with_cost)
-        ),
+        "text" => {
+            let rendered = match pricing_table {
+                Some(t) => tape_play::render_stats_with_pricing(
+                    &meta,
+                    &tracks,
+                    redactions_count,
+                    with_cost,
+                    &t,
+                ),
+                None => tape_play::render_stats(&meta, &tracks, redactions_count, with_cost),
+            };
+            print!("{rendered}");
+        }
         "json" => {
             let value = tape_play::render_stats_json(&meta, &tracks, redactions_count);
             println!("{}", serde_json::to_string_pretty(&value)?);
