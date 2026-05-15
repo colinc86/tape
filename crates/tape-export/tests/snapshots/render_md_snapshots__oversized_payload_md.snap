@@ -1,0 +1,38 @@
+---
+source: crates/tape-export/tests/render_md_snapshots.rs
+assertion_line: 43
+expression: "render(\"oversized-payload.tape\")"
+---
+# Read a large log
+
+**Recorded:** 2026-05-06T10:00:00Z by `claude-code/2.1.4`
+**Outcome:** success
+**Tracks:** 3 (`task` ×1, `file_read` ×1, `eject` ×1)
+
+## Liner notes
+
+## What I was asked to do
+Investigate a fixture-grade scenario for testing.
+
+## What I found
+The investigation completed successfully.
+
+## Suggested next step / fix
+None — fixture is for verify-pass coverage.
+
+## What I'm uncertain about
+Nothing material.
+
+## Tracklist
+
+### 1. `task` · 2026-05-06T10:00:00Z
+
+> Read a large log
+
+### 2. `file_read` · 2026-05-06T10:00:10Z
+
+`/var/log/app.log`
+
+### 3. `eject` · 2026-05-06T10:00:30Z
+
+Outcome: `success`

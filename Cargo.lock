@@ -1457,6 +1457,7 @@ dependencies = [
  "clap",
  "serde_json",
  "tape-diff",
+ "tape-export",
  "tape-format",
  "tape-judge",
  "tape-mcp",
@@ -1482,6 +1483,16 @@ dependencies = [
  "tape-judge",
  "tape-play",
  "tokio",
+]
+
+[[package]]
+name = "tape-export"
+version = "0.1.2"
+dependencies = [
+ "insta",
+ "serde_json",
+ "tape-format",
+ "thiserror",
 ]
 
 [[package]]
