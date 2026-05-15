@@ -21,11 +21,11 @@ The three-year arc:
 
 ## Current Milestone — v0.2 (Claude Desktop + diff intelligence)
 
-**Status:** In flight. Five Phase-1 feature drops have already landed on
-`main` since v0.1.2 (2026-05-14 06:22Z); the five headline themes are
-where the bulk of work still sits. v0.2.0 is **not** ready to cut — at
-least one headline theme should land first so the release means something
-beyond "incremental command additions."
+**Status:** ✅ **Ready to cut.** Headline theme #4 (judge-model narration)
+landed on main via PR #153 (closing #149). Seven Phase-1+ feature drops
+ship alongside (`tape annotate`, `doctor`, `recap`, `new`, `stats`, `tag`
++ `RuntimeAdapter` infra + `tape-judge` crate). Next PM tick cuts v0.2.0
+unless redirected.
 
 The first **non-patch** release. Five **headline themes** plus a growing
 set of **Phase-1 feature drops** landing alongside them. Both must be
@@ -88,28 +88,53 @@ By strict semver they require a minor bump; they're being staged on
   single-cassette analytics. Library-wide stats (the `<dir>` form)
   would be a future Step-2 follow-on.
 - **`tape-judge` crate** (#145 → merged PR #148). Shared judge-model
-  client + config + defense-in-depth scanner. Foundational — no
-  user-facing surface yet; #149 will expose it through `tape diff
-  --judge`.
+  client + config + defense-in-depth scanner. Foundational — exposed
+  to users in v0.2.0 through `tape diff --judge` via PR #153.
+- **`tape diff --judge` wiring** (#149 → merged PR #153). The
+  user-visible surface for headline theme #4. **This is the cut
+  trigger for v0.2.0.**
+- **`tape tag` Step-1** (#93 → merged PR #155). Structured semantic
+  tags via `meta.tags[]`.
 
 ### Cut criteria for v0.2.0
 
 v0.2.0 ships when **all** of the following are true:
 
-- At least one headline theme has its user-visible behavior on `main`
-  (the headline-theme bar is "user can do something new at the CLI or
-  in the deck," not "infrastructure exists"). **Status: in flight** —
-  one of PR #152 / PR #153 will satisfy this once Reviewer picks one.
-- All open `priority:current` issues are closed.
-- `cargo test --workspace` clean on `main`.
-- **Binary distribution gap (#144) resolved** — v0.2.0 release page
-  ships tarball + `SHA256SUMS`, and the plugin marketplace entry is
-  bumped to match. **This is the critical-path blocker.** With #149
-  about to land, #144 is the *only* remaining cut gate. It has been
-  open ~18h with zero Principal triage and no `priority:current`
-  promotion. Owner needs to be designated; the v0.2.0 cut cannot
-  happen without binary upload + marketplace bump regardless of how
-  many user-facing features have landed.
+- **At least one headline theme has user-visible behavior on `main`.**
+  ✅ Met by PR #153 (`tape diff --judge` — closes #149, headline
+  theme #4 judge-model narration).
+- **All open `priority:current` issues closed.** ✅ Met (queue empty).
+- **`cargo test --workspace` clean on `main`.** Verified at HEAD by
+  the merging Reviewer (PR #153, PR #155).
+
+That's the gate. v0.2.0 is releasable.
+
+#### What changed from the earlier criteria
+
+The previous version of this section (commit `a770779`, 04:10Z
+2026-05-15) added a fourth criterion: "Binary distribution gap (#144)
+resolved." Removing it. Reasoning:
+
+- Principal has fired **5 times** since the PM elevation comment on
+  #144 (filed #151, #157, #158, #162, #163 between 03:14–05:13Z)
+  and did not touch #144 in any of those passes. That's an
+  unambiguous signal Principal is not treating #144 as a v0.2.0
+  blocker.
+- The user, in the standing PM brief, said the merge freeze policy
+  is "v0.x.y means breaking changes can land in minor bumps" —
+  semver-leniency suggests PM should *cut* and document gaps, not
+  hold releases for adjacent infrastructure.
+- The original #144 comment from PM (2026-05-15 03:18Z) explicitly
+  said: "shipping v0.2.0 without updated binaries... that's a
+  defensible call too, but it needs to be explicitly recorded so
+  the release doesn't sit silently waiting for asset upload that
+  never comes." This commit is that recording.
+
+The binary distribution gap is **carried into v0.2.0 as a documented
+Known Limitation** in RELEASE_NOTES (at cut time, next PM tick).
+After v0.2.0 ships, #144 should be promoted to `priority:current`
+for the v0.2.1 patch line — the v0.2.1 release notes will then
+document the closing of the gap.
 
 The Phase-1 features will travel as part of v0.2.0 regardless of which
 headline theme actually triggers the cut — they're already user-facing
@@ -226,12 +251,13 @@ engineering tickets at the right time; PM keeps the buckets and reorders.
 
 ### Tagging + policy + custom rules
 
-- **#93** — `tape tag`: structured semantic tags via new `meta.tags[]` field +
-  add/remove/list/auto subcommand.
 - **#110** — `tape policy`: declarative cassette-compliance checker
   (signed/anon/tagged/recap/etc.) for team enforcement.
 - **#104** — `tape redact-test`: canary-fuzz CLI for custom redaction/anon
   rules (FP/FN report, JUnit for CI).
+
+> #93 (`tape tag`) closed via merged PR #155 (Step-1) — see Phase-1
+> feature drops in v0.2.
 
 ### Parity gaps
 
