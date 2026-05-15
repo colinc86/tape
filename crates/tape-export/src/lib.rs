@@ -171,7 +171,7 @@ fn kind_name(k: Kind) -> &'static str {
 
 /// `kind ×N` histogram in `tape ls` order, omitting zero counts. The
 /// fixed ordering keeps the rendered string deterministic across
-/// HashMap iteration whims and makes snapshot tests robust.
+/// `HashMap` iteration whims and makes snapshot tests robust.
 fn kind_histogram(tracks: &[Track]) -> String {
     let mut h = [0u64; 8];
     for t in tracks {
@@ -433,6 +433,7 @@ mod tests {
             recap: None,
             recaps: vec![],
             new_block: None,
+            tags: vec![],
         }
     }
 
