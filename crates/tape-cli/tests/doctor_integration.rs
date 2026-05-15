@@ -153,7 +153,14 @@ fn known_good_environment_exits_zero() {
         "doctor should exit 0 on a clean install. stdout:\n{s}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(s.contains("11 pass"), "expected 11 passes; got:\n{s}");
+    assert!(
+        s.contains("12 pass"),
+        "expected 12 passes (11 baseline + #177 pricing.table.fresh); got:\n{s}"
+    );
+    assert!(
+        s.contains("[OK] pricing.table.fresh"),
+        "pricing.table.fresh must render as [OK]:\n{s}"
+    );
     assert!(s.contains("0 fail"));
     assert!(s.contains("exit 0"));
 }
@@ -293,8 +300,8 @@ fn list_checks_is_stable() {
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(
         lines.len(),
-        14,
-        "doctor catalog has 14 checks (phase 1 + #163 claude-code + #166 signing); got {}:\n{s}",
+        15,
+        "doctor catalog has 15 checks (phase 1 + #163 claude-code + #166 signing + #177 pricing); got {}:\n{s}",
         lines.len()
     );
 
@@ -326,6 +333,7 @@ fn list_checks_is_stable() {
             "signing.keystore.readable",
             "signing.keystore.perms",
             "signing.trust_store.readable",
+            "pricing.table.fresh",
         ]
     );
 }
@@ -354,6 +362,26 @@ fn exclude_filter_drops_category() {
     assert!(!s.contains("binary.tape.present"));
     assert!(s.contains("config.user_taperc.parses"));
     assert!(s.contains("permissions.tmpdir.writable"));
+}
+
+#[test]
+fn doctor_include_pricing_runs_only_that_check() {
+    // Step-4 of #81 (issue #177): `--include pricing` narrows to the
+    // single new check. The bundled pricing table is compiled in, so
+    // this test does not depend on synthetic env state — just the
+    // version of the binary under test. Exit 0 (the check passes on a
+    // freshly-shipped binary, warns once it ages past 90 days; both
+    // are exit 0 without --strict).
+    let env = DoctorEnv::new();
+    env.install_all_shims();
+    env.enable_claude_dir();
+    let out = env.doctor(&["--include", "pricing"]);
+    let s = stdout(&out);
+    assert!(out.status.success(), "stdout:\n{s}");
+    assert!(s.contains("pricing.table.fresh"), "stdout:\n{s}");
+    assert!(!s.contains("binary.tape.present"));
+    assert!(!s.contains("config.user_taperc.parses"));
+    assert!(!s.contains("signing.keystore.readable"));
 }
 
 #[test]

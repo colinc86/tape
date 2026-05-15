@@ -4,4 +4,5 @@ pub mod binary;
 pub mod claude_code;
 pub mod config;
 pub mod permissions;
+pub mod pricing;
 pub mod signing;

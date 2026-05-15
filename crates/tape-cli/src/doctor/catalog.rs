@@ -33,6 +33,10 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
         Box::new(checks::signing::KeystoreReadable),
         Box::new(checks::signing::KeystorePerms),
         Box::new(checks::signing::TrustStoreReadable),
+        // Step-4 of #81 (issue #177): bundled-pricing-table freshness.
+        // One `Warn`-severity check, real-not-`Na` from day one since
+        // the pricing table is compiled into the binary.
+        Box::new(checks::pricing::TableFresh),
     ]
 }
 
@@ -41,5 +45,11 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
 /// even when no checks land in that category in this phase. Name is
 /// grandfathered from Phase 1; functions as a phase-agnostic display
 /// order today.
-pub const PHASE_1_CATEGORIES: &[&str] =
-    &["binary", "config", "permissions", "claude-code", "signing"];
+pub const PHASE_1_CATEGORIES: &[&str] = &[
+    "binary",
+    "config",
+    "permissions",
+    "claude-code",
+    "signing",
+    "pricing",
+];
