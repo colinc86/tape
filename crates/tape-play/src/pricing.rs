@@ -18,7 +18,7 @@
 use serde_json::Value;
 
 /// One row in the bundled pricing table. Per-million-token rates in
-/// USD; matches the OpenAI / Anthropic list-pricing format every
+/// USD; matches the `OpenAI` / `Anthropic` list-pricing format every
 /// vendor uses. Cache-read / cache-write dimensions are deliberately
 /// absent for this slice — they land with the per-model breakdown.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,6 +100,10 @@ pub fn price_event(payload: &Value) -> Option<(&'static str, &'static str, f64)>
     let tokens_in = payload.get("tokens_in").and_then(Value::as_u64)?;
     let tokens_out = payload.get("tokens_out").and_then(Value::as_u64)?;
     let price = lookup_price(vendor, model)?;
+    // `tokens_in` / `tokens_out` are `u64`; in practice they stay well
+    // under `2^53` (a single trillion-token call would still fit
+    // losslessly), so `as f64` precision loss is not reachable here.
+    #[allow(clippy::cast_precision_loss)]
     let dollars = ((tokens_in as f64) * price.input_per_mtok
         + (tokens_out as f64) * price.output_per_mtok)
         / 1_000_000.0;
