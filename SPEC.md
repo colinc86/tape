@@ -99,9 +99,23 @@ redaction_summary:                 # REQUIRED iff redactions.json exists
 label: "investigating-payments-bug"  # OPTIONAL — caller-supplied tag for
                                      # filing / categorising cassettes.
                                      # `tape record --label X` writes it.
+tags:                                # OPTIONAL — multi-valued facet labels.
+  - bug-fix                          #   Each entry MUST be a non-empty
+  - auth                             #   string. Recommended convention is
+  - regression-baseline              #   lowercase kebab-case (not enforced
+                                     #   in this revision). Empty list and
+                                     #   field-absent are equivalent; writers
+                                     #   SHOULD omit the field when the list
+                                     #   would be empty. Distinct from
+                                     #   `label` — tags compose, label is a
+                                     #   single grouping string.
+                                     #   `tape tag --add` / `--remove`
+                                     #   manages this list post-hoc.
 ```
 
 If `redaction_summary` is present, `redactions.json` MUST exist, and the count and rule list MUST agree (same set of rule_ids; total entry count equals `redaction_count`).
+
+`tags` is a SET in list shape: the on-disk representation MUST NOT contain duplicate entries. Writers SHOULD preserve insertion order for diff legibility; readers MUST NOT assume any specific order. Length / count caps and a stable diagnostic-code surface for malformed `tags` arrive in a follow-up to this revision.
 
 ### 3.3 Forbidden content
 

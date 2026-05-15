@@ -171,6 +171,48 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Manage `meta.tags[]` — orthogonal multi-valued facet labels for
+    /// filing, search, and CI gates.
+    ///
+    /// Step-1 vertical slice of issue #93: hand-managed tags via
+    /// `--add` / `--remove` / `--list`. The `--auto`, closed-vocabulary
+    /// (`--verify`), audit-trail (`meta.taggings[]`), `.taperc::tag:`
+    /// section, count/length cap diagnostics, and plugin slash commands
+    /// are deferred to Steps 2–5 as separate follow-ons.
+    Tag {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Add a tag to `meta.tags[]`. Repeatable. Idempotent — adding a
+        /// tag that already exists is a silent no-op. Composes with
+        /// `--remove`. Mutually exclusive with `--list`.
+        #[arg(long, conflicts_with_all = ["list"])]
+        add: Vec<String>,
+        /// Remove a tag from `meta.tags[]`. Repeatable. Removing an
+        /// absent tag is a silent no-op. Composes with `--add`.
+        /// Mutually exclusive with `--list`.
+        #[arg(long, conflicts_with_all = ["list"])]
+        remove: Vec<String>,
+        /// Print `meta.tags[]` one entry per line on stdout and exit.
+        /// Read-only — no output cassette is written. Mutually exclusive
+        /// with `--add` / `--remove` / `--in-place` / `--dry-run`.
+        #[arg(long, conflicts_with_all = ["add", "remove", "in_place", "dry_run"])]
+        list: bool,
+        /// Print the would-be diff (added / removed) and the resulting
+        /// tag list, then exit 4. Does NOT write an output cassette.
+        /// Mutually exclusive with `--list`.
+        #[arg(long, conflicts_with_all = ["list"])]
+        dry_run: bool,
+        /// Atomic rewrite of the input cassette in place (temp + rename
+        /// via the same path the writer would have used for `-o`).
+        /// Mutually exclusive with `-o` and `--list`.
+        #[arg(long, conflicts_with_all = ["out", "list"])]
+        in_place: bool,
+        /// Output path. Default: `<basename>.tagged.tape` next to the
+        /// input. Refuses if equal to the input path unless `--in-place`
+        /// is set (in which case use `--in-place`, not `-o <input>`).
+        #[arg(short = 'o', long, conflicts_with_all = ["in_place"])]
+        out: Option<std::path::PathBuf>,
+    },
     /// Append an annotation to an existing tape, writing a new cassette.
     ///
     /// Phase-1 CLI counterpart to the deck's `tape.annotate` tool. See
@@ -295,6 +337,15 @@ fn main() -> Result<()> {
             list,
             out,
         } => cmd_recap(&file, set, clear, list, out),
+        Cmd::Tag {
+            file,
+            add,
+            remove,
+            list,
+            dry_run,
+            in_place,
+            out,
+        } => cmd_tag(&file, add, remove, list, dry_run, in_place, out),
         Cmd::Annotate {
             file,
             note,
@@ -629,6 +680,7 @@ fn cmd_new(
         label: None,
         recap: None,
         recaps: vec![],
+        tags: vec![],
         new_block: Some(tape_format::meta::NewBlock {
             template_id: "minimal".into(),
             template_version: templates::MINIMAL_VERSION.into(),
@@ -856,6 +908,215 @@ fn cmd_recap(
     let action_label = if set.is_some() { "set" } else { "cleared" };
     println!("ok: {action_label} recap on {}", out_path.display());
     Ok(())
+}
+
+/// Step-1 of issue #93. Hand-managed `meta.tags[]` via `--add` /
+/// `--remove` / `--list`. Same zip-rewrite strategy `cmd_recap` uses —
+/// no eject pipeline, no audit trail (Step 2), no caps / closed-vocab
+/// enforcement (Steps 2 & 3), no judge-model auto mode (Step 4). Set
+/// semantics are enforced at the CLI: re-adding an existing tag or
+/// removing an absent one is a no-op, and an invocation that produces
+/// no net change skips the write entirely (TAG_NO_CHANGE on stderr).
+///
+/// `--in-place` reuses `PendingTape::write_to`'s built-in temp-file +
+/// atomic rename, so the input is never observably half-written.
+#[allow(clippy::too_many_arguments)]
+fn cmd_tag(
+    file: &std::path::Path,
+    add: Vec<String>,
+    remove: Vec<String>,
+    list: bool,
+    dry_run: bool,
+    in_place: bool,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // 1. `--list` is read-only — no validation of add/remove flags
+    //    (clap's conflicts_with_all keeps them out), no output-path
+    //    resolution. Empty list prints nothing and exits 0 (vs recap's
+    //    exit-4-on-absent, which fits recap's semantics but not a
+    //    plural-by-default field).
+    if list {
+        let raw = open_input(file, "tape tag");
+        let meta = parse_meta(&raw, "tape tag");
+        for tag in &meta.tags {
+            println!("{tag}");
+        }
+        return Ok(());
+    }
+
+    // 2. At-least-one-mode check. Without --add or --remove there is
+    //    nothing to do, and silently exiting 0 would hide a typo.
+    if add.is_empty() && remove.is_empty() {
+        eprintln!("tape tag: one of --add <tag>, --remove <tag>, --list is required");
+        std::process::exit(2);
+    }
+
+    // 3. Validate each --add value. Empty strings make no sense as
+    //    facet labels and would round-trip indistinguishable from
+    //    "no tag" in any consumer; reject at the boundary. Length /
+    //    character-class caps are Step 2.
+    for t in &add {
+        if t.is_empty() {
+            eprintln!("tape tag: --add tag must be non-empty");
+            std::process::exit(2);
+        }
+    }
+    for t in &remove {
+        if t.is_empty() {
+            eprintln!("tape tag: --remove tag must be non-empty");
+            std::process::exit(2);
+        }
+    }
+
+    // 4. Resolve the output path. `--in-place` short-circuits to the
+    //    input path (`PendingTape::write_to` does the temp + rename).
+    let out_path = if in_place {
+        file.to_path_buf()
+    } else if let Some(p) = out {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.tagged.tape"))
+    };
+    if !in_place && same_path(file, &out_path) {
+        eprintln!("tape tag: --out must differ from <file> (use --in-place for atomic rewrite)");
+        std::process::exit(2);
+    }
+
+    // 5. Load the input and compute the new tag set + diff. Existing
+    //    order is preserved for unchanged entries; new entries append
+    //    in argv order. Set semantics: duplicates collapse silently.
+    let raw = open_input(file, "tape tag");
+    let mut meta = parse_meta(&raw, "tape tag");
+    let prior: Vec<String> = meta.tags.clone();
+    let remove_set: std::collections::HashSet<&str> = remove.iter().map(String::as_str).collect();
+
+    let mut next: Vec<String> = prior
+        .iter()
+        .filter(|t| !remove_set.contains(t.as_str()))
+        .cloned()
+        .collect();
+    let next_set_during: std::collections::HashSet<String> = next.iter().cloned().collect();
+    let mut added_diff: Vec<String> = Vec::new();
+    let mut seen_new = next_set_during;
+    for t in &add {
+        if seen_new.contains(t) {
+            continue;
+        }
+        next.push(t.clone());
+        added_diff.push(t.clone());
+        seen_new.insert(t.clone());
+    }
+    let removed_diff: Vec<String> = prior
+        .iter()
+        .filter(|t| remove_set.contains(t.as_str()))
+        .cloned()
+        .collect();
+
+    // 6. `--dry-run` prints the diff and exits 4 without touching disk.
+    //    Treat empty diff the same way --dry-run on a no-op should: print
+    //    the (empty) diff plus a note, exit 4.
+    if dry_run {
+        print_tag_diff(&prior, &next, &added_diff, &removed_diff);
+        std::process::exit(4);
+    }
+
+    // 7. No-op suppression. If the diff is empty (every --add was a
+    //    duplicate, every --remove was absent), exit 0 without writing.
+    if added_diff.is_empty() && removed_diff.is_empty() {
+        eprintln!("tape tag: TAG_NO_CHANGE — no tags added or removed");
+        // Print the unchanged list for confirmation (mirrors --list).
+        for t in &prior {
+            println!("{t}");
+        }
+        return Ok(());
+    }
+
+    // 8. Apply and write. Re-uses `cmd_recap`'s zip-rewrite path
+    //    (everything but meta.yaml passes through byte-identical).
+    meta.tags = next;
+    let new_meta_yaml = meta
+        .to_yaml()
+        .map_err(|e| anyhow::anyhow!("re-serialize meta.yaml: {e}"))?;
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml: new_meta_yaml,
+        liner_md: raw.liner_md.clone().unwrap_or_default(),
+        tracks_jsonl: raw.tracks_jsonl.clone().unwrap_or_default(),
+        redactions_json: raw.redactions_json.clone(),
+        artifacts: raw.artifacts.clone().into_iter().collect(),
+    };
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(&out_path)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    // 9. Post-write verify. `LEAKED_SECRET_IN_META` (SPEC §10.5) is the
+    //    backstop that catches a secret-shaped tag value in Step 1, the
+    //    way `cmd_recap` relies on it for `--set` text. Step-2 work will
+    //    add a pre-write scan + the dedicated `TAG_LEAK` code, at which
+    //    point this gate becomes belt-and-suspenders. On regression:
+    //    remove the corrupt output and exit 3.
+    let written = tape_format::reader::RawTape::open(&out_path)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let _ = std::fs::remove_file(&out_path);
+        // Reconstruct the input path if --in-place obliterated it (the
+        // post-rename file is gone; the caller can re-create from the
+        // original copy they're presumably keeping under VCS).
+        if in_place {
+            // The atomic rename already replaced the input. Removing
+            // the failed write leaves no cassette on disk; warn the
+            // caller loudly so they know to restore.
+            eprintln!(
+                "tape tag: --in-place output failed tape verify; the input was \
+                 already replaced and has been removed. Restore from backup."
+            );
+        }
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        eprintln!(
+            "tape tag: output failed tape verify ({}); removed {}",
+            codes.join(","),
+            out_path.display()
+        );
+        std::process::exit(3);
+    }
+
+    // 10. Success summary. Single-line stdout for scripting; verbose
+    //     details land on stderr so `--list`-style stdout piping stays
+    //     clean.
+    eprintln!(
+        "tape tag: +{} -{} on {}",
+        added_diff.len(),
+        removed_diff.len(),
+        out_path.display()
+    );
+    println!("ok: tagged {}", out_path.display());
+    Ok(())
+}
+
+/// Pretty-print a `--dry-run` diff. Distinct from the success path so
+/// the format can evolve without affecting the write path. Read by tests
+/// against stdout, so keep the order stable.
+fn print_tag_diff(prior: &[String], next: &[String], added: &[String], removed: &[String]) {
+    println!("prior: [{}]", prior.join(", "));
+    println!("next:  [{}]", next.join(", "));
+    if !added.is_empty() {
+        println!("added: {}", added.join(", "));
+    }
+    if !removed.is_empty() {
+        println!("removed: {}", removed.join(", "));
+    }
+    if added.is_empty() && removed.is_empty() {
+        println!("(no change)");
+    }
 }
 
 /// Wrap `RawTape::open` with a CLI-facing exit-2 on failure. Used by
