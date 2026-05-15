@@ -25,6 +25,14 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
         // (which is also deferred).
         Box::new(checks::claude_code::ClaudeInstalled),
         Box::new(checks::claude_code::ClaudePluginEnabled),
+        // Step-3 of #81 (issue #166): signing keystore + trust-store
+        // checks. All three are `Warn`-severity soft-dependencies; the
+        // exit code never escalates without `--strict` (deferred).
+        // Each surfaces `Na` until #18 (`tape sign`) lands a real
+        // keystore.
+        Box::new(checks::signing::KeystoreReadable),
+        Box::new(checks::signing::KeystorePerms),
+        Box::new(checks::signing::TrustStoreReadable),
     ]
 }
 
@@ -33,4 +41,5 @@ pub fn phase_1_checks() -> Vec<Box<dyn Check>> {
 /// even when no checks land in that category in this phase. Name is
 /// grandfathered from Phase 1; functions as a phase-agnostic display
 /// order today.
-pub const PHASE_1_CATEGORIES: &[&str] = &["binary", "config", "permissions", "claude-code"];
+pub const PHASE_1_CATEGORIES: &[&str] =
+    &["binary", "config", "permissions", "claude-code", "signing"];
