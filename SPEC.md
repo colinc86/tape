@@ -587,3 +587,25 @@ The following are explicitly reserved and MUST NOT appear in `tape/v0` writes:
 ---
 
 *End of `tape/v0` specification.*
+
+
+## tape encrypt / tape decrypt: age-based confidentiality
+
+### Overview
+`tape encrypt` and `tape decrypt` provide age-based confidentiality, orthogonal to `tape sign`.
+
+### Commands
+- `tape encrypt --recipient age1q... cassette.tape` - Encrypt for recipient
+- `tape decrypt cassette.tape.age` - Decrypt with local identity
+- `tape encrypt --passphrase cassette.tape` - Passphrase-based
+
+### Design
+1. Orthogonal to signing
+2. Age format for modern encryption
+3. Streaming support for large files
+4. Compatible with age ecosystem
+
+### Implementation
+- Uses `age` crate
+- Keys stored in `~/.tape/keys/`
+- `.age` extension for encrypted output
