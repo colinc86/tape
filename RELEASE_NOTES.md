@@ -4,6 +4,165 @@ A cassette tape for agent runs. Record once, replay anywhere, share as a file.
 
 ---
 
+## v0.2.0 — 2026-05-15 — Judge-model narration + nine new commands
+
+The first minor bump since v0.1 — and the first non-patch release. v0.1.x
+was the format-and-spec phase: ship the file layout, harden the verify
+gate, fix every audit finding. v0.2 is the **agent-experience** phase:
+the headline feature is judge-model narration on `tape diff`, and around
+it a layer of new CLI subcommands that make a cassette do useful work
+without ever opening the deck.
+
+No format changes. Every `.tape` produced by v0.1.0/v0.1.1/v0.1.2 remains
+a valid `tape/v0` cassette readable by v0.2.0, byte-for-byte. The bump
+is minor (not patch) because eleven new user-facing surfaces ship at
+once — semver requires a minor for that.
+
+### Headline theme — judge-model narration
+
+`tape diff --judge` now narrates the substantive differences between two
+cassettes as short, model-written paragraphs instead of just listing
+classified diff entries. The narration is grounded in the actual aligned
+steps, scanned through the same defense-in-depth redaction pipeline the
+eject path uses, and gated behind an explicit `--judge` flag (no surprise
+network calls).
+
+- **New crate `tape-judge`** (#148 → PR closing #145). The shared
+  judge-model client: provider config, request/response shape,
+  retry/timeout policy, and the defense-in-depth scanner that
+  re-redacts every model output before it reaches the user. Every
+  v0.2+ feature that calls a model goes through this crate.
+- **`tape diff --judge` wiring** (#149 → #153). The user-visible
+  surface. The flag was previously accepted by clap and silently
+  ignored (#62) then rejected with a clear error (v0.1.2 via #64);
+  v0.2.0 finally implements it.
+- **`tape recap --auto`** is the second consumer of the judge
+  infrastructure (Phase-2 work in flight as of cut; see Known
+  Limitations).
+- **`tape relinernote`** likewise — Phase-1 PR open at cut; will
+  ship in v0.2.1.
+
+### New CLI subcommands
+
+Nine first-class user-visible commands ship in v0.2.0:
+
+- **`tape doctor`** (#81 → #140) — install-surface diagnostic with
+  pass/warn/fail report. Phase-1 covers the binary install. Phase-2
+  added a `claude-code` category (#163 → #164) that checks the
+  Claude Code plugin install and `enabled` state. Reduces onboarding
+  pain as the runtime list grows.
+- **`tape annotate`** (#74 → #141) — CLI counterpart to the MCP
+  `tape.annotate` deck tool. Closes a long-standing parity gap.
+- **`tape recap`** (#105 → #142) — 1–2 sentence regenerable summary
+  for paste-into-Slack/Linear/Jira/PR contexts. The Phase-1 ships
+  with a manual `--summary` flag; the `--auto` judge-driven variant
+  is Phase-2 (open PR #154 at cut).
+- **`tape new`** (#99 → #146) — cassette generator with bundled
+  templates. The `cargo new` for `.tape` files. Phase-1 ships an
+  empty template; Phase-2 (#162) bundles named templates
+  (`test-fixture`, `bug-investigation`).
+- **`tape stats <file>`** (#31 → #147) — single-cassette analytics
+  (track counts by kind, byte sizes, time deltas). Phase-2 adds
+  `--format json` with a pinned `schema_version: 1.0` (#157 → #160)
+  so CI scripts can consume the output without breaking on layout
+  changes.
+- **`tape tag`** (#93 → #155) — structured semantic tags via the new
+  `meta.tags[]` field. Step-1 ships the `add` / `list` / `remove`
+  subcommands; auto-tagging is a future Step-2.
+
+### Infrastructure
+
+Two pieces of internal scaffolding land in v0.2.0. Neither has a
+user-facing surface yet, but both are the gating prerequisites for
+v0.3 themes:
+
+- **`RuntimeAdapter` trait + `ClaudeCodeAdapter`** (#106 → #143).
+  The recording subsystem is now generic over runtime. v0.1.x had
+  Claude Code hardcoded; v0.2.0 extracts the runtime-specific bits
+  (transcript discovery, event conversion, hook dispatch) behind a
+  trait. `ClaudeCodeAdapter` is the first concrete impl. The
+  **Claude Desktop adapter** (originally framed as v0.2 headline
+  theme #1) lands when a second concrete impl is written; that's
+  v0.2.1 or v0.3 work depending on Principal's call.
+- **`tape-judge` crate** — see Headline theme.
+
+### Format compatibility
+
+Zero changes to `tape/v0`. SPEC.md is unchanged from v0.1.2. Every
+fixture in `tests/fixtures/` continues to verify identically. Plugin
+marketplace consumers don't need to update existing tapes.
+
+The `meta.tags[]` field (introduced by #155) is optional and defaulted
+to an empty array on read, so older v0.1.x cassettes parse cleanly.
+
+### Workflow changes (no user impact)
+
+Internal to the maintainer team: `priority:current` / `:next` /
+`:later` and `needs-review` / `in-review` / `changes-requested` /
+`approved` / `blocked` are now the canonical issue and PR workflow
+labels (#118 / #126). v0.1.2's release notes mentioned this; v0.2.0
+is the first release tagged under the full discipline.
+
+### Known limitations carried into v0.2.0
+
+Each of these has a tracking issue or open PR and is in scope for v0.2.1.
+
+- **Binary distribution gap (#144)** — v0.2.0's GitHub release page
+  ships **no tarball** and **no SHA256SUMS**. The README's `curl`
+  install path continues to point at the v0.1.0 tarball. The plugin
+  marketplace bundles v0.1-era binaries. v0.2.0 is therefore
+  source-build-only; users who want the new commands need
+  `cargo build --release` from the `v0.2.0` tag.
+
+  This is on the record as a v0.2.0 limitation — the binary pipeline
+  is the v0.2.1 priority:current target. ROADMAP commit `dc87494`
+  documents PM's decision to ship v0.2.0 without binary assets after
+  Principal explicitly skipped triage of #144 across five
+  consecutive firings.
+
+- **Claude Desktop adapter (v0.2 headline theme #1)** — the
+  runtime-adapter framework landed (`RuntimeAdapter` trait +
+  `ClaudeCodeAdapter`), but no second concrete adapter has been
+  written yet. v0.2 was originally scoped as "Claude Code +
+  Claude Desktop"; v0.2.0 ships with infrastructure in place and
+  the second runtime deferred.
+
+- **Interactive eject prompt (v0.2 headline theme #2)** — not
+  started. No issue filed yet. v0.2.x follow-on.
+
+- **Embedding-based diff alignment (v0.2 headline theme #3)** — not
+  started. The Needleman-Wunsch alignment on step-intent embeddings
+  is the v0.2.x follow-on. v0.2.0 still uses the v0.1 LCS aligner.
+
+- **Liner-notes-at-eject (v0.2 headline theme #5)** — not started
+  in production. PR #159 (`tape relinernote`) is a relate-but-not-
+  identical command (regenerate liner notes for an already-ejected
+  tape) and is open at cut.
+
+- **Phase-2 PRs in flight at cut** — `tape recap --auto` (#154),
+  `tape export --format md` (#156), `tape relinernote` (#159), and
+  `tape new` bundled templates (#165) are all open `needs-review`
+  or `changes-requested` as of the cut SHA. These ship in v0.2.1.
+
+### Repository layout (unchanged)
+
+Same as v0.1.2 plus one new workspace crate:
+
+```
+crates/
+├── tape-cli/             CLI binary `tape`
+├── tape-format/          format read/write/verify
+├── tape-record/          recording subsystem + runtime adapter trait
+├── tape-mcp-wrap/        JSON-RPC tee binary
+├── tape-redact/          redaction engine
+├── tape-play/            ls/play rendering
+├── tape-diff/            three-pass diff
+├── tape-mcp/             the deck — MCP server
+└── tape-judge/           [NEW in v0.2.0] shared judge-model client
+```
+
+---
+
 ## v0.1.2 — 2026-05-14 — Spec-compliance rollup
 
 A pure bug-fix release. v0.1.1 closed twenty findings from a three-agent

@@ -6,7 +6,7 @@
 
 ![format: tape/v0](https://img.shields.io/badge/format-tape%2Fv0-purple)
 ![runtime: claude code](https://img.shields.io/badge/runtime-claude%20code-orange)
-![status: v0.1.2](https://img.shields.io/badge/status-v0.1.2-blue)
+![status: v0.2.0](https://img.shields.io/badge/status-v0.2.0-blue)
 ![tests: 106](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![license: apache 2.0](https://img.shields.io/badge/license-apache%202.0-lightgrey)
 
