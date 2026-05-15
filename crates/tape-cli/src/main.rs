@@ -34,9 +34,19 @@ enum Cmd {
     },
     /// One-line-per-track listing.
     Ls { file: std::path::PathBuf },
-    /// Read-only analytics over a single cassette. Phase-1 of #31:
-    /// no JSON, no library/compare, no pricing — those are Phases 2+.
-    Stats { file: std::path::PathBuf },
+    /// Read-only analytics over a single cassette. Phase-2 of #31:
+    /// adds `--format json` with a pinned `schema_version` so CI /
+    /// dashboards / scripts can pin against a stable wire shape.
+    /// Library/compare and pricing remain Phase-3+ work.
+    Stats {
+        file: std::path::PathBuf,
+        /// Output format. `text` (default) preserves Phase-1
+        /// byte-for-byte; `json` emits the pinned `schema_version
+        /// 1.0` shape from issue #157, pretty-printed with a trailing
+        /// newline (matches `tape verify --json`'s convention).
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
     /// Compare two tapes.
     Diff {
         a: std::path::PathBuf,
@@ -210,7 +220,7 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Verify { file, json } => cmd_verify(&file, json),
         Cmd::Ls { file } => cmd_ls(&file),
-        Cmd::Stats { file } => cmd_stats(&file),
+        Cmd::Stats { file, format } => cmd_stats(&file, &format),
         Cmd::Play {
             file,
             step,
@@ -1096,7 +1106,7 @@ fn cmd_ls(file: &std::path::Path) -> Result<()> {
 /// `load_tracks`), pull a redaction count out of the optional
 /// `redactions.json`, and hand off to `tape_play::render_stats`. No I/O
 /// beyond what `load_tracks` already does.
-fn cmd_stats(file: &std::path::Path) -> Result<()> {
+fn cmd_stats(file: &std::path::Path, format: &str) -> Result<()> {
     let (raw, tracks) = load_tracks(file)?;
     let meta_yaml = raw
         .meta_yaml
@@ -1109,10 +1119,20 @@ fn cmd_stats(file: &std::path::Path) -> Result<()> {
             .and_then(|v| v.as_array().map(|a| a.len() as u64))
             .unwrap_or(0)
     });
-    print!(
-        "{}",
-        tape_play::render_stats(&meta, &tracks, redactions_count)
-    );
+    match format {
+        // Phase-1 byte-for-byte text. clap's value_parser already
+        // rejects anything other than `text` / `json`, so a bare
+        // `_` arm here would be dead code.
+        "text" => print!(
+            "{}",
+            tape_play::render_stats(&meta, &tracks, redactions_count)
+        ),
+        "json" => {
+            let value = tape_play::render_stats_json(&meta, &tracks, redactions_count);
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        other => unreachable!("clap should reject this: {other}"),
+    }
     Ok(())
 }
 
