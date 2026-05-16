@@ -55,7 +55,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "std"
 regex = "1"
 
 # RNG (used by tape-cli's `tape to-otlp` for the random trace id;
-# also pulled in by tape-anon when #204 lands)
+# also used by tape-anon (#204) for HMAC salt derivation)
 getrandom = "0.2"
 
 # HTTP / proxy
@@ -87,7 +87,6 @@ tape-anon = { path = "crates/tape-anon", version = "0.2.0" }
 
 # Anon (#204 Phase 1)
 hmac = "0.12"
-getrandom = "0.2"
 
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }
