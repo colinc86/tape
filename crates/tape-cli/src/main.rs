@@ -298,6 +298,8 @@ enum Cmd {
     /// Append an annotation to an existing tape, writing a new cassette.
     ///
     /// CLI counterpart to the deck's `tape.annotate` tool (issue #74).
+    /// See also `.taperc::annotate` (issue #192) for the
+    /// `default_actor` / `default_by` / `editor` fallback fields.
     /// `--force-resign` remains a follow-up.
     Annotate {
         /// Input cassette to annotate.
@@ -337,10 +339,11 @@ enum Cmd {
         /// Who is making the note. Default `human` for the CLI when
         /// neither this flag nor `.taperc::annotate.default_by` is
         /// set (the deck defaults to `agent`). Resolution order
-        /// (issue #192): this flag > `.taperc::annotate.default_by`
-        /// > `"human"`. Value-set `{"agent", "human"}` validates the
-        /// *resolved* value; an invalid `.taperc` value exits 2
-        /// with the config path named.
+        /// (issue #192): this flag wins, then
+        /// `.taperc::annotate.default_by`, else `"human"`. The
+        /// value-set `{"agent", "human"}` validates the *resolved*
+        /// value; an invalid `.taperc` value exits 2 with the
+        /// config path named.
         #[arg(long, value_parser = ["agent", "human"])]
         by: Option<String>,
         /// Output path. Default: `<basename>.annotated.tape` next to the
@@ -2292,7 +2295,6 @@ fn sibling_path(file: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     dir.join(format!("{base}.{suffix}"))
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Load the `.taperc::annotate` block, if any. Returns `Some((path,
 /// cfg))` when a `.taperc` was found AND its parse succeeded; `None`
 /// when no `.taperc` is in scope. A parse failure surfaces an
@@ -2319,6 +2321,7 @@ fn load_annotate_config() -> Option<(std::path::PathBuf, tape_redact::config::An
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_annotate(
     file: &std::path::Path,
     note: Option<String>,
@@ -2354,8 +2357,7 @@ fn cmd_annotate(
                         .as_ref()
                         .map_or_else(|| "<unknown>".to_owned(), |(p, _)| p.display().to_string());
                     eprintln!(
-                        "tape annotate: --by: {v:?} from {} is not one of [\"agent\", \"human\"]",
-                        path,
+                        "tape annotate: --by: {v:?} from {path} is not one of [\"agent\", \"human\"]",
                     );
                     std::process::exit(2);
                 }

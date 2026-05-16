@@ -215,6 +215,7 @@ fn invalid_default_by_in_taperc_exits_two() {
 
 #[test]
 fn taperc_editor_invoked_for_editor_flag() {
+    use std::os::unix::fs::PermissionsExt;
     // AC #7 / test plan #13. Provide a shell script as the
     // `.taperc::annotate.editor` value; the script writes a known
     // body into its argv[1] (the temp file path).
@@ -225,7 +226,6 @@ fn taperc_editor_invoked_for_editor_flag() {
         "#!/bin/sh\nprintf 'taperc-editor wrote this\\n' > \"$1\"\n",
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(&script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&script, perms).unwrap();
@@ -272,6 +272,7 @@ fn taperc_editor_invoked_for_editor_flag() {
 
 #[test]
 fn taperc_editor_precedence_over_visual_env() {
+    use std::os::unix::fs::PermissionsExt;
     // AC #7 / test plan #14. With both `.taperc::annotate.editor`
     // and `$VISUAL` set, the `.taperc` value wins. `$VISUAL` is
     // pointed at /usr/bin/false (would exit non-zero), so the test
@@ -280,7 +281,6 @@ fn taperc_editor_precedence_over_visual_env() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("fake-editor.sh");
     std::fs::write(&script, "#!/bin/sh\nprintf 'taperc wins\\n' > \"$1\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(&script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&script, perms).unwrap();

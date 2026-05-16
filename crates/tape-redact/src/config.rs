@@ -493,12 +493,12 @@ redact:
 
     #[test]
     fn annotate_section_with_all_three_fields_parses() {
-        let yaml = r#"
+        let yaml = r"
 annotate:
   default_actor: alice
   default_by: human
   editor: nvim
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         assert_eq!(cfg.annotate.default_actor.as_deref(), Some("alice"));
         assert_eq!(cfg.annotate.default_by.as_deref(), Some("human"));
