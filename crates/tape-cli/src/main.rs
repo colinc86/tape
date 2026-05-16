@@ -827,6 +827,69 @@ enum Cmd {
         #[arg(long)]
         sig: Option<std::path::PathBuf>,
     },
+    /// Wrap a cassette in an age passphrase envelope. Phase 1 of
+    /// #89 (carved per #238): outer envelope only, passphrase mode
+    /// only. Produces a `<cassette>.age` file that the reference
+    /// `age(1)` binary can decrypt with the same passphrase. The
+    /// cassette zip is not modified — encryption is an orthogonal
+    /// outer wrapper, invisible to `tape verify`.
+    ///
+    /// Phase 1: passphrase only. Recipient-key mode (`--to age1…`),
+    /// keygen, embedded encryption metadata in `meta.yaml`, and
+    /// `.tape.age` magic-byte detection in `tape verify` are all
+    /// Phase 2+ of #89.
+    Encrypt {
+        /// Cassette to encrypt.
+        cassette: std::path::PathBuf,
+        /// Read the passphrase via a no-echo TTY prompt, asking
+        /// twice for confirmation. Mutually exclusive with
+        /// `--passphrase-stdin`.
+        #[arg(
+            long,
+            conflicts_with = "passphrase_stdin",
+            required_unless_present = "passphrase_stdin"
+        )]
+        passphrase: bool,
+        /// Read the passphrase as one line from stdin (no prompt,
+        /// no confirmation). Intended for CI and scripts.
+        #[arg(long)]
+        passphrase_stdin: bool,
+        /// Output path. Default: `<cassette>.age`. Refuses to
+        /// overwrite unless `--force`.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Unwrap a cassette from an age passphrase envelope. Phase 1
+    /// of #89 (carved per #238). On a wrong passphrase, exits 2
+    /// with `DECRYPT_FAILED` in stderr.
+    Decrypt {
+        /// Encrypted cassette (typically `<name>.age`).
+        cassette: std::path::PathBuf,
+        /// Read the passphrase via a no-echo TTY prompt (no
+        /// confirmation on decrypt). Mutually exclusive with
+        /// `--passphrase-stdin`.
+        #[arg(
+            long,
+            conflicts_with = "passphrase_stdin",
+            required_unless_present = "passphrase_stdin"
+        )]
+        passphrase: bool,
+        /// Read the passphrase as one line from stdin (no prompt).
+        #[arg(long)]
+        passphrase_stdin: bool,
+        /// Output path. Default: the input with the trailing
+        /// `.age` suffix stripped (refuses if the input does not
+        /// end in `.age` and `--output` is absent). Refuses to
+        /// overwrite unless `--force`.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -982,6 +1045,20 @@ fn main() -> Result<()> {
             pubkey,
             sig,
         } => cmd_verify_sig(&cassette, &pubkey, sig),
+        Cmd::Encrypt {
+            cassette,
+            passphrase,
+            passphrase_stdin,
+            output,
+            force,
+        } => cmd_encrypt(&cassette, passphrase, passphrase_stdin, output, force),
+        Cmd::Decrypt {
+            cassette,
+            passphrase,
+            passphrase_stdin,
+            output,
+            force,
+        } => cmd_decrypt(&cassette, passphrase, passphrase_stdin, output, force),
     }
 }
 
@@ -8011,6 +8088,273 @@ signature: z
         let fp = pubkey_fingerprint(b"hello");
         assert_eq!(fp.len(), 16);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
+// =====================================================================
+// `tape encrypt` / `tape decrypt` — Phase 1 of #89 (outer envelope,
+// passphrase only, no SPEC changes, no key management).
+// =====================================================================
+
+fn cmd_encrypt(
+    cassette: &std::path::Path,
+    passphrase_tty: bool,
+    passphrase_stdin: bool,
+    output: Option<std::path::PathBuf>,
+    force: bool,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    let plaintext = match std::fs::read(cassette) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+
+    let out_path = output.unwrap_or_else(|| appended_extension(cassette, "age"));
+    if !force && out_path.exists() {
+        eprintln!(
+            "error: {} already exists (use --force to overwrite)",
+            out_path.display()
+        );
+        std::process::exit(2);
+    }
+
+    let passphrase = match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ true) {
+        Ok(p) => p,
+        Err(code) => std::process::exit(code),
+    };
+
+    let encryptor = age::Encryptor::with_user_passphrase(passphrase);
+    let out_file = match std::fs::File::create(&out_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: create {}: {e}", out_path.display());
+            std::process::exit(2);
+        }
+    };
+    let mut writer = match encryptor.wrap_output(out_file) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("error: age wrap_output: {e}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = writer.write_all(&plaintext) {
+        eprintln!("error: write {}: {e}", out_path.display());
+        std::process::exit(2);
+    }
+    if let Err(e) = writer.finish() {
+        eprintln!("error: age finish: {e}");
+        std::process::exit(2);
+    }
+    set_mode(&out_path, 0o600)?;
+    eprintln!("tape encrypt: wrote {}", out_path.display());
+    Ok(())
+}
+
+fn cmd_decrypt(
+    cassette: &std::path::Path,
+    passphrase_tty: bool,
+    passphrase_stdin: bool,
+    output: Option<std::path::PathBuf>,
+    force: bool,
+) -> Result<()> {
+    use std::io::Read as _;
+
+    let out_path = match output {
+        Some(p) => p,
+        None => match strip_age_suffix(cassette) {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "error: {} does not end in `.age`; pass --output explicitly",
+                    cassette.display()
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+    if !force && out_path.exists() {
+        eprintln!(
+            "error: {} already exists (use --force to overwrite)",
+            out_path.display()
+        );
+        std::process::exit(2);
+    }
+
+    let in_file = match std::fs::File::open(cassette) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+
+    let passphrase =
+        match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ false) {
+            Ok(p) => p,
+            Err(code) => std::process::exit(code),
+        };
+
+    let decryptor = match age::Decryptor::new(in_file) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: DECRYPT_FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    let pd = match decryptor {
+        age::Decryptor::Passphrase(d) => d,
+        age::Decryptor::Recipients(_) => {
+            eprintln!(
+                "error: DECRYPT_FAILED: cassette is encrypted to recipients (X25519); \
+                 Phase 1 only supports passphrase envelopes — see #89"
+            );
+            std::process::exit(2);
+        }
+    };
+    let mut reader = match pd.decrypt(&passphrase, None) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: DECRYPT_FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    let mut plaintext = Vec::with_capacity(8192);
+    if let Err(e) = reader.read_to_end(&mut plaintext) {
+        eprintln!("error: DECRYPT_FAILED: {e}");
+        std::process::exit(2);
+    }
+    if let Err(e) = std::fs::write(&out_path, &plaintext) {
+        eprintln!("error: write {}: {e}", out_path.display());
+        std::process::exit(2);
+    }
+    set_mode(&out_path, 0o644)?;
+    eprintln!("tape decrypt: wrote {}", out_path.display());
+    Ok(())
+}
+
+/// Returns the input path with a trailing `.age` extension removed.
+/// `traces.tape.age` → `Some("traces.tape")`. Returns None when the
+/// input doesn't end in `.age`.
+fn strip_age_suffix(input: &std::path::Path) -> Option<std::path::PathBuf> {
+    let ext = input.extension().and_then(|s| s.to_str())?;
+    if ext != "age" {
+        return None;
+    }
+    input.file_stem().map(|stem| {
+        input
+            .parent()
+            .map_or_else(|| std::path::PathBuf::from(stem), |p| p.join(stem))
+    })
+}
+
+/// Read a passphrase from either stdin (one line) or a TTY prompt
+/// (no echo). When `confirm` is true the TTY mode reads twice and
+/// rejects mismatches with `PASSPHRASE_MISMATCH` (exit 2). `Err(n)`
+/// is the exit code to use — the caller does the process::exit so
+/// the read helper stays a pure function over its inputs.
+fn read_passphrase(
+    tty: bool,
+    stdin: bool,
+    confirm: bool,
+) -> std::result::Result<age::secrecy::SecretString, i32> {
+    use age::secrecy::SecretString;
+    use std::io::BufRead as _;
+
+    debug_assert!(tty ^ stdin, "clap conflicts_with should enforce this");
+
+    if stdin {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        if let Err(e) = stdin.lock().read_line(&mut line) {
+            eprintln!("error: read stdin passphrase: {e}");
+            return Err(2);
+        }
+        // Strip exactly one trailing \n (and an optional \r before it).
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        if line.is_empty() {
+            eprintln!("error: empty passphrase");
+            return Err(2);
+        }
+        return Ok(SecretString::new(line));
+    }
+
+    // TTY mode.
+    let first = match rpassword::prompt_password("Passphrase: ") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read passphrase: {e}");
+            return Err(2);
+        }
+    };
+    if first.is_empty() {
+        eprintln!("error: empty passphrase");
+        return Err(2);
+    }
+    if confirm {
+        let second = match rpassword::prompt_password("Confirm passphrase: ") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: read passphrase confirmation: {e}");
+                return Err(2);
+            }
+        };
+        if first != second {
+            eprintln!("error: PASSPHRASE_MISMATCH");
+            return Err(2);
+        }
+    }
+    Ok(SecretString::new(first))
+}
+
+#[cfg(test)]
+mod encrypt_handler_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn strip_age_suffix_round_trips_simple() {
+        let p = Path::new("traces.tape.age");
+        assert_eq!(
+            strip_age_suffix(p),
+            Some(std::path::PathBuf::from("traces.tape"))
+        );
+    }
+
+    #[test]
+    fn strip_age_suffix_preserves_parent_dir() {
+        let p = Path::new("/tmp/sub/cassette.tape.age");
+        assert_eq!(
+            strip_age_suffix(p),
+            Some(std::path::PathBuf::from("/tmp/sub/cassette.tape"))
+        );
+    }
+
+    #[test]
+    fn strip_age_suffix_rejects_non_age() {
+        let p = Path::new("cassette.tape");
+        assert_eq!(strip_age_suffix(p), None);
+        let p2 = Path::new("README.md");
+        assert_eq!(strip_age_suffix(p2), None);
+    }
+
+    #[test]
+    fn strip_age_suffix_handles_bare_age_file() {
+        // `secrets.age` (no inner extension) → `secrets`.
+        let p = Path::new("secrets.age");
+        assert_eq!(
+            strip_age_suffix(p),
+            Some(std::path::PathBuf::from("secrets"))
+        );
     }
 }
 
