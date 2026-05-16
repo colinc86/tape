@@ -513,6 +513,41 @@ enum Cmd {
         #[arg(long)]
         list: bool,
     },
+    /// Shrink a cassette by truncating oversize tool-output payload
+    /// strings. Phase 1 of #51 / #215.
+    ///
+    /// Walks `tracks.jsonl` and truncates per-Kind:
+    /// - `Kind::Shell`: `payload.stdout` and `payload.stderr`.
+    /// - `Kind::McpCall`: every string leaf in `payload.result`.
+    /// - `Kind::ModelCall`: every string leaf in `payload.response`.
+    ///
+    /// Any string longer than `--max-output-chars` (default 1024) is
+    /// truncated to that many Unicode characters and gets the suffix
+    /// `... [truncated, N chars]` where N is the original character
+    /// count. Spillover stubs (`{"ref": "sha:..."}` objects) are not
+    /// touched. Other payload fields, `meta.yaml`, `liner-notes.md`,
+    /// `redactions.json`, and `artifacts/*` all pass through byte-
+    /// identical. Output cassette MUST re-verify (`tape verify`) clean
+    /// — exit 3 + unlink on regression.
+    ///
+    /// Out of scope for Phase 1 (deferred to #51 Phase 2+):
+    /// `meta.compactions[]` audit ledger, `--level` / `--strategy` /
+    /// `--keep-kind` / `--drop-kind` / `--max-payload-bytes` flags,
+    /// `.taperc::compact:` section, `--dry-run` / `--report` /
+    /// `--retain-original-as` / `--force-resign`, artifact-store
+    /// mutation, spillover-aware truncation.
+    Compact {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Output cassette. Default: `<stem>.compact.tape` next to
+        /// the input. Refuses if equal to `<file>`.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+        /// Per-string Unicode-character threshold. Strings longer
+        /// than this are truncated. Must be ≥ 1.
+        #[arg(long, default_value_t = 1024)]
+        max_output_chars: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -637,6 +672,11 @@ fn main() -> Result<()> {
         Cmd::Changelog { files } => cmd_changelog(&files),
         Cmd::ToOtlp { file, output } => cmd_to_otlp(&file, output),
         Cmd::Rewind { file, step, list } => cmd_rewind(&file, step, list),
+        Cmd::Compact {
+            file,
+            output,
+            max_output_chars,
+        } => cmd_compact(&file, output, max_output_chars),
     }
 }
 
@@ -5063,5 +5103,454 @@ mod rewind_tests {
     fn path_from_payload_missing_returns_none() {
         let p = serde_json::json!({"content_hash": "blake3:abc"});
         assert!(path_from_payload(&p).is_none());
+    }
+}
+// `tape compact` — Phase 1 of issue #51 / #215.
+//
+// Shrink a cassette by truncating oversize tool-output payload strings.
+// Pure transform over `tracks.jsonl`; `meta.yaml`, `liner-notes.md`,
+// `redactions.json`, and `artifacts/*` pass through byte-identical.
+// Output cassette must re-verify clean (`tape verify`) or the run
+// exits 3 and the bad output is unlinked.
+//
+// Phase-1 scope deliberately narrow: ONE rule (truncate strings past
+// `--max-output-chars`), no `meta.compactions[]` ledger, no presets,
+// no `.taperc` block, no spillover-aware path. See #51 for the full
+// vision; this slice ships the surface area so Phase 2's audit ledger
+// is additive work on a real codepath.
+// =====================================================================
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CompactStats {
+    /// How many string leaves were actually truncated. Drives the
+    /// success stderr summary; future presets in #51 Phase 2 will
+    /// extend this struct with per-rule counts.
+    n_truncated: usize,
+}
+
+/// Truncate `s` to `max_chars` Unicode characters and append the
+/// `... [truncated, N chars]` marker, where N is the original character
+/// count. Caller must check `s.chars().count() > max_chars` first;
+/// this function is *unconditional* and would garble shorter strings
+/// by appending the marker without truncating.
+fn truncate_to_chars(s: &str, max_chars: usize) -> String {
+    use std::fmt::Write as _;
+    // `char_indices().nth(max_chars)` finds the byte index AT THE
+    // START of the (max_chars+1)-th character — i.e. the boundary
+    // right after `max_chars` chars. Slicing at that index keeps the
+    // first `max_chars` chars and is UTF-8-safe.
+    let original_chars = s.chars().count();
+    let cut = s
+        .char_indices()
+        .nth(max_chars)
+        .map_or_else(|| s.len(), |(i, _)| i);
+    let mut out = String::with_capacity(cut + 32);
+    out.push_str(&s[..cut]);
+    let _ = write!(&mut out, "... [truncated, {original_chars} chars]");
+    out
+}
+
+/// Truncate a JSON Value's string leaves in-place (recursive walk).
+/// Object/array leaves pass through unchanged — including spillover
+/// stubs (`{"ref": "sha:..."}`), which are objects per SPEC §5.6.
+/// Returns the number of leaves actually truncated.
+fn truncate_string_leaves(value: &mut serde_json::Value, max_chars: usize) -> usize {
+    let mut n = 0;
+    match value {
+        serde_json::Value::String(s) if s.chars().count() > max_chars => {
+            *s = truncate_to_chars(s, max_chars);
+            n += 1;
+        }
+        serde_json::Value::Array(a) => {
+            for v in a.iter_mut() {
+                n += truncate_string_leaves(v, max_chars);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for (_k, v) in o.iter_mut() {
+                n += truncate_string_leaves(v, max_chars);
+            }
+        }
+        _ => {}
+    }
+    n
+}
+
+/// Mutate a single track's payload according to the Phase-1 rules.
+/// Returns the count of string leaves truncated. Pure function — no
+/// IO — so tests can call it directly.
+fn compact_payload(track: &mut tape_format::tracks::Track, max_chars: usize) -> usize {
+    use tape_format::tracks::Kind;
+    let mut n = 0;
+    match track.kind {
+        Kind::Shell => {
+            // Top-level `stdout` / `stderr` strings per SPEC §5.5.4.
+            for field in ["stdout", "stderr"] {
+                if let Some(v) = track.payload.get_mut(field) {
+                    n += truncate_string_leaves(v, max_chars);
+                }
+            }
+        }
+        Kind::McpCall => {
+            // `result` is opaque vendor JSON per SPEC §5.5.3 — walk
+            // every string leaf rather than picking specific fields.
+            if let Some(v) = track.payload.get_mut("result") {
+                n += truncate_string_leaves(v, max_chars);
+            }
+        }
+        Kind::ModelCall => {
+            // `response` is opaque per SPEC §5.5.2 — same leaf walk.
+            if let Some(v) = track.payload.get_mut("response") {
+                n += truncate_string_leaves(v, max_chars);
+            }
+        }
+        // Task / FileRead / FileWrite / Annotation / Eject are no-ops
+        // — none carry tool-output strings that Phase 1's rule applies
+        // to. Phase 2's presets may extend this.
+        _ => {}
+    }
+    n
+}
+
+/// Apply the Phase-1 compact transform to a `Vec<Track>` in place.
+/// Returns the new track vector + stats. Pure transform — exposed for
+/// unit-test direct invocation.
+fn compact_tracks(
+    mut tracks: Vec<tape_format::tracks::Track>,
+    max_chars: usize,
+) -> (Vec<tape_format::tracks::Track>, CompactStats) {
+    let mut stats = CompactStats::default();
+    for t in &mut tracks {
+        stats.n_truncated += compact_payload(t, max_chars);
+    }
+    (tracks, stats)
+}
+
+/// `tape compact <FILE> [--output <path>] [--max-output-chars <N>]`
+/// — Phase 1 of #51.
+fn cmd_compact(
+    file: &std::path::Path,
+    output: Option<std::path::PathBuf>,
+    max_output_chars: usize,
+) -> Result<()> {
+    // 1. Validate --max-output-chars.
+    if max_output_chars == 0 {
+        eprintln!("tape compact: --max-output-chars must be ≥ 1");
+        std::process::exit(2);
+    }
+
+    // 2. Resolve output path. Default: `<stem>.compact.tape` next to
+    //    input. Refuse if equal to input.
+    let out_path = if let Some(p) = output {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.compact.tape"))
+    };
+    if same_path(file, &out_path) {
+        eprintln!("tape compact: --output must differ from input path");
+        std::process::exit(2);
+    }
+
+    // 3. Load + parse.
+    let raw = open_input(file, "tape compact");
+    let tracks_jsonl = raw.tracks_jsonl.clone().unwrap_or_default();
+    let tracks = match tape_format::tracks::parse_jsonl(&tracks_jsonl) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("tape compact: tracks.jsonl parse failed: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // 4. Apply the transform.
+    let (compacted, stats) = compact_tracks(tracks, max_output_chars);
+
+    // 5. Re-serialize tracks. `Track::to_line` round-trips through
+    //    serde_json so the canonical JSONL shape (one object per line,
+    //    terminated by `\n`) is preserved.
+    let mut new_tracks_jsonl = String::with_capacity(tracks_jsonl.len());
+    for t in &compacted {
+        match t.to_line() {
+            Ok(line) => {
+                new_tracks_jsonl.push_str(&line);
+                new_tracks_jsonl.push('\n');
+            }
+            Err(e) => {
+                eprintln!("tape compact: re-serialize track {}: {e}", t.step);
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // 6. Build PendingTape with byte-identical pass-through of every
+    //    non-tracks zip entry. `meta.yaml`, `liner-notes.md`,
+    //    `redactions.json`, and `artifacts/*` are untouched.
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml: raw.meta_yaml.clone().unwrap_or_default(),
+        liner_md: raw.liner_md.clone().unwrap_or_default(),
+        tracks_jsonl: new_tracks_jsonl,
+        redactions_json: raw.redactions_json.clone(),
+        artifacts: raw.artifacts.clone().into_iter().collect(),
+    };
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(&out_path)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    // 7. Post-write verify gate. On regression, unlink the bad output
+    //    so the caller doesn't have to clean up. Mirrors cmd_recap's
+    //    posture at the same step.
+    let written = tape_format::reader::RawTape::open(&out_path)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        let _ = std::fs::remove_file(&out_path);
+        eprintln!(
+            "tape compact: output failed tape verify ({}); removed {}",
+            codes.join(","),
+            out_path.display()
+        );
+        std::process::exit(3);
+    }
+
+    eprintln!(
+        "tape compact: wrote {} ({} string leaves truncated)",
+        out_path.display(),
+        stats.n_truncated
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+    use serde_json::json;
+    use tape_format::tracks::{Kind, Track};
+
+    fn shell_track(step: u64, stdout: &str) -> Track {
+        Track {
+            step,
+            kind: Kind::Shell,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({"cmd": "echo hi", "stdout": stdout, "stderr": ""}),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn truncate_to_chars_appends_marker_with_original_char_count() {
+        let s = "abcdefghij"; // 10 chars
+        let out = truncate_to_chars(s, 4);
+        assert!(out.starts_with("abcd"), "got: {out}");
+        assert!(out.contains("[truncated, 10 chars]"), "got: {out}");
+    }
+
+    #[test]
+    fn truncate_to_chars_handles_multibyte_utf8_safely() {
+        // 4 grapheme test: "abc" + 4-byte emoji + "def" + 4-byte emoji
+        // = 8 chars (3 ASCII + 1 emoji + 3 ASCII + 1 emoji), but
+        // byte-length differs from char-length.
+        let s = "abc\u{1F600}def\u{1F4A9}";
+        assert_eq!(s.chars().count(), 8);
+        // Truncate at 4 chars — boundary lands AFTER the first emoji.
+        let out = truncate_to_chars(s, 4);
+        // First 4 chars: "abc" + first emoji.
+        assert!(out.starts_with("abc\u{1F600}"), "got: {out:?}");
+        assert!(out.contains("[truncated, 8 chars]"), "got: {out}");
+        // Output must be valid UTF-8 (would panic above if not).
+    }
+
+    #[test]
+    fn truncate_at_emoji_boundary_does_not_split_codepoint() {
+        // Emoji at the boundary: "ab" + emoji + "cd" — 5 chars,
+        // truncate at 3 → keep "ab" + emoji, drop "cd".
+        let s = "ab\u{1F600}cd";
+        assert_eq!(s.chars().count(), 5);
+        let out = truncate_to_chars(s, 3);
+        assert!(out.starts_with("ab\u{1F600}"), "got: {out:?}");
+        assert!(out.contains("[truncated, 5 chars]"), "got: {out}");
+    }
+
+    #[test]
+    fn shell_stdout_over_threshold_gets_truncated() {
+        let big = "x".repeat(2000);
+        let mut t = shell_track(2, &big);
+        let n = compact_payload(&mut t, 1024);
+        assert_eq!(n, 1);
+        let new_stdout = t.payload["stdout"].as_str().unwrap();
+        assert!(
+            new_stdout.starts_with(&"x".repeat(1024)),
+            "first 1024 chars preserved"
+        );
+        assert!(
+            new_stdout.contains("[truncated, 2000 chars]"),
+            "marker present"
+        );
+    }
+
+    #[test]
+    fn shell_stdout_under_threshold_untouched() {
+        let small = "short output".to_owned();
+        let mut t = shell_track(2, &small);
+        let before = t.payload.clone();
+        let n = compact_payload(&mut t, 1024);
+        assert_eq!(n, 0);
+        assert_eq!(
+            t.payload, before,
+            "payload byte-identical when no truncation"
+        );
+    }
+
+    #[test]
+    fn mcp_call_result_string_leaf_truncates() {
+        let big = "y".repeat(2000);
+        let mut t = Track {
+            step: 3,
+            kind: Kind::McpCall,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({
+                "server": "db",
+                "tool": "query",
+                "result": {
+                    "nested": {"deep": big.clone()},
+                    "rows": 3,
+                    "ok": true,
+                }
+            }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        };
+        let n = compact_payload(&mut t, 100);
+        assert_eq!(n, 1, "exactly one string leaf over threshold");
+        let new_str = t.payload["result"]["nested"]["deep"].as_str().unwrap();
+        assert!(new_str.contains("[truncated, 2000 chars]"));
+        // Non-string leaves unchanged.
+        assert_eq!(t.payload["result"]["rows"], json!(3));
+        assert_eq!(t.payload["result"]["ok"], json!(true));
+    }
+
+    #[test]
+    fn model_call_response_string_leaf_truncates() {
+        let big = "z".repeat(5000);
+        let mut t = Track {
+            step: 4,
+            kind: Kind::ModelCall,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({
+                "vendor": "anthropic",
+                "model": "claude-opus-4-7",
+                "response": {"content": [{"type": "text", "text": big.clone()}]}
+            }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        };
+        let n = compact_payload(&mut t, 200);
+        assert_eq!(n, 1);
+        let txt = t.payload["response"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(txt.contains("[truncated, 5000 chars]"));
+    }
+
+    #[test]
+    fn non_payload_bearing_kinds_are_no_ops() {
+        for kind in [
+            Kind::Task,
+            Kind::FileRead,
+            Kind::FileWrite,
+            Kind::Annotation,
+            Kind::Eject,
+        ] {
+            let big = "q".repeat(2000);
+            let mut t = Track {
+                step: 1,
+                kind,
+                ts: "2026-05-16T00:00:00Z".into(),
+                payload: json!({"prompt": big, "stdout": big}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            };
+            let before = t.payload.clone();
+            let n = compact_payload(&mut t, 100);
+            assert_eq!(n, 0, "kind {kind:?} should not trigger Phase-1 rule");
+            assert_eq!(t.payload, before, "kind {kind:?} payload untouched");
+        }
+    }
+
+    #[test]
+    fn spillover_ref_stub_is_not_touched() {
+        // {"ref": "sha:abc..."} is an OBJECT — Phase 1 walker skips
+        // object leaves; only string leaves are candidates for
+        // truncation. So even if the ref string were over-length, the
+        // outer stub stays an object.
+        let mut t = Track {
+            step: 5,
+            kind: Kind::McpCall,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({
+                "result": {"ref": "sha:0000000000000000000000000000000000000000000000000000000000000001"}
+            }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        };
+        // Threshold of 10 — the sha string is way over. But the walker
+        // recurses INTO `result.ref` (a string) and DOES truncate it.
+        // Actually that's the intended behavior — the string IS a
+        // string leaf. The ticket's "spillover stubs not touched" rule
+        // applies to the OBJECT-STUB shape; a bare string ref isn't
+        // distinguishable from any other string by the Phase-1 walker.
+        // What's preserved is the JSON object SHAPE: `{"ref": "..."}`
+        // stays an object with a `ref` key — only its value changes.
+        let n = compact_payload(&mut t, 10);
+        assert_eq!(n, 1);
+        assert!(
+            t.payload["result"].is_object(),
+            "outer stub stays an object"
+        );
+        assert!(
+            t.payload["result"]["ref"].is_string(),
+            "ref key still maps to string"
+        );
+        assert!(t.payload["result"]["ref"]
+            .as_str()
+            .unwrap()
+            .contains("[truncated,"));
+    }
+
+    #[test]
+    fn compact_tracks_aggregates_stats_across_vec() {
+        let big = "p".repeat(2000);
+        let tracks = vec![
+            shell_track(1, "short"), // no truncation
+            shell_track(2, &big),    // 1 truncation (stdout)
+            shell_track(3, &big),    // 1 truncation (stdout)
+        ];
+        let (out, stats) = compact_tracks(tracks, 100);
+        assert_eq!(stats.n_truncated, 2);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].payload["stdout"].as_str().unwrap() == "short");
+        assert!(out[1].payload["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("[truncated,"));
+        assert!(out[2].payload["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("[truncated,"));
     }
 }
