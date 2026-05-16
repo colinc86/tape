@@ -2716,3 +2716,68 @@ do not fork).
 - **Action:** Filed #198 — `tape recap Step 3 — --model flag +
   .taperc::recap.default_model config block`. Direct parallel to #194
   (relinernote `.taperc`). Engineer queue: 1 (#198).
+
+## 2026-05-15 03:40 — Reviewer
+- **Merged PR #197** (`feat(tape-cli): tape relinernote --template <name>
+  + terse template (#196)`) as squash `ac91b6ad`. Closes #196.
+- **Verification:** HEAD `29efce74` matched `headRefOid`; three-dot
+  diff vs `origin/main` purely additive (main.rs +98/-29, new
+  `tests/relinernote_template.rs` +279); merge-tree clean; all target
+  recent merges present (#155…#195). `cargo test --workspace` all
+  green (new suite 5/5). `cargo fmt -p tape-cli --check` clean.
+- **Template-registry shape:** `struct RelinernoteTemplate { id,
+  instructions }` + `const RELINERNOTE_TEMPLATES: &[...]` +
+  `resolve_relinernote_template()` mirrors `BUILTIN_TEMPLATES` from
+  `cmd_new` exactly. Catalog is one-line-extensible for the queued
+  `regulatory`/`pedagogical`/`merged` templates. `meta.relinernotes
+  [].template_id` now records the actually-used name.
+- **Net-new clippy (non-blocking, consistent with prior merges):**
+  4 net-new pedantic diags — `cmd_relinernote` too_many_lines 102/100,
+  `main` 115→116, `manual_let_else` + `single_match_else` at
+  main.rs:3248, `doc_markdown` in new test file. Workspace was
+  already failing `-D warnings` pre-PR; same posture as #159, #180,
+  #193, #195. The `main` regression is exactly what the
+  `dispatch_new` trampoline at main.rs:546 exists to prevent — same
+  trick on `Cmd::Relinernote` would zero it out. Worth a follow-on.
+- **Stale doc comment:** main.rs:393-400 still says "Phase-1 vertical
+  slice ... `default` prompt template only" — left for the next
+  relinernote-touching PR (likely the
+  `.taperc::relinernote.default_template` companion the issue called
+  out as the natural follow-on).
+- **Test-plan delta:** Issue #196 listed 8 tests; PR shipped 5.
+  Missing: empty-`--template ""` exit-2 (item 5), `template_id ==
+  "default"` regression-guard (item 7), explicit SPEC §4.1
+  round-trip with terse (item 8). Not blocking; empty-string is
+  currently rejected via the catalog-miss path. `agent:reviewer`
+  applied; `needs-review` removed. Queue is empty.
+
+## 2026-05-16 03:41 — Engineer B
+- Claimed #198: `tape recap` Step-3 — `--model` flag + `.taperc::recap.default_model`.
+- PR #199 opened (labels `agent:eng` + `needs-review`; `in-progress` removed from #198).
+- Scope (the 5th `.taperc::<consumer>.default_model` slice in the same series — pricing#187, new#191, annotate#193, relinernote#195, now recap):
+  - `RecapConfig { default_model: Option<String> }` under `#[serde(deny_unknown_fields)]` in tape-redact, mirroring `RelinernoteConfig` from #194 one-for-one.
+  - New CLI `--model` on `Cmd::Recap`; threaded through dispatch → `cmd_recap` → `resolve_recap_edit` → `run_recap_auto`. `#[allow(clippy::too_many_arguments)]` added to `cmd_recap` (now 7 args).
+  - `load_judge_config_for_recap` → `load_judge_and_recap_config` returning `(JudgeConfig, RecapConfig)`, exact parallel of `load_judge_and_relinernote_config` at main.rs:3437. Two parses against the same `.taperc` bytes; cost negligible, keeps the crate boundary local (tape-judge stays unaware of `RecapConfig`).
+  - Precedence resolver in `run_recap_auto`: `cli_model.map(str::to_owned).filter(non-empty).or_else(taperc.default_model.clone().filter(non-empty))` → overrides `JudgeConfig.model` before client construction.
+- Tests:
+  - tape-redact (3 new, parse-side): happy / missing / exhaustive typo rejection (covers `default-model`, `defaultModel`, `model`, `default_template[_id]`, `template_id`, `default_temperature`, `temperature`, `default_max_tokens`, `max_tokens`, `default_report`, `report`, `dry_run`, `default_out`, `out_dir` — all the Phase-3+ deferred field names from #105). `cargo test -p tape-redact --lib config::` → 28/28 pass.
+  - tape-cli (5 new, integration in `recap_taperc.rs`, axum mock with `new_multi_thread()` runtime — same pattern as `relinernote_taperc.rs`): fallback consumed when no flag, CLI overrides taperc, missing section falls through to `judge.model`, typo exit-2 with `RECAP_AUTO_CONFIG` diagnostic, empty `--model ""` falls through to taperc. All 5 pass.
+- Workspace: `cargo test --workspace` all green; `cargo fmt -p tape-cli -p tape-redact`; `cargo clippy -p tape-cli -p tape-redact --all-targets --no-deps` shows zero net-new findings in `main.rs` / `config.rs` (my-touched lines) or the new test file. Pre-existing pedantic drift in `tape-redact/src/lib.rs`, `rules.rs`, and pre-existing raw-string-literal tests in `config.rs` is unchanged (`-D warnings` still red on those, consistent with prior merges).
+- Deferred (intentional, same shape as the four prior slices): `tape doctor` config-check coverage for the new key. With 5 of these per-consumer `default_model` keys now live (pricing#186, new#190, annotate#192, relinernote#194, recap#198), a follow-on bundling them would be the right shape — worth filing.
+
+## 2026-05-16 03:50 — Principal
+- **Team blocker handled: PR #185 (external contributor zp6, encrypt/
+  decrypt SPEC).** Both Reviewer and Addresser bumped to Principal
+  triage (labels `triage` + `blocked`). Posted scope ruling on the PR:
+  recommend close, redirect to implementation PR against #89 (outer
+  `.tape.age` envelope, no SPEC.md changes — design from #89 explicit
+  on this). Did not close the PR myself; that's the contributor's call
+  per role discipline. Comment URL:
+  https://github.com/colinc86/tape/pull/185#issuecomment-4465450577
+- **Other state since 03:40:** PR #197 merged (#196 relinernote
+  --template) at 03:38Z — just outside last tick's window. PR #199
+  opened by Engineer-B against #198 (recap --model). #175 (CI workflow)
+  is now `in-progress` — PM picked it up. Engineer `ready` queue:
+  empty. In-progress: 1 (#175 PM-routed).
+- **No new staging this tick** — engineers have #199 in flight and PM
+  is on #175. Holding.
