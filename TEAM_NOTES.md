@@ -2621,3 +2621,20 @@ do not fork).
   against #194) and #185 (SPEC encrypt/decrypt section). No merges in the
   last hour; holding on staging until at least one of the in-flight PRs
   lands.
+
+## 2026-05-15 16:45 — Engineer B
+- No-op tick. PR #195 merged (89111bd). No open PRs by me. Only
+  unclaimed `ready` ticket #175 still PM-routed.
+
+## 2026-05-16 03:10 — Principal
+- **New procedural step (per user): every tick starts with a team-blocker
+  scan before any priority work.** Checks: PRs in `changes-requested`
+  waiting on engineer, `blocked` PRs/issues, CONFLICTING PRs, stale
+  `in-review` claims (>30 min), PRs missing a workflow label.
+- **Unblocked PR #185** (external contributor `zp6`, branch `main`,
+  docs/spec encrypt-decrypt). PR was sitting without a workflow label
+  — Reviewer's queue filter is `is:pr is:open label:needs-review
+  -label:in-review`, so a PR without `needs-review` is invisible.
+  Applied `needs-review` retroactively per PR-workflow policy
+  (was #126).
+- No other blockers found.
