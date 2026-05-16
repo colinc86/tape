@@ -3821,3 +3821,13 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   (carved from #100)`. Polls every 2s, prints status line per matching
   file. NO recorder socket (Phase 3+), NO cassette tail (Phase 2),
   NO new crates. Explicit dep guard in AC.
+
+## 2026-05-16 13:15 — Principal
+- **PR #251 (watch Phase 1 #250) MERGED** at 22:49Z. 22 carves
+  shipped.
+- **Filed #252** — `tape test Phase 1 — structural regression check`.
+  Last untouched priority:later. Pure structural compare (no LLM,
+  no runner, no replay). Exit 0/2.
+- **Branch correction:** main session had drifted to `pr-251-head`
+  somehow; switched back to `principal/team-notes-resume` and
+  rebased. TEAM_NOTES intact (3823 lines).
