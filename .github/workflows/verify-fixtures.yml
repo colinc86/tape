@@ -1,0 +1,81 @@
+name: verify-fixtures
+
+# In-repo dogfood for `colinc86/tape-action` Phase 1 (issue #236,
+# carved from #90). The composite action lives in its own companion
+# repo (per #90 §3.1); this workflow exercises the same
+# `tape verify <fixture>` binary-invocation pattern that the
+# eventual `colinc86/tape-action` will encode.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-fixtures:
+    name: tape verify on tests/fixtures/
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Shares the cache key shape with `build.yml` so a no-op PR
+      # finishes fast even with two workflows in flight.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build tape (release)
+        run: cargo build --release -p tape-cli
+
+      - name: Verify fixtures (positive + negative sweep)
+        run: |
+          set -euo pipefail
+          TAPE=./target/release/tape
+
+          # Markdown table header for $GITHUB_STEP_SUMMARY.
+          {
+            echo "## verify-fixtures sweep"
+            echo
+            echo "| fixture | expected | actual |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          fail=0
+
+          # Positive sweep: every tests/fixtures/*.tape MUST verify clean.
+          # Non-recursive — the `malformed/` subdirectory is the negative
+          # half of the sweep below.
+          for f in tests/fixtures/*.tape; do
+            [ -e "$f" ] || continue
+            if $TAPE verify "$f"; then
+              printf '| `%s` | pass | pass |\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf '| `%s` | pass | **FAIL** |\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error file=$f::expected verify to pass, but it failed"
+              fail=1
+            fi
+          done
+
+          # Negative sweep: every tests/fixtures/malformed/*.tape MUST
+          # be rejected. A zero-exit here is the regression — the
+          # verifier missed a SPEC violation it's supposed to catch.
+          for f in tests/fixtures/malformed/*.tape; do
+            [ -e "$f" ] || continue
+            if $TAPE verify "$f" >/dev/null 2>&1; then
+              printf '| `%s` | fail | **PASS (regression!)** |\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error file=$f::expected verify to fail (this is a malformed fixture), but it passed"
+              fail=1
+            else
+              printf '| `%s` | fail | fail |\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "verify-fixtures sweep had regressions; see step summary above."
+            exit 1
+          fi
