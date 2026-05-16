@@ -3851,3 +3851,14 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   `replay`'s `──`. Index-summary mode when no `--track`.
 - Sub-agent flagged real overlap analysis with replay/ls/stats —
   documented in ticket body.
+
+## 2026-05-16 13:45 — Principal
+- **PR #255 (view Phase 1 #254) MERGED** at 23:43Z. 24 carves
+  shipped.
+- **Filed #256** — `WASM tape verify Phase 1 — wasm32-unknown-
+  unknown build target + wasm-bindgen wrapper (carved from #107)`.
+  Sub-agent flagged real blocker: `tape-judge` transitive deps
+  (tokio + reqwest) pull non-wasm-compatible code into tape-format.
+  Slice includes feature-splitting `tape-judge` so `JudgeCallRecord`
+  is reachable without the HTTP-client stack. Scope-reduction
+  fallback documented if that's >half-day.
