@@ -1,6 +1,7 @@
 //! `tape anon` — strip identifying tokens from a cassette and write a
-//! new cassette. Phase 1 of issue #42; ships exactly one rule
-//! (`unix_home_path`). See `crates/tape-anon/src/rules.rs` for the
+//! new cassette. Phase 2 of issue #42 (carved per #242); ships three
+//! rules: `unix_home_path` (Phase 1), `unix_username_prompt`, and
+//! `git_remote_user`. See `crates/tape-anon/src/rules.rs` for the
 //! ruleset and the ticket text for what's deliberately deferred.
 //!
 //! Public surface:
@@ -30,7 +31,14 @@ pub struct AnonOptions {
 /// Per-invocation summary for the CLI stderr line.
 #[derive(Debug, Default)]
 pub struct RunReport {
+    /// Total replacements across all rules. Equivalent to
+    /// `by_rule.values().sum()` but kept as an explicit field so the
+    /// CLI's summary line doesn't have to recompute the sum.
     pub n_replacements: usize,
+    /// Per-rule replacement counts (Phase 2 of #42, carved per #242).
+    /// Stable iteration order via `BTreeMap`. Rules that scored zero
+    /// are absent from the map.
+    pub by_rule: std::collections::BTreeMap<&'static str, usize>,
     /// How many spilled `artifacts/` entries were left untouched
     /// (Phase 1 does not scan binary content — see ticket §"What the
     /// engine walks").
@@ -104,16 +112,20 @@ pub fn run_anon_with(
     //    on rendered text identically across `task`, `recap`,
     //    `label`, `tags[]`, `recaps[].prior_recap`/`new_recap`,
     //    `relinernotes[]` text fields).
-    let mut n = 0;
+    let mut by_rule: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
     let mut meta_yaml = raw
         .meta_yaml
         .clone()
         .ok_or_else(|| AnonError::InputUnreadable(anyhow::anyhow!("missing meta.yaml")))?;
-    n += anonymize_string(rules, pseudo, &mut meta_yaml);
+    crate::engine::merge_counts(
+        &mut by_rule,
+        anonymize_string(rules, pseudo, &mut meta_yaml),
+    );
 
     // 3. Anonymize liner-notes.md as a single text body.
     let mut liner_md = raw.liner_md.clone().unwrap_or_default();
-    n += anonymize_string(rules, pseudo, &mut liner_md);
+    crate::engine::merge_counts(&mut by_rule, anonymize_string(rules, pseudo, &mut liner_md));
 
     // 4. Anonymize every track payload Value. We re-parse the JSONL
     //    rather than walking via tape-format's typed Track so the
@@ -132,10 +144,10 @@ pub fn run_anon_with(
             // user-text-bearing fields per SPEC §5). Skip ts/step/
             // kind/parent_step which are structural.
             if let Some(payload) = v.get_mut("payload") {
-                n += anonymize_value(rules, pseudo, payload);
+                crate::engine::merge_counts(&mut by_rule, anonymize_value(rules, pseudo, payload));
             }
             if let Some(annots) = v.get_mut("annotations") {
-                n += anonymize_value(rules, pseudo, annots);
+                crate::engine::merge_counts(&mut by_rule, anonymize_value(rules, pseudo, annots));
             }
             let serialized = serde_json::to_string(&v)
                 .map_err(|e| AnonError::Serialize(anyhow::anyhow!("{e}")))?;
@@ -185,8 +197,10 @@ pub fn run_anon_with(
         ))
     })?;
 
+    let n_replacements = by_rule.values().sum();
     Ok(RunReport {
-        n_replacements: n,
+        n_replacements,
+        by_rule,
         n_artifacts_skipped,
     })
 }

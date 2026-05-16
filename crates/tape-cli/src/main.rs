@@ -4532,9 +4532,9 @@ fn cmd_anon(file: &std::path::Path, out: Option<std::path::PathBuf>) -> Result<(
     match tape_anon::run_anon(opts) {
         Ok(report) => {
             eprintln!(
-                "tape anon: wrote {} ({} replacements via unix_home_path)",
+                "tape anon: wrote {} ({})",
                 out_path.display(),
-                report.n_replacements
+                format_anon_summary(&report)
             );
             if report.n_artifacts_skipped > 0 {
                 eprintln!(
@@ -4556,6 +4556,71 @@ fn cmd_anon(file: &std::path::Path, out: Option<std::path::PathBuf>) -> Result<(
             eprintln!("{e}");
             std::process::exit(2);
         }
+    }
+}
+
+/// Format the stderr summary for a successful `tape anon` run. Phase
+/// 2 of #42 (carved per #242) replaces the Phase-1 single-rule line
+/// with a per-rule enumeration: `N replacements: rule_a=X, rule_b=Y`
+/// (zero-count rules elided). Total-zero collapses to
+/// `0 replacements`. Format is engineer-facing, not a public
+/// stability contract — substring matches in tests.
+fn format_anon_summary(report: &tape_anon::RunReport) -> String {
+    if report.n_replacements == 0 {
+        return "0 replacements".to_owned();
+    }
+    let mut parts = Vec::new();
+    for (rule_id, count) in &report.by_rule {
+        if *count == 0 {
+            continue;
+        }
+        parts.push(format!("{rule_id}={count}"));
+    }
+    format!(
+        "{} replacements: {}",
+        report.n_replacements,
+        parts.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod anon_summary_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn report(by_rule: &[(&'static str, usize)]) -> tape_anon::RunReport {
+        let map: BTreeMap<&'static str, usize> = by_rule.iter().copied().collect();
+        let total = map.values().sum();
+        tape_anon::RunReport {
+            n_replacements: total,
+            by_rule: map,
+            n_artifacts_skipped: 0,
+        }
+    }
+
+    #[test]
+    fn empty_report_says_zero_replacements() {
+        assert_eq!(format_anon_summary(&report(&[])), "0 replacements");
+    }
+
+    #[test]
+    fn single_rule_enumeration() {
+        assert_eq!(
+            format_anon_summary(&report(&[("unix_home_path", 3)])),
+            "3 replacements: unix_home_path=3"
+        );
+    }
+
+    #[test]
+    fn multi_rule_enumeration_alphabetical() {
+        // BTreeMap iteration is alphabetical, so git_remote_user
+        // comes before unix_home_path despite the rule list order
+        // putting unix_home_path first. That's the documented Phase-2
+        // shape (engineer-facing; not a stability contract).
+        let s = format_anon_summary(&report(&[("unix_home_path", 2), ("git_remote_user", 5)]));
+        assert!(s.contains("7 replacements:"), "{s}");
+        assert!(s.contains("git_remote_user=5"), "{s}");
+        assert!(s.contains("unix_home_path=2"), "{s}");
     }
 }
 

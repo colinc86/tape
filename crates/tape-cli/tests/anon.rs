@@ -83,13 +83,12 @@ fn happy_path_default_out_writes_anonymized_cassette() {
         String::from_utf8_lossy(&r.stderr),
     );
 
-    // Stderr summary present per ticket AC #7.
+    // Stderr summary present per ticket AC #7. Phase 2 of #42
+    // (carved per #242) changed the wording from "replacements via
+    // unix_home_path" to a per-rule enumeration `rule_id=N`.
     let stderr = String::from_utf8_lossy(&r.stderr);
     assert!(stderr.contains("tape anon: wrote"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("replacements via unix_home_path"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("unix_home_path=3"), "stderr: {stderr}");
 
     assert!(expected_out.exists(), "expected default output path");
 
@@ -213,4 +212,82 @@ fn fixture_with_no_home_paths_anon_exits_clean_with_zero_replacements() {
     let stderr = String::from_utf8_lossy(&r.stderr);
     assert!(stderr.contains("0 replacements"), "stderr: {stderr}");
     assert!(out.exists());
+}
+
+#[test]
+fn phase2_rules_enumerate_in_summary_and_scrub_their_token_shapes() {
+    // Phase 2 of #42 (carved per #242): a cassette containing a
+    // shell-prompt line and a git-remote URL should trigger both
+    // `unix_username_prompt` and `git_remote_user`, with the
+    // summary line enumerating both per-rule counts and the output
+    // free of the original identifiers.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("input.tape");
+    let meta = "tape_version: \"tape/v0\"\n\
+                id: \"01h8xy00-0000-7000-b8aa-000000000242\"\n\
+                created_at: \"2026-05-16T00:00:00Z\"\n\
+                ejected_at: \"2026-05-16T00:00:30Z\"\n\
+                task: \"investigate\"\n\
+                recorder:\n  agent: \"test/0.0.1\"\n\
+                outcome: success\n"
+        .to_owned();
+    let liner = "## What I was asked to do\nx\n\n\
+                 ## What I found\ny\n\n\
+                 ## Suggested next step / fix\nz\n\n\
+                 ## What I'm uncertain about\nnothing\n"
+        .to_owned();
+    let tracks = "\
+{\"step\":1,\"kind\":\"task\",\"ts\":\"2026-05-16T00:00:00Z\",\"payload\":{\"prompt\":\"investigate\"}}
+{\"step\":2,\"kind\":\"shell\",\"ts\":\"2026-05-16T00:00:01Z\",\"payload\":{\"cmd\":\"git remote -v\",\"stdout\":\"origin\\tgit@github.com:colinc86/tape (fetch)\"}}
+{\"step\":3,\"kind\":\"shell\",\"ts\":\"2026-05-16T00:00:02Z\",\"payload\":{\"cmd\":\"echo prompt\",\"stdout\":\"alice@workstation:~/proj$ ls\"}}
+{\"step\":4,\"kind\":\"eject\",\"ts\":\"2026-05-16T00:00:03Z\",\"payload\":{\"outcome\":\"success\"}}
+"
+    .to_owned();
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml: meta,
+        liner_md: liner,
+        tracks_jsonl: tracks,
+        redactions_json: None,
+        artifacts: BTreeMap::new(),
+    };
+    pending.write_to(&path).unwrap();
+    let out = dir.path().join("out.tape");
+
+    let r = std::process::Command::new(binary_path())
+        .args(["anon", path.to_str().unwrap(), "-o", out.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "tape anon failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&r.stdout),
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    // Summary enumerates per-rule counts (Phase-2 shape).
+    assert!(
+        stderr.contains("unix_username_prompt=1"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("git_remote_user=1"), "stderr: {stderr}");
+
+    // The output is free of the original identifiers and carries
+    // both Phase-2 token shapes.
+    let (_, tracks_out) = read_meta_and_tracks(&out);
+    assert!(
+        !tracks_out.contains("colinc86"),
+        "git user leaked: {tracks_out}"
+    );
+    assert!(
+        !tracks_out.contains("alice@workstation"),
+        "prompt user leaked: {tracks_out}"
+    );
+    assert!(
+        tracks_out.contains("<USER:"),
+        "missing USER token: {tracks_out}"
+    );
+    assert!(
+        tracks_out.contains("<ORG:"),
+        "missing ORG token: {tracks_out}"
+    );
 }
