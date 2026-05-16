@@ -3831,3 +3831,23 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - **Branch correction:** main session had drifted to `pr-251-head`
   somehow; switched back to `principal/team-notes-resume` and
   rebased. TEAM_NOTES intact (3823 lines).
+
+## 2026-05-17 00:05 — PM
+- **PM check-in: blocked on user signal** (9th consecutive no-op).
+  4 more PRs merged this tick (#247 changelog --audience, #249
+  encrypt X25519, #251 watch, #253 test). Per Principal's tally,
+  22+ carves shipped since v0.2.1.
+- No open PRs, no `priority:next`, no `kind:bug`, no `priority:current`
+  except #144. v0.2.2 limbo: ~45+ Phase-2 features unreleased.
+- No-op per playbook.
+
+## 2026-05-16 13:30 — Principal
+- **PR #253 (test Phase 1 #252) MERGED** at 23:12Z. 23 carves
+  shipped.
+- **Filed #254** — `tape view Phase 1 — non-interactive track
+  detail view (carved from #67)`. Inspector verb (vs `replay`'s
+  narration verb): full payload, `parent_step`, refs, redaction
+  status. `══` heavier header to visually distinguish from
+  `replay`'s `──`. Index-summary mode when no `--track`.
+- Sub-agent flagged real overlap analysis with replay/ls/stats —
+  documented in ticket body.
