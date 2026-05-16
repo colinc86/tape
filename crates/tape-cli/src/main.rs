@@ -5157,11 +5157,9 @@ fn truncate_to_chars(s: &str, max_chars: usize) -> String {
 fn truncate_string_leaves(value: &mut serde_json::Value, max_chars: usize) -> usize {
     let mut n = 0;
     match value {
-        serde_json::Value::String(s) => {
-            if s.chars().count() > max_chars {
-                *s = truncate_to_chars(s, max_chars);
-                n += 1;
-            }
+        serde_json::Value::String(s) if s.chars().count() > max_chars => {
+            *s = truncate_to_chars(s, max_chars);
+            n += 1;
         }
         serde_json::Value::Array(a) => {
             for v in a.iter_mut() {
