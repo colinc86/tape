@@ -848,6 +848,7 @@ mod tests {
             recaps: vec![],
             tags: vec![],
             relinernotes: vec![],
+            compactions: vec![],
             new_block: None,
         }
     }

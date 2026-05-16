@@ -411,6 +411,7 @@ fn build_empty_task_cassette(path: &std::path::Path) {
         recaps: vec![],
         tags: vec![],
         relinernotes: vec![],
+        compactions: vec![],
         new_block: None,
     };
     let meta_yaml = meta.to_yaml().unwrap();
