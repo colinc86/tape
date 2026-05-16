@@ -3369,15 +3369,25 @@ fn run_relinernote_judge(
     prompt: &str,
     model_override: Option<String>,
 ) -> std::result::Result<(String, tape_judge::JudgeOutput), i32> {
-    let mut config = match load_judge_config_for_relinernote() {
-        Ok(c) => c,
+    let (mut config, relinernote_cfg) = match load_judge_and_relinernote_config() {
+        Ok(pair) => pair,
         Err(msg) => {
             eprintln!("tape relinernote: RELINER_CONFIG — {msg}");
             return Err(2);
         }
     };
-    if let Some(m) = model_override.as_deref().filter(|s| !s.is_empty()) {
-        m.clone_into(&mut config.model);
+    // Precedence (issue #194): CLI `--model` > `.taperc::relinernote.default_model`
+    // > `judge.model`. The first non-empty value wins; the third
+    // layer is the unmodified `config.model` from the `judge:`
+    // block, used when neither flag nor `.taperc::relinernote` is set.
+    let effective_override = model_override.filter(|s| !s.is_empty()).or_else(|| {
+        relinernote_cfg
+            .default_model
+            .clone()
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(m) = effective_override {
+        config.model = m;
     }
     let model_id = config.model.clone();
 
@@ -3416,9 +3426,20 @@ fn run_relinernote_judge(
 }
 
 /// Locate `.taperc` (workspace first, user-level fallback), parse the
-/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`].
-/// Mirrors the loader the recap `--auto` path uses.
-fn load_judge_config_for_relinernote() -> std::result::Result<tape_judge::JudgeConfig, String> {
+/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`]
+/// alongside the parsed `[relinernote]` config block. The latter
+/// supplies the `default_model` fallback layered between CLI `--model`
+/// and `judge.model` per issue #194. A failure to read or parse the
+/// `.taperc` itself surfaces an exit-2 error with the file path
+/// named; an absent `[relinernote]` block returns a default-empty
+/// `RelinernoteConfig` rather than failing.
+fn load_judge_and_relinernote_config() -> std::result::Result<
+    (
+        tape_judge::JudgeConfig,
+        tape_redact::config::RelinernoteConfig,
+    ),
+    String,
+> {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
         .or_else(tape_redact::config::TapeRcConfig::locate_user);
@@ -3428,7 +3449,15 @@ fn load_judge_config_for_relinernote() -> std::result::Result<tape_judge::JudgeC
             .into());
     };
     let yaml = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-    let cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+    // Parse the `judge:` block via tape-judge's loader (existing path)
+    // and the `[relinernote]` block via the redact-crate parser
+    // (post-#194). Two parses against the same bytes; the cost is
+    // negligible (the file is small enough that the second parse is
+    // a microsecond) and the alternative would be reshaping the
+    // tape-judge loader to surface `RelinernoteConfig`, which crosses
+    // a crate boundary for one field. Two parses keeps the change
+    // local.
+    let judge_cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
         .map_err(|e| format!("parse {}: {e}", p.display()))?
         .ok_or_else(|| {
             format!(
@@ -3436,7 +3465,10 @@ fn load_judge_config_for_relinernote() -> std::result::Result<tape_judge::JudgeC
                 p.display()
             )
         })?;
-    Ok(cfg)
+    let relinernote_cfg = tape_redact::config::TapeRcConfig::parse(&yaml)
+        .map(|c| c.relinernote)
+        .map_err(|e| format!("parse {}: {e}", p.display()))?;
+    Ok((judge_cfg, relinernote_cfg))
 }
 
 /// Hardcoded bundled `default` prompt template (Phase 1 only).

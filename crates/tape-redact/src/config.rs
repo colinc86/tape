@@ -18,6 +18,10 @@ pub struct TapeRcConfig {
     /// `tape annotate` flag surface. Issue #192.
     #[serde(default)]
     pub annotate: AnnotateConfig,
+    /// `[relinernote]` block. Currently single-field; gains options
+    /// as later `tape relinernote` slices land. Issue #194.
+    #[serde(default)]
+    pub relinernote: RelinernoteConfig,
 }
 
 /// `.taperc::pricing` block. One field today: `pricing_file`, the
@@ -81,6 +85,29 @@ pub struct AnnotateConfig {
     /// Dormant when `--editor` is not passed.
     #[serde(default)]
     pub editor: Option<String>,
+}
+
+/// `.taperc::relinernote` block. One field today: `default_model`,
+/// which overrides the `judge:` block's `model` field for `tape
+/// relinernote` only (the other tape-judge consumers — `tape diff
+/// --judge` / `tape recap --auto` — are unchanged). Resolution
+/// order: CLI `--model` > this field > `judge.model`.
+///
+/// `default_template_id` / `default_temperature` / `default_max_tokens`
+/// / `default_report` are deliberately absent — they depend on
+/// the not-yet-shipped `--template-id` / `--temperature` /
+/// `--max-tokens` / `--report` flags from #71. `deny_unknown_fields`
+/// keeps that boundary load-bearing: a user who tries to set them
+/// today gets a clean typo-style error rather than a silent no-op.
+/// (Issue #194 / Step-2 of #71.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelinernoteConfig {
+    /// Default judge-model id. When set, takes precedence over the
+    /// `judge:` block's `model` field for `tape relinernote` only.
+    /// CLI `--model` still wins.
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
@@ -542,6 +569,59 @@ annotate:
             "annotate:\n  strict_kind: true\n",
             "annotate:\n  editors: nvim\n",
             "annotate:\n  editor_cmd: nvim\n",
+        ] {
+            assert!(
+                TapeRcConfig::parse(bad).is_err(),
+                "expected typo to fail config-load: {bad}"
+            );
+        }
+    }
+
+    // --- Issue #194: `relinernote:` block parse tests ---
+
+    #[test]
+    fn relinernote_section_with_default_model_parses() {
+        let yaml = "relinernote:\n  default_model: claude-haiku-4-5\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(
+            cfg.relinernote.default_model.as_deref(),
+            Some("claude-haiku-4-5")
+        );
+    }
+
+    #[test]
+    fn missing_relinernote_section_is_default() {
+        let yaml = "redact:\n  disable_default: [\"email\"]\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert!(cfg.relinernote.default_model.is_none());
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    #[test]
+    fn typo_under_relinernote_rejects() {
+        // `#[serde(deny_unknown_fields)]` boundary: every entry here
+        // is either a realistic typo or a deferred-field name from
+        // #71's Phase-2 follow-ons (template-id / temperature /
+        // max-tokens / report). The future slice that adds them
+        // extends `RelinernoteConfig` and those names start parsing
+        // cleanly — until then they fail load (intentional, per the
+        // issue body).
+        for bad in [
+            "relinernote:\n  default-model: claude-haiku-4-5\n",
+            "relinernote:\n  defaultModel: claude-haiku-4-5\n",
+            "relinernote:\n  model: claude-haiku-4-5\n",
+            "relinernote:\n  template_id: default\n",
+            "relinernote:\n  default_template_id: default\n",
+            "relinernote:\n  default_template: default\n",
+            "relinernote:\n  default_temperature: 0.5\n",
+            "relinernote:\n  temperature: 0.5\n",
+            "relinernote:\n  default_max_tokens: 1024\n",
+            "relinernote:\n  max_tokens: 1024\n",
+            "relinernote:\n  default_report: ./report.json\n",
+            "relinernote:\n  report: ./report.json\n",
+            "relinernote:\n  dry_run: true\n",
+            "relinernote:\n  default_out: ./out.tape\n",
+            "relinernote:\n  out_dir: ./out\n",
         ] {
             assert!(
                 TapeRcConfig::parse(bad).is_err(),
