@@ -1,0 +1,52 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: cargo check / test / clippy / fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # `dtolnay/rust-toolchain@stable` honors `rust-toolchain.toml`'s
+      # `channel = "stable"` automatically and installs `rustfmt` +
+      # `clippy` per `components = [...]`. Pinning to `stable` here
+      # is redundant but keeps the AC's "pinned toolchain" promise
+      # explicit at the workflow level.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Caches `~/.cargo/{registry,git}` + `target/` keyed on the
+      # workflow + lockfile, so a no-op PR finishes in ~1m instead
+      # of the ~10m cold-cache rebuild. (#175 AC #5.)
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo check --workspace
+        run: cargo check --workspace --all-targets
+
+      # `-A clippy::pedantic` is a deliberate, scoped opt-out: the
+      # workspace has ~125 pre-existing pedantic-suite findings (a
+      # snapshot of `[lints.clippy] pedantic = warn` accumulating
+      # since adoption). Cleanup is a separate `kind:tech-debt`
+      # follow-up (see PR #N for the inventory). Standard clippy is
+      # still treated as deny-warnings, which is what catches the
+      # actual regressions the AC cares about.
+      - name: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets -- -A clippy::pedantic -D warnings
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
