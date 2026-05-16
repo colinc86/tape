@@ -14,7 +14,9 @@ pub enum RawEntry {
     /// `system`, `permission-mode`, `ai-title`, `attachment`,
     /// `file-history-snapshot`, `last-prompt`, `queue-operation`, `agent-name`,
     /// or anything else we don't convert.
-    Skip { kind: String },
+    Skip {
+        kind: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,10 +163,13 @@ mod tests {
     fn parses_tool_use_blocks() {
         let s = include_str!("../../../../tests/fixtures/transcripts/with_bash.jsonl");
         let (entries, _report) = parse_str(s);
-        let assistant = entries.iter().find_map(|e| match e {
-            RawEntry::Assistant(a) => Some(a),
-            _ => None,
-        }).unwrap();
+        let assistant = entries
+            .iter()
+            .find_map(|e| match e {
+                RawEntry::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .unwrap();
         let tool_use = assistant
             .message
             .content
@@ -183,7 +188,7 @@ mod tests {
         assert_eq!(report.assistant_count, 1);
         assert_eq!(report.skipped.get("future-thing"), Some(&1));
         // skip entries are still in the vec for ordering visibility
-        assert!(matches!(entries.iter().find(|e| matches!(e, RawEntry::Skip { .. })), Some(_)));
+        assert!(entries.iter().any(|e| matches!(e, RawEntry::Skip { .. })));
     }
 
     #[test]

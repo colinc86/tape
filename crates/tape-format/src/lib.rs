@@ -1,17 +1,17 @@
 //! `tape/v0` format implementation: read, write, verify.
 
-pub mod meta;
-pub mod tracks;
-pub mod liner;
 pub mod artifact;
-pub mod redactions;
+pub mod liner;
+pub mod meta;
 pub mod reader;
-pub mod writer;
-pub mod verify;
+pub mod redactions;
 pub mod secret_scan;
+pub mod tracks;
+pub mod verify;
+pub mod writer;
 
-pub use meta::{Meta, Outcome, RedactionSummary, Recorder};
-pub use tracks::{Track, Kind};
+pub use meta::{Meta, Outcome, Recorder, RedactionSummary};
+pub use tracks::{Kind, Track};
 pub use verify::{Diagnostic, DiagnosticCode, VerifyReport};
 
 /// Wire-format version literal that MUST appear in every `meta.yaml`.

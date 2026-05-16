@@ -105,14 +105,9 @@ impl RuntimeAdapter for ClaudeCodeAdapter {
         })
     }
 
-    fn discover_transcript(
-        &self,
-        ctx: &SnapshotContext,
-    ) -> Result<PathBuf, RuntimeError> {
+    fn discover_transcript(&self, ctx: &SnapshotContext) -> Result<PathBuf, RuntimeError> {
         let handle = transcript::find_active_session(&ctx.cwd).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                RuntimeError::TranscriptNotFound(ctx.cwd.clone())
-            }
+            std::io::ErrorKind::NotFound => RuntimeError::TranscriptNotFound(ctx.cwd.clone()),
             _ => RuntimeError::Io(e),
         })?;
         Ok(handle.jsonl_path)

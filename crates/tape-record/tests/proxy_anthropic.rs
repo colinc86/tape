@@ -96,7 +96,10 @@ struct CannedState {
     body: Vec<u8>,
 }
 
-async fn canned_messages(AxState(state): AxState<CannedState>, _body: axum::body::Bytes) -> Response<Body> {
+async fn canned_messages(
+    AxState(state): AxState<CannedState>,
+    _body: axum::body::Bytes,
+) -> Response<Body> {
     Response::builder()
         .status(state.status)
         .header(header::CONTENT_TYPE, state.content_type)

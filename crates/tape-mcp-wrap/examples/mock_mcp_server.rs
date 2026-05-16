@@ -26,7 +26,10 @@ fn main() {
         };
         let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = req.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = req
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
         let response: serde_json::Value = match method {
             "initialize" => serde_json::json!({

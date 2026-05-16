@@ -486,7 +486,12 @@ mod tests {
     fn aligned_identical_steps_classify_identical() {
         let a = t(1, Kind::Task, json!({"prompt": "x"}));
         let b = t(1, Kind::Task, json!({"prompt": "x"}));
-        let p = classify_pair(&[a.clone()], &[b.clone()], Some(1), Some(1));
+        let p = classify_pair(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
+            Some(1),
+            Some(1),
+        );
         assert_eq!(p.class, Class::Identical);
     }
 
@@ -494,7 +499,12 @@ mod tests {
     fn whitespace_only_difference_is_cosmetic() {
         let a = t(1, Kind::Task, json!({"prompt": "hello world"}));
         let b = t(1, Kind::Task, json!({"prompt": "hello   world"}));
-        let p = classify_pair(&[a.clone()], &[b.clone()], Some(1), Some(1));
+        let p = classify_pair(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
+            Some(1),
+            Some(1),
+        );
         assert_eq!(p.class, Class::Cosmetic);
     }
 
@@ -502,7 +512,12 @@ mod tests {
     fn semantic_difference_is_substantive() {
         let a = t(1, Kind::Task, json!({"prompt": "investigate"}));
         let b = t(1, Kind::Task, json!({"prompt": "ignore"}));
-        let p = classify_pair(&[a.clone()], &[b.clone()], Some(1), Some(1));
+        let p = classify_pair(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
+            Some(1),
+            Some(1),
+        );
         assert_eq!(p.class, Class::Substantive);
     }
 

@@ -10,7 +10,11 @@ use tape_record::session::Session;
 
 /// Build a minimal valid `.tape` on disk with the given `label` and return
 /// the path inside `tmp`. Used to manufacture a source tape we can `tape.load`.
-fn build_labelled_tape(tmp: &std::path::Path, label: Option<&str>, name: &str) -> std::path::PathBuf {
+fn build_labelled_tape(
+    tmp: &std::path::Path,
+    label: Option<&str>,
+    name: &str,
+) -> std::path::PathBuf {
     // `Session::start` already injects the task event at step 1 — appending
     // another `Kind::Task` here would produce a tape with two task events,
     // which now fails SPEC §5.4 cardinality (#86). Just start; that's
@@ -70,9 +74,8 @@ fn load_and_eject(src: &std::path::Path, out: &std::path::Path) {
         }}
     });
     let resp = pump(deck, &[eject_req]);
-    assert_eq!(
-        resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp[0]["result"]["isError"].as_bool().unwrap_or(false),
         "eject should succeed; got {:?}",
         resp[0]
     );

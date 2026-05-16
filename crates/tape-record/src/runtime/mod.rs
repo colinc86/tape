@@ -230,10 +230,7 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Adapters whose `capabilities()` does not include
     /// [`RuntimeCapabilities::TRANSCRIPT`] MUST return
     /// `Err(RuntimeError::CapabilityMissing(Capability::Transcript))`.
-    fn discover_transcript(
-        &self,
-        ctx: &SnapshotContext,
-    ) -> Result<PathBuf, RuntimeError>;
+    fn discover_transcript(&self, ctx: &SnapshotContext) -> Result<PathBuf, RuntimeError>;
 
     /// Convert a raw transcript entry into a typed value. Step 1 keeps
     /// the Claude-Code-shaped return type intentionally — generalising
@@ -405,7 +402,9 @@ mod tests {
         let mut reg = Registry::new();
         let first = claude_code_adapter();
         assert!(reg.register(first.clone()).is_none());
-        let prev = reg.register(claude_code_adapter()).expect("replacement returns previous");
+        let prev = reg
+            .register(claude_code_adapter())
+            .expect("replacement returns previous");
         assert_eq!(prev.id(), "claude-code");
         assert_eq!(reg.len(), 1);
     }
