@@ -831,6 +831,20 @@ enum Cmd {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Generate a new X25519 keypair for `tape encrypt --recipient` /
+    /// `tape decrypt --identity`. Phase 2 of #89 (carved per #248).
+    /// Writes a `<name>.tape.agekey` (X25519 secret, bech32
+    /// `AGE-SECRET-KEY-1…`, mode 0600 on Unix) and a
+    /// `<name>.tape.agepub` (X25519 recipient, bech32 `age1…`, mode
+    /// 0644). Refuses to overwrite either file. Output is
+    /// interoperable with the reference `age(1)` binary (`-i
+    /// alice.tape.agekey` decrypts, `-r alice.tape.agepub` encrypts).
+    EncryptKeygen {
+        /// Output basename. Two files will be produced next to each
+        /// other: `<out>.tape.agekey` and `<out>.tape.agepub`.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Sign a cassette with an Ed25519 secret key. Phase 1 of #18:
     /// produces a detached sidecar `<cassette>.sig` (or `--out`'s
     /// path) carrying the BLAKE3 digest of the cassette bytes, the
@@ -866,33 +880,44 @@ enum Cmd {
         #[arg(long)]
         sig: Option<std::path::PathBuf>,
     },
-    /// Wrap a cassette in an age passphrase envelope. Phase 1 of
-    /// #89 (carved per #238): outer envelope only, passphrase mode
-    /// only. Produces a `<cassette>.age` file that the reference
-    /// `age(1)` binary can decrypt with the same passphrase. The
-    /// cassette zip is not modified — encryption is an orthogonal
-    /// outer wrapper, invisible to `tape verify`.
+    /// Wrap a cassette in an age envelope. Phase 1 of #89 (carved
+    /// per #238) shipped passphrase mode; Phase 2 (carved per #248)
+    /// adds X25519 recipient-key mode via `--recipient <age1…|file>`.
+    /// Produces a `<cassette>.age` file that the reference `age(1)`
+    /// binary can decrypt with the matching passphrase or identity.
+    /// The cassette zip is not modified — encryption is an
+    /// orthogonal outer wrapper, invisible to `tape verify`.
     ///
-    /// Phase 1: passphrase only. Recipient-key mode (`--to age1…`),
-    /// keygen, embedded encryption metadata in `meta.yaml`, and
-    /// `.tape.age` magic-byte detection in `tape verify` are all
-    /// Phase 2+ of #89.
+    /// Phase 2: single passphrase OR single X25519 recipient (exactly
+    /// one of `--passphrase` / `--passphrase-stdin` / `--recipient`).
+    /// Multi-recipient bundles, hardware/plugin recipients, embedded
+    /// encryption metadata in `meta.yaml`, and `.tape.age` magic-byte
+    /// detection in `tape verify` are Phase 3+ of #89.
     Encrypt {
         /// Cassette to encrypt.
         cassette: std::path::PathBuf,
         /// Read the passphrase via a no-echo TTY prompt, asking
         /// twice for confirmation. Mutually exclusive with
-        /// `--passphrase-stdin`.
+        /// `--passphrase-stdin` and `--recipient`.
         #[arg(
             long,
-            conflicts_with = "passphrase_stdin",
-            required_unless_present = "passphrase_stdin"
+            conflicts_with_all = ["passphrase_stdin", "recipient"],
         )]
         passphrase: bool,
         /// Read the passphrase as one line from stdin (no prompt,
         /// no confirmation). Intended for CI and scripts.
-        #[arg(long)]
+        /// Mutually exclusive with `--passphrase` and `--recipient`.
+        #[arg(long, conflicts_with = "recipient")]
         passphrase_stdin: bool,
+        /// X25519 recipient public key (Phase 2 of #89). Accepts a
+        /// bare `age1…` bech32 string or a path to a file
+        /// containing one such line. Mutually exclusive with the
+        /// passphrase modes.
+        #[arg(
+            long,
+            required_unless_present_any = ["passphrase", "passphrase_stdin"],
+        )]
+        recipient: Option<String>,
         /// Output path. Default: `<cassette>.age`. Refuses to
         /// overwrite unless `--force`.
         #[arg(short = 'o', long)]
@@ -901,24 +926,35 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Unwrap a cassette from an age passphrase envelope. Phase 1
-    /// of #89 (carved per #238). On a wrong passphrase, exits 2
-    /// with `DECRYPT_FAILED` in stderr.
+    /// Unwrap a cassette from an age envelope. Phase 1 of #89
+    /// (carved per #238) shipped passphrase mode; Phase 2 (carved
+    /// per #248) adds X25519 identity-key mode via `--identity
+    /// <keyfile>`. On a wrong passphrase, wrong identity, or
+    /// mismatched envelope kind, exits 2 with `DECRYPT_FAILED` in
+    /// stderr.
     Decrypt {
         /// Encrypted cassette (typically `<name>.age`).
         cassette: std::path::PathBuf,
         /// Read the passphrase via a no-echo TTY prompt (no
         /// confirmation on decrypt). Mutually exclusive with
-        /// `--passphrase-stdin`.
+        /// `--passphrase-stdin` and `--identity`.
         #[arg(
             long,
-            conflicts_with = "passphrase_stdin",
-            required_unless_present = "passphrase_stdin"
+            conflicts_with_all = ["passphrase_stdin", "identity"],
         )]
         passphrase: bool,
         /// Read the passphrase as one line from stdin (no prompt).
-        #[arg(long)]
+        /// Mutually exclusive with `--passphrase` and `--identity`.
+        #[arg(long, conflicts_with = "identity")]
         passphrase_stdin: bool,
+        /// Path to an X25519 identity file (the
+        /// `<name>.tape.agekey` produced by `tape encrypt-keygen`).
+        /// Mutually exclusive with the passphrase modes.
+        #[arg(
+            long,
+            required_unless_present_any = ["passphrase", "passphrase_stdin"],
+        )]
+        identity: Option<std::path::PathBuf>,
         /// Output path. Default: the input with the trailing
         /// `.age` suffix stripped (refuses if the input does not
         /// end in `.age` and `--output` is absent). Refuses to
@@ -1084,6 +1120,7 @@ fn main() -> Result<()> {
         } => cmd_ingest(format.as_deref(), &input, output),
         Cmd::Policy { cassette, policy } => cmd_policy(&cassette, &policy),
         Cmd::SignKeygen { out } => cmd_sign_keygen(&out),
+        Cmd::EncryptKeygen { out } => cmd_encrypt_keygen(&out),
         Cmd::Sign { cassette, key, out } => cmd_sign(&cassette, &key, out),
         Cmd::VerifySig {
             cassette,
@@ -1094,16 +1131,32 @@ fn main() -> Result<()> {
             cassette,
             passphrase,
             passphrase_stdin,
+            recipient,
             output,
             force,
-        } => cmd_encrypt(&cassette, passphrase, passphrase_stdin, output, force),
+        } => cmd_encrypt(
+            &cassette,
+            passphrase,
+            passphrase_stdin,
+            recipient,
+            output,
+            force,
+        ),
         Cmd::Decrypt {
             cassette,
             passphrase,
             passphrase_stdin,
+            identity,
             output,
             force,
-        } => cmd_decrypt(&cassette, passphrase, passphrase_stdin, output, force),
+        } => cmd_decrypt(
+            &cassette,
+            passphrase,
+            passphrase_stdin,
+            identity,
+            output,
+            force,
+        ),
     }
 }
 
@@ -8639,10 +8692,12 @@ fn cmd_encrypt(
     cassette: &std::path::Path,
     passphrase_tty: bool,
     passphrase_stdin: bool,
+    recipient: Option<String>,
     output: Option<std::path::PathBuf>,
     force: bool,
 ) -> Result<()> {
     use std::io::Write as _;
+    use std::str::FromStr as _;
 
     let plaintext = match std::fs::read(cassette) {
         Ok(b) => b,
@@ -8661,12 +8716,40 @@ fn cmd_encrypt(
         std::process::exit(2);
     }
 
-    let passphrase = match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ true) {
-        Ok(p) => p,
-        Err(code) => std::process::exit(code),
+    // Build the encryptor. Recipient mode (Phase 2) wins over
+    // passphrase mode when both somehow slip past clap — but clap's
+    // conflicts_with_all should make that path unreachable.
+    let encryptor = if let Some(recipient_arg) = recipient {
+        let bech = match resolve_recipient_input(&recipient_arg) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
+        };
+        let rec = match age::x25519::Recipient::from_str(&bech) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: parse recipient bech32: {e}");
+                std::process::exit(2);
+            }
+        };
+        match age::Encryptor::with_recipients(vec![Box::new(rec)]) {
+            Some(e) => e,
+            None => {
+                eprintln!("error: age::Encryptor::with_recipients returned None (empty list)");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        let passphrase =
+            match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ true) {
+                Ok(p) => p,
+                Err(code) => std::process::exit(code),
+            };
+        age::Encryptor::with_user_passphrase(passphrase)
     };
 
-    let encryptor = age::Encryptor::with_user_passphrase(passphrase);
     let out_file = match std::fs::File::create(&out_path) {
         Ok(f) => f,
         Err(e) => {
@@ -8694,10 +8777,107 @@ fn cmd_encrypt(
     Ok(())
 }
 
+/// Resolve the `--recipient` arg: if it's an `age1…` bech32 string
+/// take it as-is; otherwise treat it as a path and read the first
+/// non-comment line. Mirrors the `age(1)` CLI's `-r` semantics.
+fn resolve_recipient_input(arg: &str) -> std::result::Result<String, String> {
+    if arg.starts_with("age1") {
+        return Ok(arg.to_owned());
+    }
+    let path = std::path::Path::new(arg);
+    if !path.exists() {
+        return Err(format!(
+            "recipient {arg:?} is neither an `age1…` bech32 nor an existing file path"
+        ));
+    }
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read recipient file {arg:?}: {e}"))?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return Ok(trimmed.to_owned());
+    }
+    Err(format!(
+        "recipient file {arg:?} contains no non-comment lines"
+    ))
+}
+
+/// Phase 2 of #89 (carved per #248): X25519 keypair generator.
+/// Mirrors `cmd_sign_keygen` — writes a 0600 secret + 0644 public
+/// pair, refuses overwrite, prints the fingerprint (the bech32
+/// recipient string) to stderr.
+fn cmd_encrypt_keygen(out_base: &std::path::Path) -> Result<()> {
+    let agekey_path = appended_extension(out_base, "tape.agekey");
+    let agepub_path = appended_extension(out_base, "tape.agepub");
+    if let Err(e) = refuse_existing(&agekey_path).and_then(|()| refuse_existing(&agepub_path)) {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    }
+
+    // age 0.10 generates a fresh X25519 keypair via Identity::generate.
+    let identity = age::x25519::Identity::generate();
+    let recipient = identity.to_public();
+
+    // The secret-key bech32 is exposed via Identity's Display impl
+    // (which the secrecy wrapper masks); to get the actual string
+    // we use `to_string` on the underlying ExposeSecret view.
+    use age::secrecy::ExposeSecret as _;
+    let secret_bech: String = identity.to_string().expose_secret().clone();
+    let public_bech = recipient.to_string();
+
+    // Header line plus the bech32. Mirrors the age(1) format.
+    let key_body =
+        format!("# created by tape encrypt-keygen\n# recipient: {public_bech}\n{secret_bech}\n");
+    let pub_body = format!("# created by tape encrypt-keygen\n{public_bech}\n");
+
+    std::fs::write(&agekey_path, key_body)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", agekey_path.display()))?;
+    set_mode(&agekey_path, 0o600)?;
+    std::fs::write(&agepub_path, pub_body)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", agepub_path.display()))?;
+    set_mode(&agepub_path, 0o644)?;
+
+    eprintln!(
+        "tape encrypt-keygen: wrote {} + {} (recipient {})",
+        agekey_path.display(),
+        agepub_path.display(),
+        public_bech,
+    );
+    Ok(())
+}
+
+/// Read an X25519 identity (`AGE-SECRET-KEY-1…`) from a keyfile.
+/// Skips `#` comment lines and blank lines so a file with the
+/// `# created by tape encrypt-keygen` header parses cleanly. On
+/// any failure returns a string suitable for the
+/// `error: DECRYPT_FAILED: <reason>` line — the caller exits 2.
+fn read_identity_file(
+    path: &std::path::Path,
+) -> std::result::Result<age::x25519::Identity, String> {
+    use std::str::FromStr as _;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read identity {}: {e}", path.display()))?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return age::x25519::Identity::from_str(trimmed)
+            .map_err(|e| format!("parse identity in {}: {e}", path.display()));
+    }
+    Err(format!(
+        "identity file {} contains no non-comment lines",
+        path.display()
+    ))
+}
+
 fn cmd_decrypt(
     cassette: &std::path::Path,
     passphrase_tty: bool,
     passphrase_stdin: bool,
+    identity: Option<std::path::PathBuf>,
     output: Option<std::path::PathBuf>,
     force: bool,
 ) -> Result<()> {
@@ -8732,12 +8912,6 @@ fn cmd_decrypt(
         }
     };
 
-    let passphrase =
-        match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ false) {
-            Ok(p) => p,
-            Err(code) => std::process::exit(code),
-        };
-
     let decryptor = match age::Decryptor::new(in_file) {
         Ok(d) => d,
         Err(e) => {
@@ -8745,23 +8919,62 @@ fn cmd_decrypt(
             std::process::exit(2);
         }
     };
-    let pd = match decryptor {
-        age::Decryptor::Passphrase(d) => d,
-        age::Decryptor::Recipients(_) => {
+
+    let mut reader: Box<dyn std::io::Read> = match (decryptor, identity.as_deref()) {
+        // Recipient-encrypted envelope + --identity supplied →
+        // Phase 2 live path.
+        (age::Decryptor::Recipients(d), Some(id_path)) => {
+            let id = match read_identity_file(id_path) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("error: DECRYPT_FAILED: {e}");
+                    std::process::exit(2);
+                }
+            };
+            match d.decrypt(std::iter::once(&id as &dyn age::Identity)) {
+                Ok(r) => Box::new(r),
+                Err(e) => {
+                    eprintln!("error: DECRYPT_FAILED: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        // Recipient-encrypted but user supplied --passphrase[-stdin]
+        // → mismatched envelope kind.
+        (age::Decryptor::Recipients(_), None) => {
             eprintln!(
                 "error: DECRYPT_FAILED: cassette is encrypted to recipients (X25519); \
-                 Phase 1 only supports passphrase envelopes — see #89"
+                 pass --identity <keyfile> to decrypt — see #89"
             );
             std::process::exit(2);
         }
-    };
-    let mut reader = match pd.decrypt(&passphrase, None) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: DECRYPT_FAILED: {e}");
+        // Passphrase-encrypted envelope + --identity supplied →
+        // mismatched envelope kind.
+        (age::Decryptor::Passphrase(_), Some(_)) => {
+            eprintln!(
+                "error: DECRYPT_FAILED: cassette is encrypted with a passphrase; \
+                 pass --passphrase or --passphrase-stdin to decrypt"
+            );
             std::process::exit(2);
         }
+        // Passphrase-encrypted envelope + a passphrase mode →
+        // Phase 1 live path.
+        (age::Decryptor::Passphrase(pd), None) => {
+            let passphrase =
+                match read_passphrase(passphrase_tty, passphrase_stdin, /*confirm=*/ false) {
+                    Ok(p) => p,
+                    Err(code) => std::process::exit(code),
+                };
+            match pd.decrypt(&passphrase, None) {
+                Ok(r) => Box::new(r),
+                Err(e) => {
+                    eprintln!("error: DECRYPT_FAILED: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
     };
+
     let mut plaintext = Vec::with_capacity(8192);
     if let Err(e) = reader.read_to_end(&mut plaintext) {
         eprintln!("error: DECRYPT_FAILED: {e}");
