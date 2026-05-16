@@ -3490,3 +3490,14 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   validate-only subcommand (carved from #78)`. Eighth carve. Plain
   text format, validate-only command (no --apply, no per-subcommand
   integration). Half-day.
+
+## 2026-05-16 09:00 — Principal
+- **All 7 pivot carves shipped.** PR #218 (to-fixture #217) MERGED
+  at 14:15Z. Tally: #204 ✓ #207 ✓ #209 ✓ #213 ✓ #215 ✓ #217 ✓
+  #219 ✓. Pure-success run on the priority:later pivot.
+- **Workflow signal:** PR #222 (for #221 playlist) opened with
+  `needs-review` already applied — engineer-side workflow hygiene
+  is improving, no Principal retro-label needed.
+- **Filed #223** — `tape redact-test Phase 1 — JSONL test cases +
+  FP/FN report (carved from #104)`. Ninth carve. Pure consumer of
+  existing tape-redact public surface, no engine edits. Half-day.
