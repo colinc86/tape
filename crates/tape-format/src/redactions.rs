@@ -29,9 +29,9 @@ pub fn to_json(records: &[Redaction]) -> crate::Result<String> {
     Ok(serde_json::to_string_pretty(records)?)
 }
 
-/// Cheap JSONPath syntax check. Accepts a subset that's sufficient for our
+/// Cheap `JSONPath` syntax check. Accepts a subset that's sufficient for our
 /// use: `$`, `$.name`, `$.name.foo`, `$[0]`, `$.foo[3].bar`, `$["weird key"]`.
-/// The format isn't strict JSONPath (we don't recognize filters/wildcards
+/// The format isn't strict `JSONPath` (we don't recognize filters/wildcards
 /// because we never produce them); this rejects obviously-broken values.
 pub fn is_valid_jsonpath(s: &str) -> bool {
     let bytes = s.as_bytes();

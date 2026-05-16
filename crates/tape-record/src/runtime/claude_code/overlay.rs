@@ -1,5 +1,5 @@
 //! Generates Claude Code settings overlays that wire `tape-hook` into the
-//! PreToolUse / PostToolUse lifecycle for the built-in tools we care to
+//! `PreToolUse` / `PostToolUse` lifecycle for the built-in tools we care to
 //! record. Overlay files live in the temp dir for the recording's lifetime
 //! and are removed during cleanup.
 //!
@@ -178,7 +178,7 @@ mod tests {
     /// Issue #75: the overlay must cover every tool that `tape-hook`'s
     /// `file_write_event` accepts. `NotebookEdit` was dispatched by the
     /// hook and by the transcript converter but missing from the
-    /// PreToolUse / PostToolUse matchers, so live recordings dropped
+    /// `PreToolUse` / `PostToolUse` matchers, so live recordings dropped
     /// notebook edits.
     #[test]
     fn overlay_matchers_cover_every_file_write_tool() {

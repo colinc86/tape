@@ -79,7 +79,7 @@ fn rules() -> &'static [ScanRule] {
             ScanRule {
                 id: "aws_secret_key",
                 regex: rule_slot!(),
-                pattern: r#"(?i)aws[_\-]?secret(?:[_\-](?:access[_\-])?key)?[^\n]{0,50}?([A-Za-z0-9/+=]{40})"#,
+                pattern: r"(?i)aws[_\-]?secret(?:[_\-](?:access[_\-])?key)?[^\n]{0,50}?([A-Za-z0-9/+=]{40})",
                 validator: None,
             },
             ScanRule {

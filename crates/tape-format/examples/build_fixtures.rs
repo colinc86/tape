@@ -1,7 +1,7 @@
 //! Builds the canonical test fixtures into `tests/fixtures/`.
 //!
 //! Run from the workspace root:
-//!     cargo run --example build_fixtures -p tape-format
+//!     cargo run --example `build_fixtures` -p tape-format
 //!
 //! Fixtures are deterministic — the same invocation produces byte-identical
 //! `.tape` files (modulo zip metadata bits we don't control). They are

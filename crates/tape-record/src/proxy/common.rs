@@ -1,4 +1,4 @@
-//! Shared HTTP recording proxy. Each vendor (Anthropic, OpenAI, …) wraps this
+//! Shared HTTP recording proxy. Each vendor (Anthropic, `OpenAI`, …) wraps this
 //! with its own URL and path defaults.
 //!
 //! Behavior:
@@ -307,8 +307,8 @@ fn error_response(status: StatusCode, message: &str) -> Response<Body> {
 }
 
 /// Parse an SSE stream into a `{"events": [...]}` Value. Common across
-/// vendors — both Anthropic and OpenAI emit `data: <json>\n\n` framing,
-/// with OpenAI also emitting `data: [DONE]` as the terminator.
+/// vendors — both Anthropic and `OpenAI` emit `data: <json>\n\n` framing,
+/// with `OpenAI` also emitting `data: [DONE]` as the terminator.
 fn parse_sse_to_value(bytes: &Bytes) -> Value {
     let s = String::from_utf8_lossy(bytes);
     let mut events = Vec::new();

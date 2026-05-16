@@ -6,8 +6,8 @@
 //! - `Read`                                     → `Kind::FileRead`
 //! - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` → `Kind::FileWrite`
 //! - `mcp__<server>__<tool>`                    → `Kind::McpCall`, `payload.server = <server>`
-//! - everything else (Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, ...)
-//!                                              → `Kind::McpCall`, `payload.server = "builtin"`
+//! - everything else (Grep, Glob, `WebFetch`, `WebSearch`, Task, `TodoWrite`, ...)
+//!   → `Kind::McpCall`, `payload.server = "builtin"`
 //!
 //! Stretching `McpCall` to cover Claude Code's built-in non-MCP tools
 //! preserves the closed v0 `Kind` enum. v0.2 / `tape/v1` may introduce a
@@ -310,7 +310,7 @@ fn collect_inline_tool_results(entries: &[RawEntry]) -> HashMap<String, Value> {
     out
 }
 
-/// Pull the textually-meaningful subset of a tool_result. Returns:
+/// Pull the textually-meaningful subset of a `tool_result`. Returns:
 /// - `Some(s)` when result is a string, or an array of content blocks where
 ///   at least one block has `type: "text"` and a `text` string.
 /// - `None` for an empty/missing result, an array with no text blocks, or
@@ -338,7 +338,7 @@ fn extract_tool_result_text(result: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Map one tool_use block to (Kind, payload). The payload shape per kind
+/// Map one `tool_use` block to (Kind, payload). The payload shape per kind
 /// follows SPEC.md §5.5.
 fn map_tool_to_track(name: &str, input: &Value, result: Option<&Value>) -> (Kind, Value) {
     let result_for_payload = result.cloned().unwrap_or(Value::Null);
@@ -563,7 +563,7 @@ mod tests {
         assert!(task.payload["prompt"].as_str().unwrap().contains("AKIA"));
     }
 
-    /// Issue #13: `Read` whose tool_result is an array of text content blocks
+    /// Issue #13: `Read` whose `tool_result` is an array of text content blocks
     /// must hash the concatenated text, not emit `"blake3:0"`.
     #[test]
     fn read_with_block_array_result_hashes_concatenated_text() {
@@ -583,8 +583,8 @@ mod tests {
         assert_eq!(hash, format!("blake3:{expected}"));
     }
 
-    /// Issue #13: `Read` with no tool_result (orphan tool_use) should *omit*
-    /// the content_hash field rather than emit `"blake3:0"`.
+    /// Issue #13: `Read` with no `tool_result` (orphan `tool_use`) should *omit*
+    /// the `content_hash` field rather than emit `"blake3:0"`.
     #[test]
     fn read_without_result_omits_content_hash() {
         let input = json!({"file_path": "/etc/hosts"});
@@ -598,7 +598,7 @@ mod tests {
 
     /// Issue #13: `Edit` tools have no `input.content` field. The old code
     /// always took the `"blake3:0"` fallback. Now we hash whatever post-edit
-    /// text we can see — tool_result preferred, `new_string` as last resort.
+    /// text we can see — `tool_result` preferred, `new_string` as last resort.
     #[test]
     fn edit_falls_back_to_new_string_when_no_result() {
         let input = json!({
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(hash, format!("blake3:{expected}"));
     }
 
-    /// Issue #13: `Edit` prefers tool_result text over `new_string` because
+    /// Issue #13: `Edit` prefers `tool_result` text over `new_string` because
     /// the result usually contains a richer post-edit snippet.
     #[test]
     fn edit_prefers_tool_result_text_over_new_string() {
