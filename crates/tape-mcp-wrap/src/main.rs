@@ -283,7 +283,7 @@ mod tests {
 
     /// Regression test for issue #53.
     ///
-    /// The wrap evicts pending tools/call entries older than PENDING_TTL when a
+    /// The wrap evicts pending tools/call entries older than `PENDING_TTL` when a
     /// new tools/call arrives. With the old 5-minute TTL, slow tools (>5 min)
     /// had their pending entries evicted before the response arrived, so the
     /// response could not be paired with its request — the `mcp_call` event was

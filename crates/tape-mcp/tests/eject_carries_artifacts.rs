@@ -1,7 +1,7 @@
 //! Issue #41 regression: `tape.load` of a tape with spilled artifacts,
 //! followed by `tape.eject` to a new path, must produce a tape that
 //! contains the same `artifacts/*.bin` bytes — not an empty `artifacts/`
-//! directory that would fail `tape verify` with MISSING_ARTIFACT.
+//! directory that would fail `tape verify` with `MISSING_ARTIFACT`.
 
 use serde_json::{json, Value};
 

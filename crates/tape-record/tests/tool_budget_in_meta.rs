@@ -41,7 +41,7 @@ fn read_meta(path: &std::path::Path) -> Meta {
     Meta::parse(&yaml).unwrap()
 }
 
-/// Happy path: a tape with model_call + mcp_call + shell events should
+/// Happy path: a tape with `model_call` + `mcp_call` + `shell` events should
 /// produce a `tool_budget` whose `total_calls` is 3 and whose token totals
 /// reflect the per-event `tokens_in` / `tokens_out` values.
 #[test]
@@ -114,7 +114,7 @@ fn tool_budget_wall_clock_ms_reflects_session_duration() {
     );
 }
 
-/// A model_call without `tokens_in` / `tokens_out` keys (e.g. a streamed
+/// A `model_call` without `tokens_in` / `tokens_out` keys (e.g. a streamed
 /// response the proxy couldn't sum up) should contribute zero to the totals.
 /// The budget is still emitted — zero is honest, missing would silently dead
 /// the consumer's Latency line again.
