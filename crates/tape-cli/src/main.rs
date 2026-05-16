@@ -663,6 +663,47 @@ enum Cmd {
         /// Path to a `.tapelist` file.
         file: std::path::PathBuf,
     },
+    /// Import a foreign trace as a `.tape` cassette. Phase 1 of #95
+    /// (carved per #225): a single source format (`otlp`) on a single
+    /// input file. Inverse of `tape to-otlp` Phase 1 (#88/#209).
+    ///
+    /// Recognised-but-unimplemented formats (`langsmith`, `langfuse`,
+    /// `helicone`, `openllmetry`, `phoenix`) exit `2` with a
+    /// pointer to #95 so the user gets a clear path forward.
+    /// `--format` is required (no auto-detection in Phase 1).
+    ///
+    /// The output cassette is synthesized to satisfy SPEC §5.4 — a
+    /// `task` event is prepended if the input doesn't start with one,
+    /// an `eject` event is appended if it doesn't end with one, and
+    /// steps are renumbered `1..=N`. The post-write `tape verify`
+    /// gate exits `3` and removes the partial output on regression
+    /// (mirroring `tape compact`).
+    ///
+    /// Out of scope for Phase 1 (deferred to #95): every non-`otlp`
+    /// format, multi-file batch, `--format auto`, hierarchy
+    /// preservation via `parentSpanId`, `meta.ingest` provenance,
+    /// artifact resolution, redaction re-scan, original `traceId`
+    /// preservation, `--strict` mode, cost / token aggregation.
+    Ingest {
+        /// Input format. Phase 1 only implements `otlp`; the other
+        /// names (`langsmith` / `langfuse` / `helicone` /
+        /// `openllmetry` / `phoenix`) are recognised but exit 2 with
+        /// a Phase-1 message — better diagnostic than clap's generic
+        /// "invalid value".
+        ///
+        /// REQUIRED in Phase 1. Missing → exit 2 with a custom message
+        /// (kept optional at the clap level so the diagnostic is the
+        /// Phase-1 one rather than clap's stock "missing required
+        /// argument").
+        #[arg(short = 'f', long)]
+        format: Option<String>,
+        /// Input file (e.g., an OTLP/JSON export).
+        input: std::path::PathBuf,
+        /// Output cassette path. Default: `<input>.tape` next to the
+        /// input. Refuses if equal to the input.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -803,6 +844,11 @@ fn main() -> Result<()> {
             cases_file,
         } => cmd_redact_test(&rules_file, &cases_file),
         Cmd::Playlist { file } => cmd_playlist(&file),
+        Cmd::Ingest {
+            format,
+            input,
+            output,
+        } => cmd_ingest(format.as_deref(), &input, output),
     }
 }
 
@@ -4396,43 +4442,47 @@ mod changelog_tests {
 /// get truncated with a sibling `<key>.truncated = true` co-attribute.
 const OTLP_ATTRIBUTE_MAX_BYTES: usize = 4096;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpExport {
     #[serde(rename = "resourceSpans")]
     resource_spans: Vec<OtlpResourceSpans>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpResourceSpans {
     resource: OtlpResource,
     #[serde(rename = "scopeSpans")]
     scope_spans: Vec<OtlpScopeSpans>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpResource {
     attributes: Vec<OtlpAttribute>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpScopeSpans {
     scope: OtlpScope,
     spans: Vec<OtlpSpan>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpScope {
     name: String,
     version: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpSpan {
     #[serde(rename = "traceId")]
     trace_id: String,
     #[serde(rename = "spanId")]
     span_id: String,
-    #[serde(rename = "parentSpanId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "parentSpanId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     parent_span_id: Option<String>,
     name: String,
     /// `SPAN_KIND_INTERNAL` for every Phase-1 span — Phase 2+ may
@@ -4445,7 +4495,7 @@ struct OtlpSpan {
     attributes: Vec<OtlpAttribute>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OtlpAttribute {
     key: String,
     value: OtlpAnyValue,
@@ -4454,7 +4504,7 @@ struct OtlpAttribute {
 /// OTLP `AnyValue` (one-of). We only emit the four variants the
 /// Phase-1 flattener produces; the OTLP spec defines bytes/array/kvlist
 /// too but Phase 1 has no use for them.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum OtlpAnyValue {
     String {
@@ -6711,6 +6761,391 @@ mod redact_test_handler_tests {
         let out = truncate_redact_test_input(&s);
         assert_eq!(out.chars().count(), REDACT_TEST_INPUT_TRUNCATE + 1);
         assert!(out.ends_with('…'));
+    }
+}
+
+/// Recognised-but-unimplemented `--format` names for `tape ingest`.
+/// Each exits 2 with a Phase-1 message pointing at #95 rather than a
+/// generic "unknown format" error.
+const INGEST_RESERVED_FORMATS: &[&str] = &[
+    "langsmith",
+    "langfuse",
+    "helicone",
+    "openllmetry",
+    "phoenix",
+];
+
+/// Phase 1 of #95 (carved per #225). Single source format, single
+/// input file. Branches on `--format` and delegates to the otlp arm.
+fn cmd_ingest(
+    format: Option<&str>,
+    input: &std::path::Path,
+    output: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let Some(format) = format else {
+        eprintln!("tape ingest: Phase 1 requires --format (only `otlp` is implemented; see #95)");
+        std::process::exit(2);
+    };
+    if format == "otlp" {
+        let out_path =
+            output.unwrap_or_else(|| input.with_extension(extension_after_append(input, "tape")));
+        if same_path(input, &out_path) {
+            eprintln!("tape ingest: --output must differ from input path");
+            std::process::exit(2);
+        }
+        return ingest_otlp(input, &out_path);
+    }
+    if INGEST_RESERVED_FORMATS.contains(&format) {
+        eprintln!("tape ingest: --format {format} not implemented in Phase 1 — see #95");
+        std::process::exit(2);
+    }
+    eprintln!(
+        "tape ingest: unknown --format {format:?} (recognised: otlp, {})",
+        INGEST_RESERVED_FORMATS.join(", ")
+    );
+    std::process::exit(2);
+}
+
+/// Compute the extension to pass to `Path::with_extension` so the
+/// result is `<input>.tape`. `with_extension` *replaces* the
+/// extension, so `traces.json` → `traces.tape`; we want
+/// `traces.json.tape`. The fix is to append `.tape` to whatever the
+/// current extension is (or to the file name if there isn't one).
+fn extension_after_append(input: &std::path::Path, add: &str) -> String {
+    match input.extension().and_then(|e| e.to_str()) {
+        Some(existing) => format!("{existing}.{add}"),
+        None => add.to_owned(),
+    }
+}
+
+fn ingest_otlp(input: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
+    let bytes =
+        std::fs::read(input).map_err(|e| anyhow::anyhow!("read {}: {e}", input.display()))?;
+    let export: OtlpExport = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("parse {} as OTLP/JSON: {e}", input.display()))?;
+
+    // Flatten spans in input order. Phase 1 ignores parents.
+    let mut input_spans: Vec<&OtlpSpan> = Vec::new();
+    for rs in &export.resource_spans {
+        for ss in &rs.scope_spans {
+            for span in &ss.spans {
+                input_spans.push(span);
+            }
+        }
+    }
+
+    // Convert each input span to a (kind, ts, payload) triple. We
+    // build the eventual `Track`s in a second pass so synthetic
+    // task/eject events can borrow timestamps from the real spans.
+    let mut converted: Vec<(tape_format::tracks::Kind, String, serde_json::Value, String)> =
+        Vec::with_capacity(input_spans.len());
+    for span in &input_spans {
+        let kind = name_to_kind(&span.name);
+        let ts = nanos_str_to_ts(&span.start_time_unix_nano);
+        let payload = attributes_to_payload(&span.attributes);
+        let end_ts = nanos_str_to_ts(&span.end_time_unix_nano);
+        converted.push((kind, ts, payload, end_ts));
+    }
+
+    // Synthesize task if the first real span isn't a `task`.
+    let mut tracks: Vec<tape_format::tracks::Track> = Vec::new();
+    let first_ts = converted.first().map_or_else(
+        || "1970-01-01T00:00:00Z".to_owned(),
+        |(_, ts, _, _)| ts.clone(),
+    );
+    let needs_synthetic_task = converted
+        .first()
+        .is_none_or(|(k, _, _, _)| *k != tape_format::tracks::Kind::Task);
+    if needs_synthetic_task {
+        tracks.push(tape_format::tracks::Track {
+            step: 0, // renumbered below
+            kind: tape_format::tracks::Kind::Task,
+            ts: first_ts.clone(),
+            payload: serde_json::json!({
+                "prompt": "ingested from OTLP — original trace had no task event",
+            }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        });
+    }
+    for (kind, ts, payload, _end_ts) in &converted {
+        tracks.push(tape_format::tracks::Track {
+            step: 0,
+            kind: *kind,
+            ts: ts.clone(),
+            payload: payload.clone(),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        });
+    }
+    // Synthesize eject if the last real span isn't an `eject`.
+    let last_end_ts = converted
+        .last()
+        .map_or_else(|| first_ts.clone(), |(_, _, _, end_ts)| end_ts.clone());
+    let needs_synthetic_eject = converted
+        .last()
+        .is_none_or(|(k, _, _, _)| *k != tape_format::tracks::Kind::Eject);
+    if needs_synthetic_eject {
+        tracks.push(tape_format::tracks::Track {
+            step: 0,
+            kind: tape_format::tracks::Kind::Eject,
+            ts: last_end_ts.clone(),
+            payload: serde_json::json!({ "outcome": "unknown" }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        });
+    }
+    // Renumber 1..=N (gap-free per SPEC §5.4).
+    for (i, t) in tracks.iter_mut().enumerate() {
+        t.step = (i + 1) as u64;
+    }
+
+    let created_at = tracks.first().map_or_else(String::new, |t| t.ts.clone());
+    let ejected_at = tracks.last().map_or_else(String::new, |t| t.ts.clone());
+    let id = blake3::hash(&bytes).to_hex().to_string();
+
+    // Pull the eject payload's `outcome` (verify's OUTCOME_MISMATCH
+    // requires meta.outcome == the trailing eject's payload.outcome).
+    // For synthesized ejects the payload is `{"outcome":"unknown"}`,
+    // matching the default below; for real ejects from the input
+    // trace we inherit whatever the source said.
+    let outcome = tracks
+        .last()
+        .and_then(|t| t.payload.get("outcome"))
+        .and_then(|v| v.as_str())
+        .and_then(parse_outcome_str)
+        .unwrap_or(tape_format::meta::Outcome::Unknown);
+
+    let meta = tape_format::meta::Meta {
+        tape_version: "tape/v0".to_owned(),
+        id,
+        created_at,
+        ejected_at,
+        task: "ingested from OTLP".to_owned(),
+        recorder: tape_format::meta::Recorder {
+            agent: "tape-ingest/0.1+otlp".to_owned(),
+            user: None,
+        },
+        outcome,
+        models: Vec::new(),
+        tools: Vec::new(),
+        tool_budget: None,
+        redaction_summary: None,
+        label: None,
+        recap: None,
+        recaps: Vec::new(),
+        tags: Vec::new(),
+        relinernotes: Vec::new(),
+        new_block: None,
+    };
+    let meta_yaml =
+        serde_yaml::to_string(&meta).map_err(|e| anyhow::anyhow!("serialize meta.yaml: {e}"))?;
+
+    let liner_md = format!(
+        "## What I was asked to do\n\
+        Ingested from OTLP/JSON: {}\n\n\
+        ## What I found\n(synthesized from OTLP spans)\n\n\
+        ## Suggested next step / fix\nn/a — imported trace\n\n\
+        ## What I'm uncertain about\n\
+        Phase 1 ingest is lossy: original meta, liner-notes, artifacts, and \
+        redactions are not preserved (see #95).\n",
+        input.display()
+    );
+
+    let mut tracks_jsonl = String::new();
+    for t in &tracks {
+        use std::fmt::Write as _;
+        let line = t
+            .to_line()
+            .map_err(|e| anyhow::anyhow!("serialize track: {e}"))?;
+        writeln!(tracks_jsonl, "{line}").unwrap();
+    }
+
+    let pending = tape_format::writer::PendingTape {
+        meta_yaml,
+        liner_md,
+        tracks_jsonl,
+        redactions_json: None,
+        artifacts: std::collections::BTreeMap::new(),
+    };
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+        }
+    }
+    pending
+        .write_to(out_path)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    // Post-write verify gate — mirror cmd_compact (main.rs:5407-5421).
+    let written = tape_format::reader::RawTape::open(out_path)?;
+    let report = tape_format::verify::verify(&written);
+    if !report.is_valid() {
+        let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+        let _ = std::fs::remove_file(out_path);
+        eprintln!(
+            "tape ingest: output failed tape verify ({}); removed {}",
+            codes.join(","),
+            out_path.display()
+        );
+        std::process::exit(3);
+    }
+
+    eprintln!(
+        "tape ingest: wrote {} ({} spans → {} tracks)",
+        out_path.display(),
+        input_spans.len(),
+        tracks.len(),
+    );
+    Ok(())
+}
+
+/// Map the four canonical SPEC outcome strings to the `Outcome`
+/// enum. Anything else (`completed`, `error`, …) collapses to
+/// `Unknown` rather than failing the ingest — Phase 1 is forgiving
+/// of foreign vocabularies.
+fn parse_outcome_str(s: &str) -> Option<tape_format::meta::Outcome> {
+    use tape_format::meta::Outcome;
+    match s {
+        "success" => Some(Outcome::Success),
+        "failure" => Some(Outcome::Failure),
+        "abandoned" => Some(Outcome::Abandoned),
+        "unknown" => Some(Outcome::Unknown),
+        _ => None,
+    }
+}
+
+/// Inverse of `kind_to_name`. Unknown names map to `Kind::McpCall`
+/// per the ticket (best-effort generic-tool bucket) so verify's
+/// closed-kind check passes.
+fn name_to_kind(name: &str) -> tape_format::tracks::Kind {
+    use tape_format::tracks::Kind;
+    match name {
+        "task" => Kind::Task,
+        "model_call" => Kind::ModelCall,
+        "mcp_call" => Kind::McpCall,
+        "shell" => Kind::Shell,
+        "file_read" => Kind::FileRead,
+        "file_write" => Kind::FileWrite,
+        "annotation" => Kind::Annotation,
+        "eject" => Kind::Eject,
+        _ => Kind::McpCall,
+    }
+}
+
+/// Inverse of `ts_to_nanos_str`. Parses an int64-as-string nanos
+/// value and formats it as RFC 3339 UTC (microsecond precision —
+/// `tracks::ts` is RFC 3339 per SPEC §5.2; round-tripping at
+/// microsecond precision keeps the format human-readable while
+/// preserving span ordering). Malformed input → `1970-01-01T00:00:00Z`.
+fn nanos_str_to_ts(nanos: &str) -> String {
+    let Ok(n) = nanos.parse::<i64>() else {
+        return "1970-01-01T00:00:00Z".to_owned();
+    };
+    chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(n)
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+}
+
+/// Inverse of `payload_to_attributes`. Each attribute becomes a
+/// top-level key in a JSON object; the four `AnyValue` variants
+/// unflatten to their JSON-native types. Nested JSON that the
+/// forward path serialized into a string attribute is preserved as
+/// a string (no re-parse — Phase 1 is intentionally lossy here, and
+/// re-parsing risks turning a benign string that happens to look
+/// like JSON into structured data).
+fn attributes_to_payload(attrs: &[OtlpAttribute]) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for attr in attrs {
+        let v = match &attr.value {
+            OtlpAnyValue::String { string_value } => {
+                serde_json::Value::String(string_value.clone())
+            }
+            OtlpAnyValue::Bool { bool_value } => serde_json::Value::Bool(*bool_value),
+            OtlpAnyValue::Int { int_value } => int_value.parse::<i64>().map_or_else(
+                |_| serde_json::Value::String(int_value.clone()),
+                |n| serde_json::Value::Number(n.into()),
+            ),
+            OtlpAnyValue::Double { double_value } => serde_json::Number::from_f64(*double_value)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        };
+        obj.insert(attr.key.clone(), v);
+    }
+    serde_json::Value::Object(obj)
+}
+
+#[cfg(test)]
+mod ingest_otlp_tests {
+    use super::*;
+
+    #[test]
+    fn extension_append_handles_no_extension() {
+        let p = std::path::Path::new("traces");
+        assert_eq!(extension_after_append(p, "tape"), "tape");
+    }
+
+    #[test]
+    fn extension_append_preserves_existing() {
+        let p = std::path::Path::new("traces.json");
+        assert_eq!(extension_after_append(p, "tape"), "json.tape");
+    }
+
+    #[test]
+    fn name_to_kind_round_trips_canonical_names() {
+        use tape_format::tracks::Kind;
+        for k in [
+            Kind::Task,
+            Kind::ModelCall,
+            Kind::McpCall,
+            Kind::Shell,
+            Kind::FileRead,
+            Kind::FileWrite,
+            Kind::Annotation,
+            Kind::Eject,
+        ] {
+            assert_eq!(
+                name_to_kind(kind_to_name(k)),
+                k,
+                "round-trip failed for {k:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn name_to_kind_unknown_falls_back_to_mcp_call() {
+        assert_eq!(name_to_kind("query_db"), tape_format::tracks::Kind::McpCall);
+    }
+
+    #[test]
+    fn nanos_str_round_trips_via_to_otlp_helpers() {
+        // Pick a deterministic timestamp; route through both helpers.
+        let original_ts = "2026-05-16T12:34:56.789012Z";
+        let nanos = ts_to_nanos_str(original_ts);
+        let recovered = nanos_str_to_ts(&nanos);
+        // chrono renders microseconds when we ask for Micros; the
+        // string should match exactly at microsecond precision.
+        assert_eq!(recovered, original_ts);
+    }
+
+    #[test]
+    fn nanos_str_malformed_falls_back_to_epoch() {
+        assert_eq!(nanos_str_to_ts("not a number"), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn attributes_round_trip_via_to_otlp_helpers() {
+        let payload = serde_json::json!({
+            "vendor": "anthropic",
+            "ok": true,
+            "tokens": 42,
+            "score": 0.5,
+        });
+        let attrs = payload_to_attributes(&payload);
+        let back = attributes_to_payload(&attrs);
+        assert_eq!(back, payload);
     }
 }
 
