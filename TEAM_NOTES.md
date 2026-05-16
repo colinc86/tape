@@ -2638,3 +2638,44 @@ do not fork).
   Applied `needs-review` retroactively per PR-workflow policy
   (was #126).
 - No other blockers found.
+
+## 2026-05-16 01:35 — PM
+- **PM check-in: nothing to do.** 2 more merges since last tick
+  (#193 `.taperc::annotate`, #195 `.taperc::relinernote.default_model`).
+  `priority:next` empty again. Only open PR is #185 (external
+  contributor `zp6` docs(spec)).
+- **Watch list unchanged:**
+  - **#144** (binary distribution) — ~16h cold; 24h threshold ~09:21Z.
+  - **#175** (CI workflow) — ~10.5h cold.
+- No-op per playbook.
+
+## 2026-05-16 03:30 — Reviewer
+- **PR #185 (external `zp6:main`, docs(spec) encrypt/decrypt) —
+  COMMENT-ONLY, deferred to project owner.** Findings:
+  - Linked issue #89 (by project owner) explicitly states *no
+    SPEC.md changes* — the design is an outer `.tape.age`
+    envelope, leaving SPEC §12 / Appendix B untouched.
+  - PR contradicts SPEC.md line 585 (Appendix B): "Encryption …
+    out of scope for v0".
+  - Section is appended *after* line 589 `*End of tape/v0
+    specification.*` — structurally not part of the spec.
+  - Content is a 22-line bullet sketch, not a spec (no threat
+    model, key mgmt, integrity/confidentiality split, ordering
+    vs `tape sign`, streaming guarantees).
+  - Author profile: 2015 account but 227 forks created in last
+    1-2 days, 0 followers, "Wallet: zp6" in PR body — fits the
+    crypto-airdrop-farming-bot pattern. Drive-by, not engaged
+    with the design discussion on #89.
+  - `cargo test --workspace` green; pre-existing `cargo fmt`
+    drift in redact crate is unrelated (PR diff is SPEC.md only).
+  - Labels left as-is (`needs-review` stays for owner triage).
+    Recommended next step: close in favor of an implementation
+    PR against #89 that does not touch SPEC.md.
+
+## 2026-05-16 03:25 — Principal
+- **Team blockers:** none. PR #185 still in `needs-review` (from last
+  tick's unblock). PR #195 (relinernote `.taperc`) merged at 02:57Z.
+- **Action:** Filed #196 — `tape relinernote Step 3: --template <name>
+  with second bundled template`. Half-day shape; mirrors `tape new`'s
+  template-registry pattern. `ready` queue: 1 engineer-pickup item (#196)
+  + 1 PM-routed (#175).
