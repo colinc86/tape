@@ -2506,3 +2506,92 @@ edit prior entries. Format each entry as `## YYYY-MM-DD HH:MM — <role>`.
   observations. GitHub issues only for actual pickup work (engineering
   tickets, bug refinements, pinned policy decisions). No more
   reviewer-bottleneck-style observations filed as issues.
+
+## 2026-05-16 02:50 — Principal
+- **Migration: closing 5 non-code GitHub issues; substance recorded here.**
+  User flagged that `kind:process` / `kind:tracking` issues belong in
+  TEAM_NOTES, not in GitHub. Closing #118, #126, #170, #171, #150.
+  Substance below is now the canonical record.
+
+### Workflow-label discipline for `kind:bug` (was #118)
+
+**Rule.** Every open `kind:bug` issue carries exactly one workflow label:
+`triage`, `ready`, `in-progress`, `blocked`.
+
+- Reporter applies `triage` on creation.
+- Principal promotes `triage` → `ready` after scoping.
+- Engineer transition `ready` → `in-progress` on PR-open is a **paired
+  transition** — both the remove and add must happen together
+  (`gh issue edit N --remove-label ready --add-label in-progress`).
+- Any open `kind:bug` lacking a workflow label is treated as `triage`
+  by default; Principal applies retroactively.
+- Engineers do not pick up `triage`-labelled issues unless explicitly
+  invited.
+
+**Extension (was a comment on #118):** The discipline applies to all
+`kind:*` issues intended for engineer pickup, not just `kind:bug`.
+
+### Workflow-label discipline for PRs (was #126)
+
+**Rule.** Every open PR carries exactly one workflow label:
+`needs-review`, `in-review`, `changes-requested`, `approved`, `blocked`.
+
+- Author applies `needs-review` on PR-open.
+- Any open PR lacking a workflow label is treated as `needs-review`
+  by default; Principal applies retroactively.
+- Reviewer transitions to `in-review` on claim (see Reviewer
+  parallelization below).
+- On approve/changes-requested/block, reviewer swaps the label.
+
+### Reviewer parallelization via claim-by-label (was #171)
+
+**Rule.** Reviewer is now a parallelizable role. Multiple Reviewer
+instances (Reviewer-A, Reviewer-B, ...) may run concurrently.
+
+- Queue: `is:pr is:open label:needs-review -label:in-review`.
+- Claim = atomic `gh pr edit <N> --add-label in-review`.
+- FIFO: claim the OLDEST PR first when queue depth > 1.
+- Stale-claim release: if `in-review` for >30 min with no decision,
+  remove `in-review` so another Reviewer can re-claim.
+- Spinning up Reviewer-B: User starts another `/loop` session with the
+  Reviewer prompt, 30-min cron offset (e.g., :22 / :52 if A is :07 / :37).
+
+### Reviewer capacity bottleneck observation (was #170)
+
+On 2026-05-15 (morning), engineers opened 7 PRs over ~3 hours; single-
+instance Reviewer couldn't sustain that rate, leading to a ~3h merge
+stall with 7 PRs accumulated. PM responded analytically (still on the
+closed #170 thread), recommended Reviewer-B parallelization (now
+captured above as the policy from #171). The bottleneck self-resolved
+mid-day when Reviewer-A drained the queue.
+
+Durable fix: #144 (binary distribution + CI workflow) — automating
+`cargo check/test/clippy` on PR-open would reduce per-review load by
+removing the manual-test step Reviewer runs locally today. CI workflow
+ticket #175 is the engineering ticket for this.
+
+### Narration crate consolidation watchpoint (was #150)
+
+**Watch:** Extract `crates/tape-narrate/` only after the SECOND `--auto`
+feature ships. Three priority:later features describe the same shape:
+
+- #71 `tape relinernote`
+- #93 `tape tag --auto`
+- #105 Phase 2 `tape recap --auto` (now shipped via #172)
+
+Each describes prompt-template rendering, defense-in-depth scanner,
+retry/truncation, audit trail. The first `--auto` should re-use
+`tape-judge` directly. When the second ships, extract `tape-narrate/`
+in one PR alongside migrating both features.
+
+Out of scope: defense-in-depth scanner (lives in `tape-judge`,
+do not fork).
+
+### Lesson for Principal going forward
+
+- TEAM_NOTES.md = tick-by-tick coordination, observations, policies.
+- GitHub issues = actual pickup work with code-shaped acceptance
+  criteria.
+- `kind:process` and `kind:tracking` labels were Principal-invented
+  workarounds; deprecated. Don't file new ones.
+
