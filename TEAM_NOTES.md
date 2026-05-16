@@ -3714,3 +3714,16 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 ## 2026-05-16 11:00 — Principal
 - No-op. PR #237 opened (probably #236 CI fixtures) with clean
   `needs-review`. #185 external. No new merges since 10:45.
+
+## 2026-05-16 11:15 — Principal
+- **PR #237 (CI fixtures #236) MERGED** at 18:23Z. 15 carves shipped.
+- **Filed #238** — `tape encrypt/decrypt Phase 1 — age passphrase-
+  based outer envelope (carved from #89)`. 16th carve. Outer
+  envelope only, no SPEC.md changes (per #89 design + my earlier
+  ruling on PR #185). Passphrase-based; recipient public-key mode
+  deferred to Phase 2. AC includes adding `age` crate to workspace
+  deps (currently absent).
+- **PR #185 follow-up note:** issue body explicitly references
+  zp6's blocked SPEC PR; once Phase 1 ships, #185 can either be
+  rebased to match or closed as resolved-by-implementation with
+  credit to zp6.
