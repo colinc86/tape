@@ -90,7 +90,13 @@ pub fn encode_cwd(cwd: &Path) -> String {
     cwd.display()
         .to_string()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -126,22 +132,10 @@ mod tests {
                 "/Users/colin/iCloud Drive: Synced/proj",
                 "-Users-colin-iCloud-Drive--Synced-proj",
             ),
-            (
-                "/repos/foo+bar/proj (work)",
-                "-repos-foo-bar-proj--work-",
-            ),
-            (
-                "/Users/o'reilly/code",
-                "-Users-o-reilly-code",
-            ),
-            (
-                "/repos/v1.2.3/project",
-                "-repos-v1-2-3-project",
-            ),
-            (
-                "/work/email@host.com/proj",
-                "-work-email-host-com-proj",
-            ),
+            ("/repos/foo+bar/proj (work)", "-repos-foo-bar-proj--work-"),
+            ("/Users/o'reilly/code", "-Users-o-reilly-code"),
+            ("/repos/v1.2.3/project", "-repos-v1-2-3-project"),
+            ("/work/email@host.com/proj", "-work-email-host-com-proj"),
         ] {
             assert_eq!(encode_cwd(Path::new(input)), expected, "input: {input}");
         }

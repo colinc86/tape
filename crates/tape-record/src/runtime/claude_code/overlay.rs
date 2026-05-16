@@ -103,13 +103,11 @@ pub fn write_overlay_files(
     let mcp_path = dir.join("mcp.json");
     std::fs::write(
         &settings_path,
-        serde_json::to_vec_pretty(&settings_overlay(inputs))
-            .expect("settings overlay serializes"),
+        serde_json::to_vec_pretty(&settings_overlay(inputs)).expect("settings overlay serializes"),
     )?;
     std::fs::write(
         &mcp_path,
-        serde_json::to_vec_pretty(&mcp_config(inputs))
-            .expect("mcp config serializes"),
+        serde_json::to_vec_pretty(&mcp_config(inputs)).expect("mcp config serializes"),
     )?;
     Ok((settings_path, mcp_path))
 }
@@ -156,7 +154,9 @@ mod tests {
         let s = settings_overlay(&inputs());
         let pre = s["hooks"]["PreToolUse"].as_array().unwrap().clone();
         let has_bash_pre = pre.iter().any(|h| h["matcher"] == "Bash");
-        let has_write_pre = pre.iter().any(|h| h["matcher"] == "Write|Edit|MultiEdit|NotebookEdit");
+        let has_write_pre = pre
+            .iter()
+            .any(|h| h["matcher"] == "Write|Edit|MultiEdit|NotebookEdit");
         assert!(has_bash_pre, "expected a PreToolUse hook matching Bash");
         assert!(
             has_write_pre,

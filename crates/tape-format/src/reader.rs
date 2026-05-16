@@ -76,9 +76,10 @@ impl RawTape {
 
             match name.as_str() {
                 "meta.yaml" => {
-                    out.meta_yaml = Some(String::from_utf8(buf).map_err(|e| {
-                        Error::Invalid(format!("meta.yaml not valid UTF-8: {e}"))
-                    })?);
+                    out.meta_yaml =
+                        Some(String::from_utf8(buf).map_err(|e| {
+                            Error::Invalid(format!("meta.yaml not valid UTF-8: {e}"))
+                        })?);
                 }
                 "liner-notes.md" => {
                     out.liner_md = Some(String::from_utf8(buf).map_err(|e| {

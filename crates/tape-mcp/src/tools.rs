@@ -186,8 +186,7 @@ fn handle_arg(args: &Value, key: &str) -> Result<String, ToolErr> {
 
 fn build_summary(loaded: &Loaded) -> Value {
     let kinds = count_kinds(&loaded.tracks);
-    let meta: Value =
-        serde_yaml::from_str(&loaded.meta_yaml).unwrap_or(serde_json::Value::Null);
+    let meta: Value = serde_yaml::from_str(&loaded.meta_yaml).unwrap_or(serde_json::Value::Null);
     json!({
         "meta": meta,
         "liner_notes": loaded.liner_md,
@@ -376,9 +375,7 @@ fn resolve_artifact_refs(
                     if let Some(hex) = s.strip_prefix("sha:") {
                         let path = tape_format::artifact::artifact_path(hex);
                         if let Some(bytes) = artifacts.get(&path) {
-                            *value = Value::String(
-                                String::from_utf8_lossy(bytes).into_owned(),
-                            );
+                            *value = Value::String(String::from_utf8_lossy(bytes).into_owned());
                             return;
                         }
                         // Artifact missing — leave the stub for the caller
@@ -448,11 +445,13 @@ fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         out.push(track_value);
     }
 
-    if step.is_some() && out.is_empty() {
-        return Err(ToolErr {
-            code: "INVALID_STEP",
-            message: format!("step {} not found", step.unwrap()),
-        });
+    if let Some(s) = step {
+        if out.is_empty() {
+            return Err(ToolErr {
+                code: "INVALID_STEP",
+                message: format!("step {s} not found"),
+            });
+        }
     }
     if step.is_none() && range.is_none() {
         return Err(ToolErr::params("must supply `step` or `range`"));
@@ -464,11 +463,7 @@ fn tool_play(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 fn tool_seek(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let query = handle_arg(args, "query")?;
-    let k = args
-        .get("k")
-        .and_then(Value::as_u64)
-        .unwrap_or(5)
-        .max(1) as usize;
+    let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).max(1) as usize;
 
     let state = deck.state.lock().unwrap();
     let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?;
@@ -567,12 +562,12 @@ fn tool_diff(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         code: "INTERNAL_ERROR",
         message: e.to_string(),
     })?;
-    serde_json::to_value(&diff).map(|v| json!({"diff": v})).map_err(|e| {
-        ToolErr {
+    serde_json::to_value(&diff)
+        .map(|v| json!({"diff": v}))
+        .map_err(|e| ToolErr {
             code: "INTERNAL_ERROR",
             message: e.to_string(),
-        }
-    })
+        })
 }
 
 fn tool_fork(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
@@ -655,7 +650,11 @@ fn tool_record(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
 fn tool_annotate(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let handle = handle_arg(args, "handle")?;
     let note = handle_arg(args, "note")?;
-    let by = args.get("by").and_then(Value::as_str).unwrap_or("agent").to_owned();
+    let by = args
+        .get("by")
+        .and_then(Value::as_str)
+        .unwrap_or("agent")
+        .to_owned();
     let step_arg = args.get("step").and_then(Value::as_u64);
 
     let mut state = deck.state.lock().unwrap();
@@ -715,7 +714,10 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     let outcome = parse_outcome_arg(args)?;
 
     let mut state = deck.state.lock().unwrap();
-    let loaded = state.get(&handle).ok_or_else(ToolErr::invalid_handle)?.clone();
+    let loaded = state
+        .get(&handle)
+        .ok_or_else(ToolErr::invalid_handle)?
+        .clone();
     // Mark the handle as no longer recording so a future tape.record in this
     // session is allowed (otherwise ALREADY_RECORDING fires forever).
     if let Some(l) = state.get_mut(&handle) {
@@ -738,12 +740,11 @@ fn tool_eject(deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // instead of being clobbered with "now". The source-of-truth created_at
     // is `meta.yaml`'s `created_at` field; fall back to now if it won't parse.
     let task_text = extract_task(&loaded);
-    let original_created_at =
-        serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
-            .ok()
-            .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.created_at).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(chrono::Utc::now);
+    let original_created_at = serde_yaml::from_str::<tape_format::meta::Meta>(&loaded.meta_yaml)
+        .ok()
+        .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.created_at).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
 
     let session = tape_record::session::Session::start_at(
         &task_text,
@@ -933,10 +934,7 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     use tape_record::transcript::{find_active_session, parse_jsonl, to_tracks};
 
     let out = handle_arg(args, "out")?;
-    let task = args
-        .get("task")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let task = args.get("task").and_then(Value::as_str).map(str::to_owned);
     let explicit_path = args
         .get("transcript_path")
         .and_then(Value::as_str)
@@ -973,14 +971,12 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         code: "INTERNAL_ERROR",
         message: format!("open transcript {}: {e}", handle.jsonl_path.display()),
     })?;
-    let (entries, parse_report) =
-        parse_jsonl(BufReader::new(file)).map_err(|e| ToolErr {
-            code: "INTERNAL_ERROR",
-            message: format!("parse transcript: {e}"),
-        })?;
+    let (entries, parse_report) = parse_jsonl(BufReader::new(file)).map_err(|e| ToolErr {
+        code: "INTERNAL_ERROR",
+        message: format!("parse transcript: {e}"),
+    })?;
 
-    let (tracks, convert_report) =
-        to_tracks(&entries, &handle.sibling_dir, parse_report);
+    let (tracks, convert_report) = to_tracks(&entries, &handle.sibling_dir, parse_report);
 
     // Derive task: explicit arg wins; else first user prompt; else session-id.
     let raw_task_text = task
@@ -1020,7 +1016,11 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
     // `annotations` (issue #49); the previous `append_at(kind, payload, ts)`
     // call silently dropped those three fields.
     let skip_first = tracks.first().is_some_and(|t| t.kind == Kind::Task);
-    let to_replay: &[_] = if skip_first { &tracks[1..] } else { &tracks[..] };
+    let to_replay: &[_] = if skip_first {
+        &tracks[1..]
+    } else {
+        &tracks[..]
+    };
     for t in to_replay {
         session.append_track(t.clone());
     }
@@ -1032,11 +1032,10 @@ fn tool_snapshot(_deck: &Deck, args: &Value) -> Result<Value, ToolErr> {
         code: "INTERNAL_ERROR",
         message: format!("cwd: {e}"),
     })?;
-    let redact_engine =
-        tape_redact::engine_with_taperc(&snapshot_cwd).map_err(|e| ToolErr {
-            code: "TAPERC_INVALID",
-            message: format!("failed to load .taperc: {e}"),
-        })?;
+    let redact_engine = tape_redact::engine_with_taperc(&snapshot_cwd).map_err(|e| ToolErr {
+        code: "TAPERC_INVALID",
+        message: format!("failed to load .taperc: {e}"),
+    })?;
     let result = tape_record::eject::eject(
         &session,
         &tape_record::eject::EjectOptions {

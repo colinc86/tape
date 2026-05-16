@@ -42,11 +42,14 @@ fn run_snapshot(fixture: &std::path::Path, out: &std::path::Path, task: Option<&
 fn snapshot_minimal_fixture_produces_valid_tape() {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("snap.tape");
-    let resp = run_snapshot(&fixture_path("minimal.jsonl"), &out_path, Some("testing snapshot"));
+    let resp = run_snapshot(
+        &fixture_path("minimal.jsonl"),
+        &out_path,
+        Some("testing snapshot"),
+    );
 
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["result"]["isError"].as_bool().unwrap_or(false),
         "snapshot returned error: {resp}"
     );
     let track_count = resp["result"]["structuredContent"]["track_count"]
@@ -72,9 +75,8 @@ fn snapshot_redaction_fixture_strips_aws_key() {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("redacted.tape");
     let resp = run_snapshot(&fixture_path("redaction_bait.jsonl"), &out_path, None);
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["result"]["isError"].as_bool().unwrap_or(false),
         "snapshot returned error: {resp}"
     );
 
@@ -103,15 +105,17 @@ fn snapshot_preserves_per_event_timestamps_from_transcript() {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("ts.tape");
     let resp = run_snapshot(&fixture_path("minimal.jsonl"), &out_path, Some("ts test"));
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["result"]["isError"].as_bool().unwrap_or(false),
         "snapshot returned error: {resp}"
     );
 
     let raw = tape_format::reader::RawTape::open(&out_path).unwrap();
     let tracks = tape_format::tracks::parse_jsonl(&raw.tracks_jsonl.unwrap()).unwrap();
-    let task = tracks.iter().find(|t| t.kind == tape_format::tracks::Kind::Task).unwrap();
+    let task = tracks
+        .iter()
+        .find(|t| t.kind == tape_format::tracks::Kind::Task)
+        .unwrap();
     let model = tracks
         .iter()
         .find(|t| t.kind == tape_format::tracks::Kind::ModelCall)
@@ -140,9 +144,8 @@ fn snapshot_with_unknown_type_surfaces_warning() {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("warn.tape");
     let resp = run_snapshot(&fixture_path("unknown_type.jsonl"), &out_path, None);
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["result"]["isError"].as_bool().unwrap_or(false),
         "snapshot returned error: {resp}"
     );
 

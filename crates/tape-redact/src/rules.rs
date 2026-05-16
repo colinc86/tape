@@ -169,7 +169,10 @@ mod tests {
     use super::*;
 
     fn rule_by_id(id: &str) -> Rule {
-        built_in().into_iter().find(|r| r.id == id).expect("rule exists")
+        built_in()
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("rule exists")
     }
 
     fn matches(rule: &Rule, s: &str) -> bool {
@@ -197,8 +200,8 @@ mod tests {
         let r = rule_by_id("email");
         for s in [
             "alice@example", // no TLD
-            "@example.com",   // no local
-            "alice@.com",     // empty domain label
+            "@example.com",  // no local
+            "alice@.com",    // empty domain label
             "not.an.email.address",
             "no at sign here",
             "alice@example..com", // P3 #18: consecutive dots in domain
@@ -226,8 +229,8 @@ mod tests {
     fn anthropic_negatives() {
         let r = rule_by_id("anthropic_api_key");
         for s in [
-            "sk-ant-",                     // just prefix
-            "sk-ant-tooshort",              // <40 chars after prefix
+            "sk-ant-",                         // just prefix
+            "sk-ant-tooshort",                 // <40 chars after prefix
             "sk-AbCdEfGhIjKlMnOpQrStUvWxYz12", // OpenAI shape
             "not-an-sk-ant-...",
             "ANT-sk-AbCdEfGhIjKlMnOpQrStUvWxYz1234567",
@@ -283,8 +286,8 @@ mod tests {
         let r = rule_by_id("aws_access_key");
         for s in [
             "AKIA1234",
-            "akia1234567890ABCDEF",   // lowercase prefix
-            "BKIA1234567890ABCDEF",   // wrong prefix
+            "akia1234567890ABCDEF",     // lowercase prefix
+            "BKIA1234567890ABCDEF",     // wrong prefix
             "AKIA12345678901234567890", // too long
             "embeddedAKIA1234567890ABCDEFinside",
         ] {
@@ -343,7 +346,8 @@ mod tests {
     #[test]
     fn jwt_positives() {
         let r = rule_by_id("jwt");
-        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let jwt =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         for s in [
             jwt,
             &format!("Authorization: Bearer {jwt}"),
@@ -358,8 +362,8 @@ mod tests {
     fn jwt_negatives() {
         let r = rule_by_id("jwt");
         for s in [
-            "eyJhbGci", // single segment
-            "eyJ.eyJ",  // missing third segment
+            "eyJhbGci",    // single segment
+            "eyJ.eyJ",     // missing third segment
             "abc.def.ghi", // doesn't start with eyJ
             "no jwt here",
             "eyJ.eyJ.", // empty third segment
@@ -429,9 +433,9 @@ mod tests {
     fn cc_positives() {
         let r = rule_by_id("credit_card");
         for s in [
-            "4532015112830366",                   // Visa test
-            "5555555555554444",                   // Mastercard test
-            "Card: 4111 1111 1111 1111 today",    // spaces
+            "4532015112830366",                // Visa test
+            "5555555555554444",                // Mastercard test
+            "Card: 4111 1111 1111 1111 today", // spaces
             "with-dashes 4111-1111-1111-1111",
             "two 4532015112830366 and 5555555555554444",
         ] {
@@ -442,15 +446,15 @@ mod tests {
     fn cc_negatives() {
         let r = rule_by_id("credit_card");
         for s in [
-            "4532015112830367",         // bad Luhn
-            "1234567890123456",         // bad Luhn
-            "12345",                    // too short
-            "abcdefghijklmnop",         // not digits
+            "4532015112830367", // bad Luhn
+            "1234567890123456", // bad Luhn
+            "12345",            // too short
+            "abcdefghijklmnop", // not digits
             "no card here",
-            "4532-0151-1283-0367",      // bad Luhn with separators
-            "12 34 56 78",              // too short
-            "phone 555-1234",           // too short
-            "id 1234",                  // too short
+            "4532-0151-1283-0367", // bad Luhn with separators
+            "12 34 56 78",         // too short
+            "phone 555-1234",      // too short
+            "id 1234",             // too short
         ] {
             assert!(!matches(&r, s), "should NOT match: {s}");
         }

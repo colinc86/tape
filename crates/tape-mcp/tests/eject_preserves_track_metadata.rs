@@ -62,9 +62,10 @@ fn eject_preserves_refs_on_loaded_tracks() {
         }}
     });
     let eject_resp = pump(deck, &[eject]);
-    assert_eq!(
-        eject_resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !eject_resp[0]["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
         "eject should succeed; got {:?}",
         eject_resp[0]
     );
@@ -141,9 +142,10 @@ fn annotate_with_parent_step_survives_eject_round_trip() {
             }}
         })],
     );
-    assert_eq!(
-        annot_resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !annot_resp[0]["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
         "annotate should succeed; got {:?}",
         annot_resp[0]
     );
@@ -158,17 +160,17 @@ fn annotate_with_parent_step_survives_eject_round_trip() {
             }}
         })],
     );
-    assert_eq!(
-        eject_resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !eject_resp[0]["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
         "eject should succeed; got {:?}",
         eject_resp[0]
     );
 
     // Phase 4: reload and inspect.
     let raw = tape_format::reader::RawTape::open(&out_path).unwrap();
-    let tracks =
-        tape_format::tracks::parse_jsonl(raw.tracks_jsonl.as_deref().unwrap()).unwrap();
+    let tracks = tape_format::tracks::parse_jsonl(raw.tracks_jsonl.as_deref().unwrap()).unwrap();
     let annot = tracks
         .iter()
         .find(|t| t.kind == tape_format::tracks::Kind::Annotation)

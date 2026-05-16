@@ -68,7 +68,7 @@ fn load_then_summary_returns_handle_and_meta() {
         "params": {"name": "tape.load", "arguments": {"path": path.to_str().unwrap()}}
     })]);
     let result = &resp[0]["result"];
-    assert!(result["isError"].as_bool().unwrap_or(false) == false);
+    assert!(!result["isError"].as_bool().unwrap_or(false));
     let structured = &result["structuredContent"];
     assert!(structured["handle"].is_string());
     assert!(structured["summary"]["track_count"].as_u64().unwrap() > 0);
@@ -86,10 +86,8 @@ fn full_workflow_load_tracks_play_seek_tools_fork() {
         .unwrap()
         .to_owned();
 
-    let r = pump([
-        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "tape.tracks", "arguments": {"handle": handle}}}),
-    ]);
+    let r = pump([json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "tape.tracks", "arguments": {"handle": handle}}})]);
     // Each request is its own deck instance — handle from a different pump call is invalid.
     // Switch to a single multi-request pump for stateful tests.
     assert!(
@@ -103,10 +101,13 @@ fn stateful_workflow_within_one_session() {
     let path = fixture_path("killer-scenario-a.tape");
     let path_str = path.to_str().unwrap();
     let mut input = String::new();
-    input.push_str(&json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "tape.load", "arguments": {"path": path_str}}
-    }).to_string());
+    input.push_str(
+        &json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tape.load", "arguments": {"path": path_str}}
+        })
+        .to_string(),
+    );
     input.push('\n');
 
     // We don't yet know the handle. Use a single pump and chain by ID, but
@@ -123,9 +124,8 @@ fn stateful_workflow_within_one_session() {
     let deck = tape_mcp::Deck::new();
     let mut buf = Vec::<u8>::new();
     tape_mcp::server::run(input.as_bytes(), &mut buf, deck.clone()).unwrap();
-    let load_resp: Value = serde_json::from_str(
-        String::from_utf8(buf).unwrap().lines().next().unwrap()
-    ).unwrap();
+    let load_resp: Value =
+        serde_json::from_str(String::from_utf8(buf).unwrap().lines().next().unwrap()).unwrap();
     let handle = load_resp["result"]["structuredContent"]["handle"]
         .as_str()
         .unwrap()
@@ -163,20 +163,20 @@ fn stateful_workflow_within_one_session() {
     assert!(lines[0]["result"]["structuredContent"]["meta"].is_object());
     // tape.tracks
     let tracks = &lines[1]["result"]["structuredContent"]["tracks"];
-    assert!(tracks.as_array().unwrap().len() > 0);
+    assert!(!tracks.as_array().unwrap().is_empty());
     // tape.play
     let played = &lines[2]["result"]["structuredContent"]["tracks"];
     assert_eq!(played.as_array().unwrap().len(), 1);
     // tape.seek
     let hits = &lines[3]["result"]["structuredContent"]["hits"];
     assert!(
-        hits.as_array().unwrap().len() >= 1,
+        !hits.as_array().unwrap().is_empty(),
         "expected to find 'smoking gun' annotation"
     );
     // tape.tools
     let calls_field = &lines[4]["result"]["structuredContent"]["calls"];
     assert!(
-        calls_field.as_array().unwrap().len() >= 1,
+        !calls_field.as_array().unwrap().is_empty(),
         "killer-scenario-a has an mcp_call"
     );
     // tape.fork
@@ -202,15 +202,15 @@ fn second_record_without_eject_returns_already_recording() {
         input.push('\n');
     }
     tape_mcp::server::run(input.as_bytes(), &mut buf, deck).unwrap();
-    let lines: Vec<Value> = String::from_utf8(buf).unwrap()
+    let lines: Vec<Value> = String::from_utf8(buf)
+        .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
 
     // First record succeeds.
-    assert_eq!(
-        lines[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !lines[0]["result"]["isError"].as_bool().unwrap_or(false),
         "first record should succeed"
     );
     // Second record fails with ALREADY_RECORDING.
@@ -284,7 +284,9 @@ fn record_annotate_eject_round_trip() {
     let line = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "tape.record", "arguments": {"task": "hello world"}}
-    }).to_string() + "\n";
+    })
+    .to_string()
+        + "\n";
     tape_mcp::server::run(line.as_bytes(), &mut buf, deck.clone()).unwrap();
     let resp: Value =
         serde_json::from_str(String::from_utf8(buf).unwrap().lines().next().unwrap()).unwrap();
@@ -318,7 +320,10 @@ fn record_annotate_eject_round_trip() {
 
     // Eject must succeed and produce a valid .tape file.
     let ej = &lines[2]["result"];
-    assert_eq!(ej["isError"].as_bool().unwrap_or(false), false, "eject should succeed; got {ej}");
+    assert!(
+        !ej["isError"].as_bool().unwrap_or(false),
+        "eject should succeed; got {ej}"
+    );
     assert!(out_path.exists(), "tape file written");
     let raw = tape_format::reader::RawTape::open(&out_path).unwrap();
     let report = tape_format::verify::verify(&raw);
@@ -393,9 +398,8 @@ fn eject_without_outcome_defaults_to_unknown() {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("unknown.tape");
     let (resp, meta) = record_and_eject_with(json!({"out": out_path.to_str().unwrap()}));
-    assert_eq!(
-        resp["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["isError"].as_bool().unwrap_or(false),
         "eject should succeed; got {resp}"
     );
     assert!(
@@ -412,7 +416,7 @@ fn eject_with_outcome_failure_records_failure_in_meta() {
         "out": out_path.to_str().unwrap(),
         "outcome": "failure",
     }));
-    assert_eq!(resp["isError"].as_bool().unwrap_or(false), false);
+    assert!(!resp["isError"].as_bool().unwrap_or(false));
     assert!(
         meta.contains("outcome: failure"),
         "expected meta.outcome=failure; got:\n{meta}"

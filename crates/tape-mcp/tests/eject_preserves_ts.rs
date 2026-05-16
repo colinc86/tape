@@ -34,9 +34,10 @@ fn pump(deck: tape_mcp::Deck, requests: &[Value]) -> Vec<Value> {
 }
 
 /// Load + eject the killer-scenario fixture and return (ejected_meta, ejected_tracks).
-fn load_and_eject(fixture: &std::path::Path, out: &std::path::Path)
-    -> (tape_format::meta::Meta, Vec<tape_format::tracks::Track>)
-{
+fn load_and_eject(
+    fixture: &std::path::Path,
+    out: &std::path::Path,
+) -> (tape_format::meta::Meta, Vec<tape_format::tracks::Track>) {
     let deck = tape_mcp::Deck::new();
     let load = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -55,9 +56,10 @@ fn load_and_eject(fixture: &std::path::Path, out: &std::path::Path)
         }}
     });
     let eject_resp = pump(deck, &[eject]);
-    assert_eq!(
-        eject_resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !eject_resp[0]["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
         "eject should succeed; got {:?}",
         eject_resp[0]
     );
@@ -167,10 +169,13 @@ fn record_annotate_eject_preserves_annotation_ts() {
     let out_path = tmp.path().join("annot.tape");
 
     // Phase 1: open a recording.
-    let record_resp = pump(deck.clone(), &[json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "tape.record", "arguments": {"task": "ts preservation"}}
-    })]);
+    let record_resp = pump(
+        deck.clone(),
+        &[json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tape.record", "arguments": {"task": "ts preservation"}}
+        })],
+    );
     let handle = record_resp[0]["result"]["structuredContent"]["handle"]
         .as_str()
         .unwrap()
@@ -178,10 +183,13 @@ fn record_annotate_eject_preserves_annotation_ts() {
 
     // Phase 2: annotate.
     let annotate_at = chrono::Utc::now();
-    let _ = pump(deck.clone(), &[json!({
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "tape.annotate", "arguments": {"handle": handle, "note": "pre-eject note"}}
-    })]);
+    let _ = pump(
+        deck.clone(),
+        &[json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "tape.annotate", "arguments": {"handle": handle, "note": "pre-eject note"}}
+        })],
+    );
 
     // Phase 3: wait long enough that "now" at eject time is clearly distinct
     // from when the annotation was appended. 1500ms is plenty for second-
@@ -189,15 +197,19 @@ fn record_annotate_eject_preserves_annotation_ts() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
     // Phase 4: eject.
-    let eject_resp = pump(deck, &[json!({
-        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "tape.eject", "arguments": {
-            "handle": handle, "out": out_path.to_str().unwrap()
-        }}
-    })]);
-    assert_eq!(
-        eject_resp[0]["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    let eject_resp = pump(
+        deck,
+        &[json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "tape.eject", "arguments": {
+                "handle": handle, "out": out_path.to_str().unwrap()
+            }}
+        })],
+    );
+    assert!(
+        !eject_resp[0]["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
         "eject should succeed; got {:?}",
         eject_resp[0]
     );
@@ -208,8 +220,8 @@ fn record_annotate_eject_preserves_annotation_ts() {
         .iter()
         .find(|t| t.kind == tape_format::tracks::Kind::Annotation)
         .expect("annotation event present");
-    let annot_ts = chrono::DateTime::parse_from_rfc3339(&annot.ts)
-        .expect("annotation ts is rfc3339");
+    let annot_ts =
+        chrono::DateTime::parse_from_rfc3339(&annot.ts).expect("annotation ts is rfc3339");
 
     // The annotation ts must be close to `annotate_at`, not to "now". Allow
     // a generous 1s window on either side of annotate_at for clock skew; the

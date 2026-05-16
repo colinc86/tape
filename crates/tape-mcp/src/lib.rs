@@ -7,9 +7,9 @@
 //! into the `mcp` subcommand.
 
 pub mod deck;
-pub mod tools;
 pub mod jsonrpc;
 pub mod server;
+pub mod tools;
 
 pub use deck::Deck;
 pub use server::stdio_loop;

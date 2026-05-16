@@ -49,13 +49,10 @@ fn eject_carries_loaded_artifacts_through_to_new_tape() {
         + "\n";
     let mut buf2 = Vec::<u8>::new();
     tape_mcp::server::run(eject_req.as_bytes(), &mut buf2, deck).unwrap();
-    let eject_resp: Value = serde_json::from_str(
-        String::from_utf8(buf2).unwrap().lines().next().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        eject_resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    let eject_resp: Value =
+        serde_json::from_str(String::from_utf8(buf2).unwrap().lines().next().unwrap()).unwrap();
+    assert!(
+        !eject_resp["result"]["isError"].as_bool().unwrap_or(false),
         "eject reported an error: {eject_resp}"
     );
     assert!(out_path.exists(), "tape file written");

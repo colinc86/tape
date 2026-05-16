@@ -109,8 +109,7 @@ redact:
     let fake_home = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(fake_home.path());
 
-    let engine =
-        tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
+    let engine = tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
     let session = session_with_payload("custom", "see CUST-447139 for details");
     let out_dir = tempfile::tempdir().unwrap();
     let out = out_dir.path().join("custom.tape");
@@ -144,8 +143,7 @@ redact:
     let fake_home = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(fake_home.path());
 
-    let engine =
-        tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
+    let engine = tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
     let session = session_with_payload("disable", "ping alice@example.com");
     let out_dir = tempfile::tempdir().unwrap();
     let out = out_dir.path().join("disable.tape");
@@ -179,8 +177,7 @@ redact:
     let fake_home = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(fake_home.path());
 
-    let engine =
-        tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
+    let engine = tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
     let session = session_with_payload("opt-in", "internal host 10.0.0.1 listening");
     let out_dir = tempfile::tempdir().unwrap();
     let out = out_dir.path().join("optin.tape");
@@ -234,8 +231,7 @@ redact:
     // file. tempdir() returns a path outside the test HOME, so we're fine.
     assert!(!workspace.path().starts_with(fake_home.path()));
 
-    let engine =
-        tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
+    let engine = tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
     let session = session_with_payload(
         "precedence",
         "marker WIN-123 and runner-up LOSE-456 in body",
@@ -302,8 +298,7 @@ fn missing_taperc_falls_back_to_defaults() {
     let fake_home = tempfile::tempdir().unwrap();
     let _home = HomeGuard::set(fake_home.path());
 
-    let engine =
-        tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
+    let engine = tape_redact::engine_with_taperc(workspace.path()).expect("engine built");
     let session = session_with_payload("default", "reach me at bob@example.com");
     let out_dir = tempfile::tempdir().unwrap();
     let out = out_dir.path().join("default.tape");
