@@ -23,6 +23,7 @@ blake3.workspace = true
 chrono.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true
+glob.workspace = true
 rpassword.workspace = true
 getrandom.workspace = true
 http.workspace = true
