@@ -53,6 +53,10 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "std"
 # Redaction
 regex = "1"
 
+# RNG (used by tape-cli's `tape to-otlp` for the random trace id;
+# also pulled in by tape-anon when #204 lands)
+getrandom = "0.2"
+
 # HTTP / proxy
 axum = "0.7"
 hyper = "1"
