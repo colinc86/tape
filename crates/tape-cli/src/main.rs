@@ -102,7 +102,7 @@ enum Cmd {
         /// Override Anthropic upstream URL (default: env var or `https://api.anthropic.com`).
         #[arg(long)]
         upstream_anthropic: Option<String>,
-        /// Override OpenAI upstream URL (default: env var or `https://api.openai.com`).
+        /// Override `OpenAI` upstream URL (default: env var or `https://api.openai.com`).
         #[arg(long)]
         upstream_openai: Option<String>,
         /// Command and args after `--`.
@@ -336,7 +336,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["note", "editor"])]
         import: Option<std::path::PathBuf>,
         /// Parent step the annotation hangs off. Validated against the
-        /// tape's existing tracks: 1 ≤ N < new_step.
+        /// tape's existing tracks: 1 ≤ N < `new_step`.
         #[arg(long)]
         step: Option<u64>,
         /// Free-form attribution shown in CLI output / `--json`. Defaults
@@ -1710,7 +1710,7 @@ fn cmd_recap(
 /// enforcement (Steps 2 & 3), no judge-model auto mode (Step 4). Set
 /// semantics are enforced at the CLI: re-adding an existing tag or
 /// removing an absent one is a no-op, and an invocation that produces
-/// no net change skips the write entirely (TAG_NO_CHANGE on stderr).
+/// no net change skips the write entirely (`TAG_NO_CHANGE` on stderr).
 ///
 /// `--in-place` reuses `PendingTape::write_to`'s built-in temp-file +
 /// atomic rename, so the input is never observably half-written.

@@ -16,7 +16,7 @@ pub struct PendingTape {
     pub liner_md: String,
     pub tracks_jsonl: String,
     pub redactions_json: Option<String>,
-    /// Map from artifact zip-entry path → bytes. Use BTreeMap for deterministic order.
+    /// Map from artifact zip-entry path → bytes. Use `BTreeMap` for deterministic order.
     pub artifacts: BTreeMap<String, Vec<u8>>,
 }
 

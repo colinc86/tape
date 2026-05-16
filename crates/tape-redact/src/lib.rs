@@ -65,7 +65,7 @@ pub struct Engine {
 
 impl Engine {
     /// Engine seeded with all `default_enabled = true` built-ins, in the
-    /// canonical order (anthropic_api_key MUST precede openai_api_key).
+    /// canonical order (`anthropic_api_key` MUST precede `openai_api_key`).
     pub fn with_default_rules() -> Self {
         Self {
             rules: rules::built_in()
@@ -95,7 +95,7 @@ impl Engine {
     }
 
     /// Redact a single string. Mutates `s` in place. Returns a list of
-    /// (rule_id, replacement) tuples for each match. Rules are applied in
+    /// (`rule_id`, replacement) tuples for each match. Rules are applied in
     /// order; later rules see the output of earlier rules.
     pub fn redact_string(&self, s: &mut String) -> Vec<(String, String)> {
         let mut records = Vec::new();
@@ -143,7 +143,7 @@ impl Engine {
     }
 
     /// Redact every string field within `value`. `field_path` is the
-    /// JSONPath of `value` itself; child paths are produced for matches.
+    /// `JSONPath` of `value` itself; child paths are produced for matches.
     pub fn redact_value(&self, value: &mut Value, step: u64, field_path: &str) -> Vec<Redaction> {
         let mut out = Vec::new();
         self.redact_value_inner(value, step, field_path, &mut out);
@@ -190,7 +190,7 @@ impl Engine {
         }
     }
 
-    /// Defense-in-depth scan: returns the rule_ids in this engine's configured
+    /// Defense-in-depth scan: returns the `rule_ids` in this engine's configured
     /// rule set that would match in `text`, without mutating. Symmetric with
     /// `redact_*`: only the rules that *could have redacted* get to enforce.
     ///
@@ -231,7 +231,7 @@ impl Engine {
     }
 }
 
-/// Defense-in-depth scan: returns the rule_ids that would match in `text`,
+/// Defense-in-depth scan: returns the `rule_ids` that would match in `text`,
 /// without mutating. Used to verify meta.yaml and liner-notes.md don't leak
 /// secrets even after redaction.
 ///
