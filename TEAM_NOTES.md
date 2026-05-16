@@ -3348,3 +3348,36 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - **Pivot tally**: 6 carves filed (#204 #207 #209 #213 #215 #217),
   4 shipped (#204 #207 #209 #213). #215 and #217 still in flight
   via #216 / #218. Now #219 added.
+
+## 2026-05-16 10:08 — Engineer B
+- Claimed #219 (`tape merge` Phase 1 — concatenate two cassettes, carved from #61). PR #220 opened.
+- **Scope**: new `Cmd::Merge { a, b, output }` + `cmd_merge` + pure `merge_two(&RawTape, &RawTape) -> Result<MergeReport>` helper + 6 unit + 7 integration tests. Entirely in tape-cli per Phase-1 precedent (no new crate, despite ticket's "likely belongs in `crates/tape-format/src/merge.rs`" — keeps blast radius local; extraction is mechanical when Phase 2 lands).
+- **Seam-collision Option A**: drop `eject_a` + `task_b` → output `[task_a, ...rest_a, ...rest_b, eject_b]`, length `len(a) + len(b) - 2`. Cassette1's task + cassette2's eject survive; seam pair lost (documented Phase-1 tradeoff per ticket).
+- **Step renumbering + parent_step rewrite**: two `HashMap<old_step, new_step>` maps (one per cassette), built during the renumbering walk. Each surviving track gets `step = next_new_step` and `parent_step = parent_step.and_then(|p| map.get(&p).copied())`. Edge case: parent_step pointing at dropped `task_b` (step 1) → clears to `None` (map.get returns None). Unit-tested.
+- **Meta + liner cassette1-wins verbatim** (ticket). **Artifacts union via `BTreeMap::entry().or_insert()`** — cassette1's bytes win on shared content-addressed path (BLAKE3 collision implies same bytes). **`redactions.json` cassette1-wins** with stderr warning when both have one (per ticket §Semantics step 9).
+- **Stdout mode** uses a tempfile under the hood since `PendingTape::write_to` wants a path for atomic rename; post-write verify still runs against the tempfile, then bytes stream to stdout. tempfile auto-Drops.
+- **Workspace**: 59 test-binary suites green; scoped clippy clean.
+- **Stack of pending Cmd::* tail PRs is now 7** (#205 anon, #211/#212 to-otlp super, #214 rewind, #216 compact, #218 to-fixture, #220 merge). All trivially conflict-resolvable as order-preserving appends. The enum tail is going to be a fun resolve for whichever lands last but each conflict is one-line.
+- **Implementation note worth flagging for the Phase-2-of-61 engineer**:
+  - The `merge_two` shape is `(&RawTape, &RawTape) -> Result<MergeReport>`. Extending to N-way would generalize to `&[&RawTape]` and chain the seam-drop / parent-step-rewrite N-1 times. The `MergeReport { pending, redactions_both_warning }` struct is the natural place to grow per-input warnings + audit-ledger entries.
+  - The `parent_step` edge case (pointing at dropped seam track) is the kind of thing that justifies the `meta.merges[]` audit ledger from #61 §3.4 — without an audit log, that information is silently lost. Phase 2 should record it.
+  - The seam-drop policy is currently hardcoded; Phase 2's `--strategy` modes would parameterize this. The natural shape: `fn apply_seam(a_last: &Track, b_first: &Track, strategy: Strategy) -> (drop_a_last: bool, drop_b_first: bool, seam_annotation: Option<Track>)`.
+
+## 2026-05-16 10:22 — Engineer B
+- No-op tick. Queue empty. PR #220 (merge) went to `changes-requested`; #218 (to-fixture) `changes-requested`; #216 (compact) `addressing-feedback`. All three Addresser-owned.
+
+## 2026-05-16 07:00 — Principal
+- **Team blockers (WIP pile-up):**
+  - PR #220 (merge #219): 7th consecutive `changes-requested` +
+    CONFLICTING. Heads-up posted:
+    https://github.com/colinc86/tape/pull/220#issuecomment-4466567240
+  - PR #218 (to-fixture #217) unchanged.
+  - PR #216 (compact #215) still addressing-feedback.
+  - PR #185 external.
+- **3 of my recent priority:later carves are simultaneously stuck**
+  (#216, #218, #220). All same shape: Engineer-A opens with
+  combined-blocker, awaits addresser cleanup.
+- **No staging this tick.** Holding until at least one of the
+  three stuck PRs clears. Pattern note for PM: 7 consecutive carves
+  through this 2-PR round-trip flow. Engineer-A may benefit from a
+  prompt update to rebase locally before opening PRs.
