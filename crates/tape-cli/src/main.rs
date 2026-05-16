@@ -1,6 +1,7 @@
 //! `tape` CLI entrypoint. Subcommands route to crates.
 
 mod doctor;
+mod playlist;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -636,6 +637,32 @@ enum Cmd {
         /// (`{"input": "...", "expect_match": true|false}` per line).
         cases_file: std::path::PathBuf,
     },
+    /// Validate a `.tapelist` playlist (Phase 1 of issue #78, carved
+    /// per #221). Resolves each non-empty / non-comment line, opens
+    /// the cassette, runs `tape verify` on it, and prints a
+    /// per-entry `[OK]` / `[MISSING]` / `[INVALID]` line plus a
+    /// summary. Read-only — Phase 1 ships only the format + the
+    /// validate-only command.
+    ///
+    /// File format: UTF-8 plain text, one cassette path per line.
+    /// Lines beginning with `#` (after trimming) are comments. Blank
+    /// lines are ignored. Relative paths resolve against the
+    /// directory containing the `.tapelist`, NOT the process CWD.
+    /// `~/` is expanded via `$HOME`.
+    ///
+    /// Exit codes: `0` all entries OK (including a playlist with zero
+    /// non-comment entries); `1` at least one `[MISSING]` /
+    /// `[INVALID]`; `2` the `.tapelist` itself could not be read
+    /// (matches `tape verify`'s harness-error convention).
+    ///
+    /// Out of scope for Phase 1 (deferred to #78): YAML schema,
+    /// `--apply <subcommand>` batch dispatch, `--format json`,
+    /// `--strict` / `--skip-optional`, per-entry `sha256` integrity,
+    /// `uri:`-style remote entries.
+    Playlist {
+        /// Path to a `.tapelist` file.
+        file: std::path::PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -775,6 +802,7 @@ fn main() -> Result<()> {
             rules_file,
             cases_file,
         } => cmd_redact_test(&rules_file, &cases_file),
+        Cmd::Playlist { file } => cmd_playlist(&file),
     }
 }
 
@@ -5902,6 +5930,174 @@ fn cmd_merge(
             .map_err(|e| anyhow::anyhow!("write stdout: {e}"))?;
     }
     Ok(())
+}
+
+/// Marker width matches the longest tag `[INVALID]` (9 chars) plus
+/// two trailing spaces — keeps paths visually aligned across all
+/// three classifications.
+const PLAYLIST_MARKER_WIDTH: usize = 9;
+
+#[derive(Debug)]
+enum EntryStatus {
+    Ok,
+    Missing,
+    Invalid(String),
+}
+
+/// Phase 1 of issue #78 (carved per #221). Validates a `.tapelist`:
+/// resolves each entry, opens the cassette, runs `tape verify`, and
+/// prints one classification line per entry plus a summary. Exit
+/// code is `0` when all entries are `[OK]` (an empty/comment-only
+/// playlist is also `0` per Phase 1's recommendation), `1` if any
+/// entry is `[MISSING]` or `[INVALID]`. The `.tapelist` itself being
+/// unreadable is `2` (matches `cmd_verify`'s harness-error posture).
+fn cmd_playlist(file: &std::path::Path) -> Result<()> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+    // `.tapelist`'s parent is the resolution root for relative
+    // entries. Fall back to "." if it has no parent (e.g. file is a
+    // bare "list.tapelist" in CWD).
+    let base_dir = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
+
+    let pl = playlist::parse(&text, &base_dir);
+
+    let mut ok_count = 0usize;
+    let mut missing_count = 0usize;
+    let mut invalid_count = 0usize;
+
+    for entry in &pl.entries {
+        let (status, display_path) = classify(entry);
+        let tag = match &status {
+            EntryStatus::Ok => "[OK]",
+            EntryStatus::Missing => "[MISSING]",
+            EntryStatus::Invalid(_) => "[INVALID]",
+        };
+        match status {
+            EntryStatus::Ok => {
+                ok_count += 1;
+                println!(
+                    "{:<width$}  {}",
+                    tag,
+                    display_path.display(),
+                    width = PLAYLIST_MARKER_WIDTH
+                );
+            }
+            EntryStatus::Missing => {
+                missing_count += 1;
+                println!(
+                    "{:<width$}  {}",
+                    tag,
+                    display_path.display(),
+                    width = PLAYLIST_MARKER_WIDTH
+                );
+            }
+            EntryStatus::Invalid(reason) => {
+                invalid_count += 1;
+                println!(
+                    "{:<width$}  {}: {}",
+                    tag,
+                    display_path.display(),
+                    reason,
+                    width = PLAYLIST_MARKER_WIDTH
+                );
+            }
+        }
+    }
+
+    let total = ok_count + missing_count + invalid_count;
+    println!("{ok_count} OK, {missing_count} missing, {invalid_count} invalid ({total} total)");
+
+    if missing_count + invalid_count > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Per-entry classifier. Tries to canonicalize the path for display
+/// so the output shows the absolute resolved location (helpful when
+/// `[MISSING]` is the result of a wrong relative base); falls back
+/// to the resolved-but-not-canonicalized path when the file doesn't
+/// exist (canonicalize fails on a missing file).
+fn classify(entry: &std::path::Path) -> (EntryStatus, std::path::PathBuf) {
+    let display = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    let meta = match std::fs::metadata(entry) {
+        Ok(m) => m,
+        Err(_) => return (EntryStatus::Missing, display),
+    };
+    if !meta.is_file() {
+        return (EntryStatus::Missing, display);
+    }
+    let raw = match tape_format::reader::RawTape::open(entry) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                EntryStatus::Invalid(truncate_reason(&e.to_string())),
+                display,
+            )
+        }
+    };
+    let report = tape_format::verify::verify(&raw);
+    if let Some(first_err) = report
+        .diagnostics
+        .iter()
+        .find(|d| matches!(d.severity, tape_format::verify::Severity::Error))
+    {
+        return (
+            EntryStatus::Invalid(first_err.code.as_str().to_owned()),
+            display,
+        );
+    }
+    (EntryStatus::Ok, display)
+}
+
+/// Collapse a (possibly multi-line) error message to one line and cap
+/// at 120 chars so the per-entry line stays terminal-friendly.
+fn truncate_reason(reason: &str) -> String {
+    let single_line: String = reason
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(120)
+        .collect();
+    if single_line.is_empty() {
+        "invalid".to_owned()
+    } else {
+        single_line
+    }
+}
+
+#[cfg(test)]
+mod playlist_handler_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_reason_collapses_multiline() {
+        let msg = "first line\nsecond line\nthird";
+        assert_eq!(truncate_reason(msg), "first line");
+    }
+
+    #[test]
+    fn truncate_reason_caps_at_120_chars() {
+        let long = "x".repeat(200);
+        assert_eq!(truncate_reason(&long).chars().count(), 120);
+    }
+
+    #[test]
+    fn truncate_reason_empty_becomes_invalid() {
+        assert_eq!(truncate_reason(""), "invalid");
+    }
 }
 
 #[cfg(test)]
