@@ -548,6 +548,34 @@ enum Cmd {
         #[arg(long, default_value_t = 1024)]
         max_output_chars: usize,
     },
+    /// Concatenate two cassettes into one. Phase 1 of issue #61 carved
+    /// per #219: exactly TWO inputs, cassette1's `task` + cassette2's
+    /// `eject` survive the seam, cassette1's `meta.yaml` and
+    /// `liner-notes.md` pass through verbatim. Output cassette MUST
+    /// re-verify clean (`tape verify`) — exit 3 + unlink on regression.
+    ///
+    /// Out of scope for Phase 1 (deferred to #61 Phase 2+): N-way
+    /// merge (3+ inputs), `meta.merges[]` audit ledger, strategy
+    /// modes (`chrono` / `sequence` / `manual`), seam annotations /
+    /// `--insert-seams`, liner-note regeneration, meta-field
+    /// reconciliation (`task` / `recap` / `tags` / `models` / `tools`
+    /// / `outcome` union), redactions.json union, `--dry-run` /
+    /// `--report` / `--task` / `--outcome` / `--liner-notes` flags,
+    /// `outcome: merged` enum value.
+    Merge {
+        /// First (left) input cassette. Its `task` event, `meta.yaml`,
+        /// and `liner-notes.md` win at the seam (cassette1-wins for
+        /// Phase 1 per ticket; reconciliation lands in Phase 2).
+        a: std::path::PathBuf,
+        /// Second (right) input cassette. Its `eject` event wins at
+        /// the seam (final outcome of the combined recording). Its
+        /// step numbers are offset-rewritten to stay contiguous.
+        b: std::path::PathBuf,
+        /// Output cassette. Default: stdout (binary zip). Refuses if
+        /// equal to either input path.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -677,6 +705,7 @@ fn main() -> Result<()> {
             output,
             max_output_chars,
         } => cmd_compact(&file, output, max_output_chars),
+        Cmd::Merge { a, b, output } => cmd_merge(&a, &b, output),
     }
 }
 
@@ -5552,5 +5581,468 @@ mod compact_tests {
             .as_str()
             .unwrap()
             .contains("[truncated,"));
+    }
+}
+// =====================================================================
+// `tape merge` — Phase 1 of issue #61 / #219.
+//
+// Concatenate two cassettes into one. Cassette1's `task` event +
+// `meta.yaml` + `liner-notes.md` win at the seam; cassette2's `eject`
+// event wins (final outcome). Seam-internal `eject_a` + `task_b` are
+// dropped per ticket §Flag ("Option A"). Tracks are renumbered to
+// stay contiguous; `parent_step` references on cassette2's tracks
+// are rewritten via the OLD-step → NEW-step map.
+//
+// Output cassette MUST re-verify clean — exit 3 + unlink on
+// regression.
+// =====================================================================
+
+/// Result of a merge: the PendingTape ready to write + any warnings
+/// the caller should surface to stderr (Phase 1 has one warning kind:
+/// both inputs carried `redactions.json`, cassette1's was kept).
+struct MergeReport {
+    pending: tape_format::writer::PendingTape,
+    redactions_both_warning: bool,
+}
+
+/// Pure merge transform. Takes both cassettes as already-parsed
+/// `RawTape`s and produces a `PendingTape`. Does NOT do IO. Caller
+/// is responsible for the verify gates before+after.
+fn merge_two(
+    a: &tape_format::reader::RawTape,
+    b: &tape_format::reader::RawTape,
+) -> Result<MergeReport> {
+    use tape_format::tracks::Kind;
+
+    let tracks_a_raw = a.tracks_jsonl.clone().unwrap_or_default();
+    let tracks_b_raw = b.tracks_jsonl.clone().unwrap_or_default();
+    let tracks_a = tape_format::tracks::parse_jsonl(&tracks_a_raw)
+        .map_err(|e| anyhow::anyhow!("cassette1 tracks.jsonl parse: {e}"))?;
+    let tracks_b = tape_format::tracks::parse_jsonl(&tracks_b_raw)
+        .map_err(|e| anyhow::anyhow!("cassette2 tracks.jsonl parse: {e}"))?;
+
+    // 1. Seam drop per ticket §Flag (Option A): drop cassette1's
+    //    last event if it's `eject`, and cassette2's first event if
+    //    it's `task`. Both inputs are pre-verified so these
+    //    invariants hold; the conditional shape preserves robustness
+    //    on hand-constructed test fixtures.
+    let surviving_a: Vec<tape_format::tracks::Track> = if tracks_a
+        .last()
+        .map(|t| t.kind == Kind::Eject)
+        .unwrap_or(false)
+    {
+        tracks_a[..tracks_a.len() - 1].to_vec()
+    } else {
+        tracks_a.clone()
+    };
+    let surviving_b: Vec<tape_format::tracks::Track> = if tracks_b
+        .first()
+        .map(|t| t.kind == Kind::Task)
+        .unwrap_or(false)
+    {
+        tracks_b[1..].to_vec()
+    } else {
+        tracks_b.clone()
+    };
+
+    // 2. Build OLD step → NEW step maps for each cassette. Cassette1
+    //    keeps its surviving tracks at their original 1..(len-1) steps;
+    //    cassette2's surviving tracks renumber starting at len(surviving_a)+1.
+    let mut map_a: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut next_new_step: u64 = 0;
+    let mut merged: Vec<tape_format::tracks::Track> =
+        Vec::with_capacity(surviving_a.len() + surviving_b.len());
+    for t in &surviving_a {
+        next_new_step += 1;
+        map_a.insert(t.step, next_new_step);
+        let mut nt = t.clone();
+        nt.step = next_new_step;
+        // parent_step on cassette1 tracks remaps via the cassette1
+        // map. (No-op for tracks whose parent_step was None.)
+        nt.parent_step = nt.parent_step.and_then(|p| map_a.get(&p).copied());
+        merged.push(nt);
+    }
+    let mut map_b: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    for t in &surviving_b {
+        next_new_step += 1;
+        map_b.insert(t.step, next_new_step);
+        let mut nt = t.clone();
+        nt.step = next_new_step;
+        // parent_step on cassette2 tracks remaps via the cassette2
+        // map. Edge case: if parent_step points at the dropped
+        // `task_b` (step 1 on cassette2's original numbering), the
+        // map lookup returns None and we drop the parent_step.
+        // Documented in the unit test `parent_step_pointing_at_dropped_task_b_clears_to_none`.
+        nt.parent_step = nt.parent_step.and_then(|p| map_b.get(&p).copied());
+        merged.push(nt);
+    }
+
+    // 3. Re-serialize tracks.
+    let mut new_tracks_jsonl = String::with_capacity(tracks_a_raw.len() + tracks_b_raw.len());
+    for t in &merged {
+        let line = t
+            .to_line()
+            .map_err(|e| anyhow::anyhow!("re-serialize merged track {}: {e}", t.step))?;
+        new_tracks_jsonl.push_str(&line);
+        new_tracks_jsonl.push('\n');
+    }
+
+    // 4. Meta + liner: cassette1 wins verbatim per ticket.
+    let meta_yaml = a
+        .meta_yaml
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("cassette1 missing meta.yaml"))?;
+    let liner_md = a.liner_md.clone().unwrap_or_default();
+
+    // 5. redactions.json: cassette1's if present, else cassette2's.
+    //    If BOTH have one, take cassette1's and flag a warning.
+    let (redactions_json, redactions_both_warning) = match (&a.redactions_json, &b.redactions_json)
+    {
+        (Some(j), Some(_)) => (Some(j.clone()), true),
+        (Some(j), None) => (Some(j.clone()), false),
+        (None, Some(j)) => (Some(j.clone()), false),
+        (None, None) => (None, false),
+    };
+
+    // 6. Artifacts: union by content-addressed path. Cassette1 wins
+    //    on hash collision (no-op semantically — same hash means
+    //    same bytes by BLAKE3).
+    let mut artifacts: std::collections::BTreeMap<String, Vec<u8>> =
+        a.artifacts.clone().into_iter().collect();
+    for (path, bytes) in b.artifacts.clone() {
+        artifacts.entry(path).or_insert(bytes);
+    }
+
+    Ok(MergeReport {
+        pending: tape_format::writer::PendingTape {
+            meta_yaml,
+            liner_md,
+            tracks_jsonl: new_tracks_jsonl,
+            redactions_json,
+            artifacts,
+        },
+        redactions_both_warning,
+    })
+}
+
+/// `tape merge <a> <b> [--output <path>]` — Phase 1 of #61.
+fn cmd_merge(
+    a: &std::path::Path,
+    b: &std::path::Path,
+    output: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // 1. Reject `--output` equal to either input (merge never mutates
+    //    inputs; SPEC §1.3).
+    if let Some(ref out) = output {
+        if same_path(a, out) || same_path(b, out) {
+            eprintln!("tape merge: --output must differ from both input paths");
+            std::process::exit(2);
+        }
+    }
+
+    // 2. Read both inputs. open_input exits 2 on failure.
+    let raw_a = open_input(a, "tape merge");
+    let raw_b = open_input(b, "tape merge");
+
+    // 3. Verify both inputs. Refuse to merge if either is invalid —
+    //    user runs `tape verify` themselves to debug.
+    for (label, raw) in [("cassette1", &raw_a), ("cassette2", &raw_b)] {
+        let report = tape_format::verify::verify(raw);
+        if !report.is_valid() {
+            let codes: Vec<&'static str> = report.errors().map(|d| d.code.as_str()).collect();
+            eprintln!(
+                "tape merge: {label} failed tape verify ({}); fix the input and re-run",
+                codes.join(",")
+            );
+            std::process::exit(2);
+        }
+    }
+
+    // 4. Apply the pure merge transform.
+    let report = match merge_two(&raw_a, &raw_b) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("tape merge: {e}");
+            std::process::exit(2);
+        }
+    };
+    if report.redactions_both_warning {
+        eprintln!(
+            "warning: cassette2 has redactions.json; cassette1's was used. \
+             Phase 2 will union them."
+        );
+    }
+
+    // 5. Write. Stdout mode emits the binary zip; file mode atomic-
+    //    renames via PendingTape::write_to's built-in temp-file path.
+    if let Some(out_path) = output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+            }
+        }
+        report
+            .pending
+            .write_to(&out_path)
+            .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+        // 6. Post-write verify gate. Delete the bad output on
+        //    regression.
+        let written = tape_format::reader::RawTape::open(&out_path)?;
+        let v = tape_format::verify::verify(&written);
+        if !v.is_valid() {
+            let codes: Vec<&'static str> = v.errors().map(|d| d.code.as_str()).collect();
+            let _ = std::fs::remove_file(&out_path);
+            eprintln!(
+                "tape merge: output failed tape verify ({}); removed {}",
+                codes.join(","),
+                out_path.display()
+            );
+            std::process::exit(3);
+        }
+        eprintln!("tape merge: wrote {}", out_path.display());
+    } else {
+        // Stdout mode: write to a temp file (since PendingTape::write_to
+        // wants a path for atomic rename), then stream the bytes to
+        // stdout. Post-write verify still runs against the temp file.
+        let tmp = tempfile::Builder::new()
+            .prefix("tape-merge-stdout-")
+            .suffix(".tape")
+            .tempfile()
+            .map_err(|e| anyhow::anyhow!("tempfile for stdout: {e}"))?;
+        report
+            .pending
+            .write_to(tmp.path())
+            .map_err(|e| anyhow::anyhow!("write {}: {e}", tmp.path().display()))?;
+        let written = tape_format::reader::RawTape::open(tmp.path())?;
+        let v = tape_format::verify::verify(&written);
+        if !v.is_valid() {
+            let codes: Vec<&'static str> = v.errors().map(|d| d.code.as_str()).collect();
+            eprintln!(
+                "tape merge: output failed tape verify ({}); nothing written",
+                codes.join(",")
+            );
+            std::process::exit(3);
+        }
+        let bytes = std::fs::read(tmp.path())
+            .map_err(|e| anyhow::anyhow!("read tmp {}: {e}", tmp.path().display()))?;
+        use std::io::Write as _;
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        h.write_all(&bytes)
+            .map_err(|e| anyhow::anyhow!("write stdout: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use serde_json::json;
+    use tape_format::tracks::{Kind, Track};
+
+    fn track(step: u64, kind: Kind, parent_step: Option<u64>) -> Track {
+        Track {
+            step,
+            kind,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({"prompt": "x"}),
+            parent_step,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        }
+    }
+
+    /// Synth a minimal verify-valid RawTape with the given tracks.
+    /// First track must be `Task`, last must be `Eject`.
+    fn raw_with(tracks: &[Track], meta_id_suffix: &str) -> tape_format::reader::RawTape {
+        let mut jsonl = String::new();
+        for t in tracks {
+            jsonl.push_str(&t.to_line().unwrap());
+            jsonl.push('\n');
+        }
+        // Hand-construct a RawTape (no IO) for the pure-transform tests.
+        tape_format::reader::RawTape {
+            meta_yaml: Some(format!(
+                "tape_version: \"tape/v0\"\n\
+                 id: \"01h8xy00-0000-7000-b8aa-{meta_id_suffix:0>12}\"\n\
+                 created_at: \"2026-05-16T00:00:00Z\"\n\
+                 ejected_at: \"2026-05-16T00:00:30Z\"\n\
+                 task: \"merge test {meta_id_suffix}\"\n\
+                 recorder:\n  agent: \"test/0.0.1\"\n\
+                 outcome: success\n"
+            )),
+            liner_md: Some(format!("# liner {meta_id_suffix}\n")),
+            tracks_jsonl: Some(jsonl),
+            redactions_json: None,
+            artifacts: std::collections::HashMap::new(),
+            unknown_entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn happy_5_plus_5_yields_8_contiguous_steps() {
+        // Cassette1: task, 3 middle, eject. Cassette2: task, 3 middle, eject.
+        // Seam drops eject_a + task_b → 8 tracks total, steps 1..8.
+        let a_tracks = vec![
+            track(1, Kind::Task, None),
+            track(2, Kind::Shell, None),
+            track(3, Kind::FileRead, None),
+            track(4, Kind::Annotation, None),
+            track(5, Kind::Eject, None),
+        ];
+        let b_tracks = vec![
+            track(1, Kind::Task, None),
+            track(2, Kind::Shell, None),
+            track(3, Kind::FileRead, None),
+            track(4, Kind::Annotation, None),
+            track(5, Kind::Eject, None),
+        ];
+        let a = raw_with(&a_tracks, "1");
+        let b = raw_with(&b_tracks, "2");
+        let r = merge_two(&a, &b).unwrap();
+        let merged: Vec<Track> = tape_format::tracks::parse_jsonl(&r.pending.tracks_jsonl).unwrap();
+        assert_eq!(merged.len(), 8, "5+5-2 = 8");
+        for (i, t) in merged.iter().enumerate() {
+            let expected_step = (i as u64) + 1;
+            assert_eq!(t.step, expected_step, "step {i} should be {expected_step}");
+        }
+        assert_eq!(merged.first().unwrap().kind, Kind::Task);
+        assert_eq!(merged.last().unwrap().kind, Kind::Eject);
+    }
+
+    #[test]
+    fn parent_step_on_cassette2_is_offset_rewritten() {
+        let a_tracks = vec![
+            track(1, Kind::Task, None),
+            track(2, Kind::Shell, None),
+            track(3, Kind::Eject, None),
+        ];
+        // Cassette2: task(1), shell(2), annotation(3, parent=2), eject(4).
+        // After seam drop: shell→step 3 (offset of 2 from cassette1's
+        // surviving 2 tracks), annotation→step 4 with parent rewritten
+        // from 2 to 3, eject→step 5.
+        let b_tracks = vec![
+            track(1, Kind::Task, None),
+            track(2, Kind::Shell, None),
+            track(3, Kind::Annotation, Some(2)),
+            track(4, Kind::Eject, None),
+        ];
+        let a = raw_with(&a_tracks, "1");
+        let b = raw_with(&b_tracks, "2");
+        let r = merge_two(&a, &b).unwrap();
+        let merged: Vec<Track> = tape_format::tracks::parse_jsonl(&r.pending.tracks_jsonl).unwrap();
+        // Steps: task=1, shell=2 (from cassette1), shell=3, annotation=4, eject=5.
+        assert_eq!(merged.len(), 5);
+        assert_eq!(merged[3].kind, Kind::Annotation);
+        assert_eq!(merged[3].step, 4);
+        assert_eq!(
+            merged[3].parent_step,
+            Some(3),
+            "annotation's parent_step rewritten from b's step 2 → merged step 3"
+        );
+    }
+
+    #[test]
+    fn parent_step_pointing_at_dropped_task_b_clears_to_none() {
+        // Edge case from plan: if a cassette2 track has parent_step=1
+        // (pointing at the dropped task_b), the rewrite drops it to None.
+        let a_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let b_tracks = vec![
+            track(1, Kind::Task, None),
+            track(2, Kind::Annotation, Some(1)), // points at dropped task_b
+            track(3, Kind::Eject, None),
+        ];
+        let a = raw_with(&a_tracks, "1");
+        let b = raw_with(&b_tracks, "2");
+        let r = merge_two(&a, &b).unwrap();
+        let merged: Vec<Track> = tape_format::tracks::parse_jsonl(&r.pending.tracks_jsonl).unwrap();
+        // 2 + 3 - 2 = 3 tracks.
+        assert_eq!(merged.len(), 3);
+        let annot = merged.iter().find(|t| t.kind == Kind::Annotation).unwrap();
+        assert_eq!(
+            annot.parent_step, None,
+            "parent_step pointing at dropped task_b cleared to None"
+        );
+    }
+
+    #[test]
+    fn meta_and_liner_come_from_cassette1_verbatim() {
+        let a_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let b_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let a = raw_with(&a_tracks, "1");
+        let b = raw_with(&b_tracks, "2");
+        let r = merge_two(&a, &b).unwrap();
+        assert_eq!(r.pending.meta_yaml, a.meta_yaml.clone().unwrap());
+        assert_eq!(r.pending.liner_md, a.liner_md.clone().unwrap());
+        // Cassette2's meta/liner are NOT visible in the output.
+        assert!(!r.pending.meta_yaml.contains("merge test 2"));
+        assert!(!r.pending.liner_md.contains("liner 2"));
+    }
+
+    #[test]
+    fn artifacts_union_dedupes_on_hash_collision() {
+        let a_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let b_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let mut a = raw_with(&a_tracks, "1");
+        let mut b = raw_with(&b_tracks, "2");
+        // Shared hash path → BTreeMap entry-or-insert keeps cassette1's bytes.
+        a.artifacts
+            .insert("artifacts/aa/bb/dup.bin".into(), vec![1, 1, 1]);
+        b.artifacts
+            .insert("artifacts/aa/bb/dup.bin".into(), vec![2, 2, 2]);
+        // Cassette1-only path survives.
+        a.artifacts.insert("artifacts/cc/aa.bin".into(), vec![0xAA]);
+        // Cassette2-only path survives.
+        b.artifacts.insert("artifacts/dd/bb.bin".into(), vec![0xBB]);
+
+        let r = merge_two(&a, &b).unwrap();
+        assert_eq!(r.pending.artifacts.len(), 3);
+        assert_eq!(
+            r.pending.artifacts.get("artifacts/aa/bb/dup.bin"),
+            Some(&vec![1, 1, 1]),
+            "cassette1's bytes win on shared path"
+        );
+        assert_eq!(
+            r.pending.artifacts.get("artifacts/cc/aa.bin"),
+            Some(&vec![0xAA])
+        );
+        assert_eq!(
+            r.pending.artifacts.get("artifacts/dd/bb.bin"),
+            Some(&vec![0xBB])
+        );
+    }
+
+    #[test]
+    fn redactions_json_prefers_cassette1_warns_on_both() {
+        let a_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+        let b_tracks = vec![track(1, Kind::Task, None), track(2, Kind::Eject, None)];
+
+        // Both have redactions.json → cassette1's wins + warning.
+        let mut a1 = raw_with(&a_tracks, "1");
+        let mut b1 = raw_with(&b_tracks, "2");
+        a1.redactions_json = Some("[\"from-a\"]".into());
+        b1.redactions_json = Some("[\"from-b\"]".into());
+        let r1 = merge_two(&a1, &b1).unwrap();
+        assert_eq!(r1.pending.redactions_json.as_deref(), Some("[\"from-a\"]"));
+        assert!(r1.redactions_both_warning);
+
+        // Only cassette2 has redactions.json → cassette2's wins + no warning.
+        let a2 = raw_with(&a_tracks, "1");
+        let mut b2 = raw_with(&b_tracks, "2");
+        b2.redactions_json = Some("[\"from-b-only\"]".into());
+        let r2 = merge_two(&a2, &b2).unwrap();
+        assert_eq!(
+            r2.pending.redactions_json.as_deref(),
+            Some("[\"from-b-only\"]")
+        );
+        assert!(!r2.redactions_both_warning);
+
+        // Neither → None + no warning.
+        let a3 = raw_with(&a_tracks, "1");
+        let b3 = raw_with(&b_tracks, "2");
+        let r3 = merge_two(&a3, &b3).unwrap();
+        assert!(r3.pending.redactions_json.is_none());
+        assert!(!r3.redactions_both_warning);
     }
 }
