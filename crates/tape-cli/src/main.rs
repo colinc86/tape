@@ -401,18 +401,25 @@ enum Cmd {
     Relinernote {
         /// Input cassette.
         file: std::path::PathBuf,
-        /// Override `.taperc::judge::model` for one invocation.
-        /// Empty means "use the value the config provides".
-        #[arg(long)]
-        model: Option<String>,
         /// Render the prompt with placeholders substituted, print it
         /// to stdout, and exit 0 without making an HTTP call.
         #[arg(long)]
         dry_run: bool,
+        /// Override `.taperc::judge::model` for one invocation.
+        /// Empty means "use the value the config provides".
+        #[arg(long)]
+        model: Option<String>,
         /// Output path. Default: `<basename>.relinernote.tape` next to
         /// the input. Refuses if equal to the input path.
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
+        /// Bundled prompt template name. Today: `default` (canonical
+        /// prose) or `terse` (bulleted, ~100-200 words target).
+        /// Both render the same four required H2 sections (SPEC
+        /// §4.1) so output-validation is unchanged. Unknown names
+        /// exit 2 with `RELINER_TEMPLATE_NOT_FOUND`. (Issue #196.)
+        #[arg(long, default_value = "default")]
+        template: String,
     },
 }
 
@@ -531,7 +538,8 @@ fn main() -> Result<()> {
             model,
             dry_run,
             out,
-        } => cmd_relinernote(&file, model, dry_run, out),
+            template,
+        } => cmd_relinernote(&file, model, dry_run, out, &template),
     }
 }
 
@@ -3232,7 +3240,23 @@ fn cmd_relinernote(
     model_override: Option<String>,
     dry_run: bool,
     out: Option<std::path::PathBuf>,
+    template: &str,
 ) -> Result<()> {
+    // 0. Resolve the template against the bundled catalog (#196).
+    //    Unknown names exit 2 with `RELINER_TEMPLATE_NOT_FOUND`
+    //    (mirrors `NEW_TEMPLATE_NOT_FOUND`'s shape from #99).
+    let template_bundle = match resolve_relinernote_template(template) {
+        Some(t) => t,
+        None => {
+            let known: Vec<&'static str> = RELINERNOTE_TEMPLATES.iter().map(|t| t.id).collect();
+            eprintln!(
+                "tape relinernote: RELINER_TEMPLATE_NOT_FOUND — unknown template {template:?}; \
+                 known: {}",
+                known.join(", ")
+            );
+            std::process::exit(2);
+        }
+    };
     // 1. Resolve the output path. `--dry-run` doesn't write, so the
     //    path resolution only matters for the write branch — but we
     //    still validate it up front so `--dry-run -o <input>` fails
@@ -3263,10 +3287,12 @@ fn cmd_relinernote(
     let prior_liner = raw.liner_md.as_deref().unwrap_or("").to_owned();
     let prior_sha = sha256_hex(prior_liner.as_bytes());
 
-    // 3. Build the prompt. Hardcoded `default` template; the
-    //    track summary is one line per event, head+tail-truncated at
-    //    RELINER_PROMPT_CAP bytes with an elision marker.
-    let prompt = render_relinernote_prompt(&meta, tracks_jsonl, &prior_liner);
+    // 3. Build the prompt. Template selects the instruction block;
+    //    the cassette-context + track summary + prior-liner suffix
+    //    segments are shared across all templates. Track summary is
+    //    head+tail-truncated at RELINER_PROMPT_CAP bytes with an
+    //    elision marker.
+    let prompt = render_relinernote_prompt(template_bundle, &meta, tracks_jsonl, &prior_liner);
 
     // 4. `--dry-run` stops here — print the rendered prompt, exit 0,
     //    no judge call. Test asserts the client is never invoked.
@@ -3310,7 +3336,7 @@ fn cmd_relinernote(
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string(),
         model: model_id,
-        template_id: "default".to_owned(),
+        template_id: template_bundle.id.to_owned(),
         prior_liner_notes_sha256: prior_sha,
         new_liner_notes_sha256: new_sha,
         judge_call: judge_out.record,
@@ -3471,32 +3497,75 @@ fn load_judge_and_relinernote_config() -> std::result::Result<
     Ok((judge_cfg, relinernote_cfg))
 }
 
-/// Hardcoded bundled `default` prompt template (Phase 1 only).
-/// Instructions first, then the cassette context, then the track
-/// summary, then the existing liner notes. The order matters: an
-/// oversized tracks summary should never push the instructions out
-/// of the model's effective context.
+/// One built-in prompt template the relinernote CLI knows about.
+/// `id` is what the user passes to `--template`; `instructions` is
+/// the prose prepended to the cassette context + track summary +
+/// prior-liner suffix. All bundled templates require the same four
+/// H2 sections (SPEC §4.1) so the output validators stay
+/// template-agnostic. (Issue #196.)
+struct RelinernoteTemplate {
+    id: &'static str,
+    instructions: &'static str,
+}
+
+/// Bundled relinernote-template catalog. Order is documentation
+/// only — `resolve_relinernote_template` does a linear scan, so
+/// adding or removing entries is a one-line edit. Grows one
+/// template at a time per #71's rollout (#196 added `terse`;
+/// `regulatory`/`pedagogical`/`merged` are the queued additions).
+const RELINERNOTE_TEMPLATES: &[RelinernoteTemplate] = &[
+    RelinernoteTemplate {
+        id: "default",
+        instructions: "You are regenerating the `liner-notes.md` case insert for one recorded \
+             AI-agent investigation. Produce 200–500 words of Markdown. The output \
+             MUST contain, in this exact order, these four level-2 headings, each \
+             followed by at least one non-empty paragraph or list item before the next:\n\n\
+             ## What I was asked to do\n\
+             ## What I found\n\
+             ## Suggested next step / fix\n\
+             ## What I'm uncertain about\n\n\
+             Plain Markdown — no front-matter, no code fences around the whole thing, \
+             no other H1/H2 sections. Be concrete: name the user-visible outcome, not \
+             a meta description of the recording. Do not include any secrets, API keys, \
+             emails, or PII; if the source mentions them, refer abstractly.\n\n",
+    },
+    RelinernoteTemplate {
+        id: "terse",
+        instructions: "You are regenerating the `liner-notes.md` case insert for one recorded \
+             AI-agent investigation. Produce 100–200 words of Markdown — terse and \
+             scannable. The output MUST contain, in this exact order, these four \
+             level-2 headings, each followed by a short bulleted list (use `-` as \
+             the bullet marker; 1–4 bullets per section):\n\n\
+             ## What I was asked to do\n\
+             ## What I found\n\
+             ## Suggested next step / fix\n\
+             ## What I'm uncertain about\n\n\
+             Bulleted, scannable, one or two short sentences per bullet. Plain \
+             Markdown — no front-matter, no code fences, no other H1/H2 sections. \
+             Lead each bullet with the concrete fact, not a meta-description. Do not \
+             include any secrets, API keys, emails, or PII; if the source mentions \
+             them, refer abstractly.\n\n",
+    },
+];
+
+fn resolve_relinernote_template(id: &str) -> Option<&'static RelinernoteTemplate> {
+    RELINERNOTE_TEMPLATES.iter().find(|t| t.id == id)
+}
+
+/// Build the prompt from the resolved template bundle. Instructions
+/// first, then the cassette context, then the track summary, then
+/// the existing liner notes. The order matters: an oversized tracks
+/// summary should never push the instructions out of the model's
+/// effective context.
 fn render_relinernote_prompt(
+    template: &RelinernoteTemplate,
     meta: &tape_format::meta::Meta,
     tracks_jsonl: &str,
     prior_liner: &str,
 ) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(8 * 1024);
-    s.push_str(
-        "You are regenerating the `liner-notes.md` case insert for one recorded \
-         AI-agent investigation. Produce 200–500 words of Markdown. The output \
-         MUST contain, in this exact order, these four level-2 headings, each \
-         followed by at least one non-empty paragraph or list item before the next:\n\n\
-         ## What I was asked to do\n\
-         ## What I found\n\
-         ## Suggested next step / fix\n\
-         ## What I'm uncertain about\n\n\
-         Plain Markdown — no front-matter, no code fences around the whole thing, \
-         no other H1/H2 sections. Be concrete: name the user-visible outcome, not \
-         a meta description of the recording. Do not include any secrets, API keys, \
-         emails, or PII; if the source mentions them, refer abstractly.\n\n",
-    );
+    s.push_str(template.instructions);
     let _ = writeln!(s, "Task: {}", meta.task);
     let outcome = match meta.outcome {
         tape_format::meta::Outcome::Success => "success",
