@@ -429,6 +429,29 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         template: String,
     },
+    /// Strip absolute `$HOME`-style file paths from a cassette and write
+    /// a NEW cassette next to the input. Phase 1 of issue #42 — see
+    /// issue #204 for the full identifier set.
+    ///
+    /// This slice ships exactly one rule (`unix_home_path`). The
+    /// Phase-2+ rule classes (`windows_user_path`,
+    /// `unix_username_prompt`, `git_remote_user`, `hostname_meta`,
+    /// `env_user`, etc.), the `--rules` / `--disable` flags, the
+    /// `--map` / `tape unanon` reversibility, the `--aggressive` free-
+    /// text scan, the `--salt` / `--dry-run` flags, the
+    /// `meta.anonymizations[]` audit array, the
+    /// `LEAKED_IDENTIFIER_POST_ANON` `tape verify` diagnostic, and the
+    /// `.taperc::anon:` config block are all deferred follow-on slices.
+    Anon {
+        /// Input cassette. Read-only; never mutated.
+        file: std::path::PathBuf,
+        /// Output cassette. Default: `<basename>.anon.tape` next to the
+        /// input. Refuses if equal to `<file>` (per #42 §3.1: anon
+        /// NEVER writes back to the input). Refuses if the output
+        /// path already exists (no `--force` in Phase 1).
+        #[arg(short = 'o', long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -549,6 +572,7 @@ fn main() -> Result<()> {
             out,
             template,
         } => cmd_relinernote(&file, model, dry_run, out, &template),
+        Cmd::Anon { file, out } => cmd_anon(&file, out),
     }
 }
 
@@ -3747,4 +3771,78 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
     }
     s
+}
+
+/// `tape anon <file> [-o <path>]` — Phase 1 of issue #42 / #204.
+///
+/// Strip absolute `$HOME`-style file paths from a cassette and write a
+/// NEW cassette next to the input. The input is never mutated. On a
+/// successful run, prints one stderr line summarizing the replacement
+/// count and any artifacts that were left untouched (Phase 1 does not
+/// scan binary content — that's `--aggressive` in Phase 4).
+///
+/// Exit codes (per #204):
+/// - `0` — anonymization succeeded; output cassette written.
+/// - `2` — usage error (output path equals input, output already
+///   exists, OS RNG failure deriving salt).
+/// - `3` — input cassette failed to parse / open.
+/// - `4` — defense-in-depth re-scan found a leftover identifier; no
+///   output cassette is left on disk.
+fn cmd_anon(file: &std::path::Path, out: Option<std::path::PathBuf>) -> Result<()> {
+    // 1. Resolve output path (default: `<basename>.anon.tape` next to input).
+    let out_path = if let Some(p) = out {
+        p
+    } else {
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
+        let parent = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{stem}.anon.tape"))
+    };
+
+    // 2. Refuse if out == in (per #42 §3.1: anon NEVER writes back).
+    if same_path(file, &out_path) {
+        eprintln!("tape anon: --out must differ from input path (anon never writes in place)");
+        std::process::exit(2);
+    }
+
+    // 3. Refuse if the output already exists (no `--force` in Phase 1).
+    if out_path.exists() {
+        eprintln!("tape anon: --out path already exists; refusing to overwrite");
+        std::process::exit(2);
+    }
+
+    // 4. Run the anon engine. Exit codes mapped per ticket §"Exit codes".
+    let opts = tape_anon::AnonOptions {
+        in_path: file.to_path_buf(),
+        out_path: out_path.clone(),
+    };
+    match tape_anon::run_anon(opts) {
+        Ok(report) => {
+            eprintln!(
+                "tape anon: wrote {} ({} replacements via unix_home_path)",
+                out_path.display(),
+                report.n_replacements
+            );
+            if report.n_artifacts_skipped > 0 {
+                eprintln!(
+                    "tape anon: skipped {} artifacts (Phase 1; --aggressive will scan content in Phase 4)",
+                    report.n_artifacts_skipped
+                );
+            }
+            Ok(())
+        }
+        Err(tape_anon::AnonError::InputUnreadable(e)) => {
+            eprintln!("tape anon: {e}");
+            std::process::exit(3);
+        }
+        Err(e @ tape_anon::AnonError::PostAnonLeak { .. }) => {
+            eprintln!("{e}");
+            std::process::exit(4);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
 }
