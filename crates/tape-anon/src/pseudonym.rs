@@ -163,4 +163,20 @@ mod tests {
         let with_split_2 = derive_pseudonym(&FIXED_SALT, "a", "bcd");
         assert_ne!(with_split_1, with_split_2);
     }
+
+    #[test]
+    fn cross_rule_same_substring_yields_distinct_pseudonyms() {
+        // Phase 2 of #42 (carved per #242) regression guard for the
+        // open-question resolution in the ticket: the cache key
+        // remains `(rule_id, matched)`, so `colin` under
+        // `unix_username_prompt` and `colin` under `git_remote_user`
+        // derive DIFFERENT pseudonyms. The visible token shapes are
+        // different anyway (`<USER:…>` vs `<ORG:…>`), but pinning
+        // this here prevents a future refactor from silently
+        // changing the cross-rule correlation property.
+        let mut p = Pseudonymizer::with_salt([0x42; 32]);
+        let a = p.pseudonym("unix_username_prompt", "colin");
+        let b = p.pseudonym("git_remote_user", "colin");
+        assert_ne!(a, b);
+    }
 }
