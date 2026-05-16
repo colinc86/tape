@@ -663,6 +663,36 @@ enum Cmd {
         /// Path to a `.tapelist` file.
         file: std::path::PathBuf,
     },
+    /// Check a cassette against a TOML policy file. Phase 1 of #110
+    /// (carved per #227): TOML loader + presence checker for three
+    /// boolean rules under `[require]`: `recap`, `tags`,
+    /// `liner_notes`. Read-only — surfaces a per-rule pass/fail line
+    /// plus a summary, exit 0 on all-pass / 2 on any fail (incl. any
+    /// I/O / parse error). No `[forbid]` section, no regex
+    /// predicates, no `meta.policies[]` audit trail, no JUnit output
+    /// — those are explicit Phase-2+ items under #110.
+    ///
+    /// Policy file shape:
+    ///
+    /// ```toml
+    /// [require]
+    /// recap = true        # meta.recap is Some and non-empty
+    /// tags = true         # meta.tags is non-empty
+    /// liner_notes = true  # liner-notes.md present and non-empty
+    /// ```
+    ///
+    /// Unknown keys under `[require]` or unknown top-level tables
+    /// exit 2 with the offending name (`deny_unknown_fields` so
+    /// Phase-2-syntax-from-the-future doesn't silently pass through).
+    /// Omitted keys, or keys set to `false`, are equivalent: the rule
+    /// is disabled and not listed in the output.
+    Policy {
+        /// Cassette to check.
+        cassette: std::path::PathBuf,
+        /// Path to a policy `.toml` file.
+        #[arg(long)]
+        policy: std::path::PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -803,6 +833,7 @@ fn main() -> Result<()> {
             cases_file,
         } => cmd_redact_test(&rules_file, &cases_file),
         Cmd::Playlist { file } => cmd_playlist(&file),
+        Cmd::Policy { cassette, policy } => cmd_policy(&cassette, &policy),
     }
 }
 
@@ -6711,6 +6742,218 @@ mod redact_test_handler_tests {
         let out = truncate_redact_test_input(&s);
         assert_eq!(out.chars().count(), REDACT_TEST_INPUT_TRUNCATE + 1);
         assert!(out.ends_with('…'));
+    }
+}
+
+/// Phase-1 policy file (#110, carved per #227). `deny_unknown_fields`
+/// at both levels so a Phase-2-syntax-from-the-future (`[forbid]`,
+/// `[require] signed_by = …`, …) doesn't silently pass through and
+/// give a false sense of enforcement.
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+struct PolicyFile {
+    #[serde(default)]
+    require: Option<RequireBlock>,
+}
+
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+struct RequireBlock {
+    #[serde(default)]
+    recap: Option<bool>,
+    #[serde(default)]
+    tags: Option<bool>,
+    #[serde(default)]
+    liner_notes: Option<bool>,
+}
+
+/// Result of evaluating one active rule.
+#[derive(Debug, PartialEq, Eq)]
+struct RuleResult {
+    name: &'static str,
+    pass: bool,
+    reason: Option<&'static str>,
+}
+
+/// Pure evaluator — Phase-1 #110 / #227. Three rules, each gated by
+/// the corresponding `[require]` bool being `true`. Inactive rules
+/// are omitted from the returned vec entirely.
+fn evaluate_policy(
+    meta: &tape_format::meta::Meta,
+    liner_md: Option<&str>,
+    require: &RequireBlock,
+) -> Vec<RuleResult> {
+    let mut out = Vec::new();
+    if require.recap == Some(true) {
+        let pass = meta.recap.as_deref().is_some_and(|s| !s.trim().is_empty());
+        out.push(RuleResult {
+            name: "recap",
+            pass,
+            reason: (!pass).then_some("meta.recap is absent or empty"),
+        });
+    }
+    if require.tags == Some(true) {
+        let pass = !meta.tags.is_empty();
+        out.push(RuleResult {
+            name: "tags",
+            pass,
+            reason: (!pass).then_some("meta.tags is empty"),
+        });
+    }
+    if require.liner_notes == Some(true) {
+        let pass = liner_md.is_some_and(|s| !s.trim().is_empty());
+        out.push(RuleResult {
+            name: "liner_notes",
+            pass,
+            reason: (!pass).then_some("liner-notes.md is absent or empty"),
+        });
+    }
+    out
+}
+
+fn cmd_policy(cassette: &std::path::Path, policy_path: &std::path::Path) -> Result<()> {
+    let policy_text = match std::fs::read_to_string(policy_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", policy_path.display());
+            std::process::exit(2);
+        }
+    };
+    let policy: PolicyFile = match toml::from_str(&policy_text) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: parse {}: {e}", policy_path.display());
+            std::process::exit(2);
+        }
+    };
+
+    let raw = match tape_format::reader::RawTape::open(cassette) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: open {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+    let Some(meta_yaml) = raw.meta_yaml.as_deref() else {
+        eprintln!("error: cassette {} has no meta.yaml", cassette.display());
+        std::process::exit(2);
+    };
+    let meta = match tape_format::meta::Meta::parse(meta_yaml) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: parse meta.yaml in {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+
+    let require = policy.require.unwrap_or_default();
+    let results = evaluate_policy(&meta, raw.liner_md.as_deref(), &require);
+
+    println!("policy: {}", policy_path.display());
+    println!("cassette: {}", cassette.display());
+    for r in &results {
+        if r.pass {
+            println!("  {}: pass", r.name);
+        } else {
+            println!(
+                "  {}: fail ({})",
+                r.name,
+                r.reason.unwrap_or("unknown reason")
+            );
+        }
+    }
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.pass).count();
+    let failed = total - passed;
+    println!("{total} rules checked: {passed} passed, {failed} failed");
+
+    if failed > 0 {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod policy_handler_tests {
+    use super::*;
+    use tape_format::meta::{Meta, Outcome, Recorder};
+
+    fn base_meta() -> Meta {
+        Meta {
+            tape_version: "tape/v0".to_owned(),
+            id: "x".to_owned(),
+            created_at: "2026-05-16T00:00:00Z".to_owned(),
+            ejected_at: "2026-05-16T00:00:01Z".to_owned(),
+            task: "x".to_owned(),
+            recorder: Recorder {
+                agent: "test/0".to_owned(),
+                user: None,
+            },
+            outcome: Outcome::Success,
+            models: Vec::new(),
+            tools: Vec::new(),
+            tool_budget: None,
+            redaction_summary: None,
+            label: None,
+            recap: None,
+            recaps: Vec::new(),
+            tags: Vec::new(),
+            relinernotes: Vec::new(),
+            new_block: None,
+        }
+    }
+
+    fn all_required() -> RequireBlock {
+        RequireBlock {
+            recap: Some(true),
+            tags: Some(true),
+            liner_notes: Some(true),
+        }
+    }
+
+    #[test]
+    fn all_three_fail_when_meta_is_minimal() {
+        let meta = base_meta();
+        let results = evaluate_policy(&meta, None, &all_required());
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| !r.pass));
+    }
+
+    #[test]
+    fn all_three_pass_when_fields_populated() {
+        let mut meta = base_meta();
+        meta.recap = Some("ok".to_owned());
+        meta.tags = vec!["billing".to_owned()];
+        let results = evaluate_policy(&meta, Some("notes body"), &all_required());
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.pass));
+    }
+
+    #[test]
+    fn whitespace_only_recap_is_treated_as_empty() {
+        let mut meta = base_meta();
+        meta.recap = Some("   \n  ".to_owned());
+        let require = RequireBlock {
+            recap: Some(true),
+            tags: None,
+            liner_notes: None,
+        };
+        let results = evaluate_policy(&meta, None, &require);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].pass);
+        assert_eq!(results[0].reason, Some("meta.recap is absent or empty"));
+    }
+
+    #[test]
+    fn empty_require_block_returns_no_results() {
+        let meta = base_meta();
+        let require = RequireBlock {
+            recap: None,
+            tags: Some(false), // explicitly disabled is equivalent to omit
+            liner_notes: None,
+        };
+        let results = evaluate_policy(&meta, None, &require);
+        assert!(results.is_empty());
     }
 }
 
