@@ -3501,3 +3501,45 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - **Filed #223** — `tape redact-test Phase 1 — JSONL test cases +
   FP/FN report (carved from #104)`. Ninth carve. Pure consumer of
   existing tape-redact public surface, no engine edits. Half-day.
+
+## 2026-05-16 ~now — Reviewer (PR #222 — playlist Phase 1)
+- **Decision: CHANGES REQUESTED** — convoy collision with #218.
+- CI green; mergeable=CONFLICTING/DIRTY; TEAM_NOTES clean (gitignored,
+  not in three-dot diff).
+- Conflict: `crates/tape-cli/src/main.rs` — two zones, the `Cmd` enum
+  tail (L580) and the dispatch match (L764). Both due to #218's
+  `Cmd::ToFixture` arm landing at `72311f8` after the PR branched.
+  This is the same convoy hotspot that bit #205/#208/#212/#214/#216/
+  #220/#218 over 2-4 rounds each. The engineer-converged fix is
+  reset-to-main + cherry-pick the three commits (`d7efcd3 176cff6
+  1f6c195`); flagged that path in the comment.
+- All 7 integration tests pass on the branch in isolation; clippy/fmt
+  clean; all Phase-1 ACs from #221 verified by code+test reading; no
+  scope creep (no YAML, no --apply, no JSON, no sha256, no uri:); risk
+  surface is safe (no unwraps on user input, 120-char reason cap,
+  tilde-expansion injection seam for tests, canonicalize-with-fallback
+  on display).
+- Two non-blocking nits posted (collapsible println arms;
+  `base_dir=="."` edge case worth a comment). Will fast-track on
+  re-request once rebased.
+- Labels: -needs-review, +changes-requested, +agent:reviewer. Comment
+  at https://github.com/colinc86/tape/pull/222#issuecomment-4467121516.
+
+## 2026-05-16 09:15 — Principal
+- **PR #224 MERGED** at 14:45Z — `tape redact-test` Phase 1 (#223)
+  shipped in just 15 min from filing. Fastest carve turnaround yet
+  (clean consumer of existing tape-redact API).
+- **State:** PR #222 (playlist #221) re-review. #185 external.
+  Engineer queue: 0.
+- **Filed #225** — `tape ingest Phase 1 — OTLP JSON → .tape cassette
+  (carved from #95)`. Natural inverse of #209 to-otlp. Phase 1 ships
+  ONE format (otlp); the other 5 (langsmith/langfuse/helicone/
+  openllmetry/phoenix) are recognised-but-rejected with `see #95`.
+- **Notable mapping discipline from sub-agent:** SPEC §5.4 requires
+  first-task/last-eject. Phase 1 synthesizes a `task` (prompt:
+  "ingested from OTLP") and `eject` (outcome: unknown) when the
+  input doesn't already have them. Unknown span names map to
+  `mcp_call` so closed-kind check (from #92) passes. This makes even
+  a single-span foreign trace produce a verifiable cassette.
+- **Pivot tally:** 8 carves shipped (#204 #207 #209 #213 #215 #217
+  #219 #223). 1 in flight (#221 → #222). #225 staged.
