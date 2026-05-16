@@ -27,6 +27,27 @@ pub fn render_ls(tracks: &[Track]) -> String {
     out
 }
 
+/// Render a single track as a header + one-line semantic body + blank
+/// separator. Used by `tape replay` (#101 Phase 1, carved per #232) so
+/// the timeline-walk narration shares the exact `── step N · kind ·
+/// ts ──` header format with `tape play` and the deck's `tape.tracks`
+/// tool. Body is the existing `label(t)` — vendor/model for
+/// `model_call`, command for `shell`, etc. The block ends with `\n\n`
+/// so consecutive calls produce visually separated blocks.
+pub fn render_track_block(t: &Track) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "── step {} · {} · {} ──",
+        t.step,
+        kind_name(t.kind),
+        t.ts
+    );
+    out.push_str(&label(t));
+    out.push_str("\n\n");
+    out
+}
+
 /// Render full track payloads for `tape play` (default, no filter — but
 /// caller restricts via `--step` / `--range` / `--kind` before passing in).
 pub fn render_play(tracks: &[Track]) -> String {
@@ -758,6 +779,26 @@ mod tests {
     fn label_task() {
         let track = t(1, Kind::Task, json!({"prompt": "Investigate"}));
         assert_eq!(label(&track), r#""Investigate""#);
+    }
+
+    #[test]
+    fn render_track_block_shape() {
+        let track = t(
+            3,
+            Kind::ModelCall,
+            json!({
+                "vendor": "anthropic",
+                "model": "claude-opus-4-7",
+                "tokens_in": 1234,
+                "tokens_out": 567,
+            }),
+        );
+        let block = render_track_block(&track);
+        assert_eq!(
+            block,
+            "── step 3 · model_call · 2026-05-06T10:00:03Z ──\n\
+             anthropic/claude-opus-4-7 in:1234 out:567\n\n"
+        );
     }
 
     #[test]
