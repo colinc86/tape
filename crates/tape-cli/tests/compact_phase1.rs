@@ -124,10 +124,24 @@ fn happy_path_default_output_writes_smaller_cassette_and_verifies_clean() {
         String::from_utf8_lossy(&verify.stderr)
     );
 
-    // (d) meta.yaml + liner-notes.md pass through byte-identical.
+    // (d) liner-notes.md passes through byte-identical. meta.yaml
+    // changes only by the new `compactions[]` audit row (Phase 2 of
+    // #51, carved per #244) — every other field stays equal at the
+    // parsed-Meta level.
     let inp = read_back(&input);
     let outp = read_back(&expected_out);
-    assert_eq!(inp.meta_yaml, outp.meta_yaml, "meta.yaml mutated");
+    let inp_meta = tape_format::meta::Meta::parse(inp.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    let outp_meta =
+        tape_format::meta::Meta::parse(outp.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    // Drop the ledger and compare the rest.
+    let mut outp_meta_stripped = outp_meta.clone();
+    outp_meta_stripped.compactions.clear();
+    assert_eq!(
+        inp_meta, outp_meta_stripped,
+        "non-compactions meta.yaml fields must pass through unchanged"
+    );
+    // Phase-2 invariant: every compact run appends exactly one row.
+    assert_eq!(outp_meta.compactions.len(), 1);
     assert_eq!(inp.liner_md, outp.liner_md, "liner-notes.md mutated");
 
     // The truncated track contains the marker.
@@ -160,7 +174,17 @@ fn no_oversize_payloads_passes_through_parsed_equivalent() {
 
     let inp = read_back(&input);
     let outp = read_back(&dir.path().join("small.compact.tape"));
-    assert_eq!(inp.meta_yaml, outp.meta_yaml);
+    // Phase 2 of #51 (carved per #244): meta.yaml gains exactly one
+    // `compactions[]` row per invocation even on no-op runs. Strip
+    // it from the output side before comparing the rest.
+    let inp_meta = tape_format::meta::Meta::parse(inp.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    let outp_meta =
+        tape_format::meta::Meta::parse(outp.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    let mut outp_meta_stripped = outp_meta.clone();
+    outp_meta_stripped.compactions.clear();
+    assert_eq!(inp_meta, outp_meta_stripped);
+    assert_eq!(outp_meta.compactions.len(), 1);
+    assert!(outp_meta.compactions[0].tracks_affected.is_empty());
     let inp_tracks = inp.tracks_jsonl.unwrap();
     let out_tracks = outp.tracks_jsonl.unwrap();
     // Parse both sides and compare structurally.
@@ -298,4 +322,123 @@ fn artifacts_pass_through_byte_identical() {
         preserved, &artifact_bytes,
         "artifact bytes must be byte-identical after compact"
     );
+}
+
+// =====================================================================
+// Phase 2 of #51 (carved per #244): `meta.compactions[]` audit ledger.
+// =====================================================================
+
+#[test]
+fn meta_compactions_ledger_records_one_entry_per_invocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = oversize_shell_cassette(dir.path());
+    let first = dir.path().join("first.compact.tape");
+    let second = dir.path().join("second.compact.tape");
+
+    // First compact run.
+    let r1 = std::process::Command::new(binary_path())
+        .args([
+            "compact",
+            input.to_str().unwrap(),
+            "--output",
+            first.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(r1.status.success(), "{r1:?}");
+
+    // Second run reads the already-compacted output and re-runs
+    // with a much larger threshold so the already-truncated payload
+    // (which includes a "[truncated, N chars]" marker that adds
+    // bytes on top of the original cap) falls under the new
+    // ceiling and the run is a true no-op. Per the ticket, the
+    // ledger MUST record one entry per invocation including no-op
+    // runs.
+    let r2 = std::process::Command::new(binary_path())
+        .args([
+            "compact",
+            first.to_str().unwrap(),
+            "--output",
+            second.to_str().unwrap(),
+            "--max-output-chars",
+            "999999",
+        ])
+        .output()
+        .unwrap();
+    assert!(r2.status.success(), "{r2:?}");
+
+    // The second output's meta carries TWO entries — one from the
+    // first run, one from the second — in append order.
+    let raw = read_back(&second);
+    let meta = tape_format::meta::Meta::parse(raw.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    assert_eq!(meta.compactions.len(), 2, "two invocations → two rows");
+    assert!(
+        meta.compactions[0].applied_at <= meta.compactions[1].applied_at,
+        "applied_at must be monotonically non-decreasing: {:?}",
+        meta.compactions
+    );
+    // Both rows are TruncateOutput; the first run used the default
+    // 1024 cap, the second used 999999 to force a no-op.
+    for e in &meta.compactions {
+        assert_eq!(e.kind, tape_format::meta::CompactionKind::TruncateOutput);
+    }
+    assert_eq!(meta.compactions[0].max_chars, 1024);
+    assert_eq!(meta.compactions[1].max_chars, 999_999);
+    // First run actually mutated tracks (oversize stdout); second
+    // run is a no-op because the prior compaction already truncated.
+    assert!(
+        !meta.compactions[0].tracks_affected.is_empty(),
+        "first run should report mutated tracks"
+    );
+    assert!(
+        meta.compactions[1].tracks_affected.is_empty(),
+        "second run is a no-op (input already compact)"
+    );
+
+    // tape verify on the Phase-2 ledger-bearing output stays green.
+    let v = std::process::Command::new(binary_path())
+        .args(["verify", second.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(v.status.success(), "verify failed on ledger output: {v:?}");
+}
+
+#[test]
+fn compactions_field_absent_on_inputs_with_no_prior_ledger() {
+    // Pinning the read-compat invariant: an input cassette with no
+    // `compactions:` field should yield exactly ONE entry after a
+    // single compact run (not "ghost" entries inherited from
+    // anywhere). And the input cassette's `meta.yaml` should remain
+    // unmutated post-compact (compact writes a NEW cassette).
+    let dir = tempfile::tempdir().unwrap();
+    let input = oversize_shell_cassette(dir.path());
+
+    // Input's meta has no compactions field.
+    let in_raw = read_back(&input);
+    let in_meta =
+        tape_format::meta::Meta::parse(in_raw.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    assert!(in_meta.compactions.is_empty());
+
+    let out = dir.path().join("out.tape");
+    let r = std::process::Command::new(binary_path())
+        .args([
+            "compact",
+            input.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{r:?}");
+
+    let out_raw = read_back(&out);
+    let out_meta =
+        tape_format::meta::Meta::parse(out_raw.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    assert_eq!(out_meta.compactions.len(), 1);
+
+    // Input is unmodified (compact never writes in place).
+    let in_raw_after = read_back(&input);
+    let in_meta_after =
+        tape_format::meta::Meta::parse(in_raw_after.meta_yaml.as_deref().unwrap_or("")).unwrap();
+    assert!(in_meta_after.compactions.is_empty());
 }
