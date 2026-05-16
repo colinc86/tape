@@ -191,6 +191,7 @@ pub fn eject(session: &Session, opts: &EjectOptions) -> anyhow::Result<EjectResu
         // list so untouched cassettes round-trip without growing
         // meta.yaml.
         relinernotes: vec![],
+        compactions: vec![],
         // Issue #99: `meta.new` is exclusively the `tape new` CLI's
         // provenance record. The eject pipeline never produces a
         // generated cassette, so this stays None.
