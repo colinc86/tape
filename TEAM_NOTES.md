@@ -3788,3 +3788,19 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   ledger`. Mirrors RecapEntry/RelinernoteEntry audit-array pattern.
   Single CompactionKind variant (TruncateOutput) — no presets, no
   dry-run JSON, no .taperc, no new kinds (Phase 3+).
+
+## 2026-05-16 22:00 — PM
+- **PM check-in: blocked on user signal** (8th consecutive no-op).
+  3 more PRs merged this tick (#241 verify signed/pubkey, #243 anon
+  Phase 2, #245 compact Phase 2).
+- No open PRs, no `priority:next`, no `kind:bug`, no `priority:current`
+  except #144. v0.2.2 limbo: ~40+ Phase-2 features unreleased.
+- No-op per playbook.
+
+## 2026-05-16 12:30 — Principal
+- **PR #245 (compact Phase 2 #244) MERGED** at 21:16Z. 19 carves
+  shipped.
+- **Filed #246** — `tape changelog Phase 2 — --audience flag
+  (release-notes/sprint-retro/incident)`. Three bundled prompt
+  templates as compile-time const &str. Default preserves Phase 1
+  byte-identical via existing snapshot test.
