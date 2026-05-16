@@ -734,6 +734,53 @@ enum Cmd {
         #[arg(long)]
         policy: std::path::PathBuf,
     },
+    /// Generate a new Ed25519 keypair for signing cassettes. Phase 1
+    /// of #18 (carved per #230): writes a `<name>.tape.sigkey`
+    /// (32-byte secret seed, base64, mode 0600 on Unix) and a
+    /// `<name>.tape.pubkey` (32-byte public key, base64, mode 0644).
+    /// Refuses to overwrite either file. Use the pair with
+    /// `tape sign` and `tape verify-sig`.
+    SignKeygen {
+        /// Output basename. Two files will be produced next to each
+        /// other: `<out>.tape.sigkey` and `<out>.tape.pubkey`.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Sign a cassette with an Ed25519 secret key. Phase 1 of #18:
+    /// produces a detached sidecar `<cassette>.sig` (or `--out`'s
+    /// path) carrying the BLAKE3 digest of the cassette bytes, the
+    /// signer's public key, and the signature. NOT embedded in the
+    /// cassette — Phase 2+ of #18 will add embedded-in-meta sigs,
+    /// `tape verify --signed`, and trust-policy / require-signed-by.
+    Sign {
+        /// Cassette to sign.
+        cassette: std::path::PathBuf,
+        /// Path to a `.tape.sigkey` produced by `tape sign-keygen`.
+        #[arg(long)]
+        key: std::path::PathBuf,
+        /// Output sidecar path. Default: `<cassette>.sig`.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Verify an Ed25519 sidecar signature against a cassette.
+    /// Phase 1 of #18: checks the recorded digest matches the
+    /// recomputed BLAKE3, the recorded pubkey matches the
+    /// `--pubkey` file's bytes, and the Ed25519 signature is valid.
+    /// Three distinct failure exits (all exit 2 with the code in
+    /// stderr): `SIGNATURE_DIGEST_MISMATCH` (cassette mutated),
+    /// `SIGNATURE_PUBKEY_MISMATCH` (signed by a different key than
+    /// the verifier was given), `SIGNATURE_INVALID` (Ed25519
+    /// rejected the signature).
+    VerifySig {
+        /// Cassette to verify.
+        cassette: std::path::PathBuf,
+        /// Path to a `.tape.pubkey`.
+        #[arg(long)]
+        pubkey: std::path::PathBuf,
+        /// Sidecar path. Default: `<cassette>.sig`.
+        #[arg(long)]
+        sig: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -880,6 +927,13 @@ fn main() -> Result<()> {
             output,
         } => cmd_ingest(format.as_deref(), &input, output),
         Cmd::Policy { cassette, policy } => cmd_policy(&cassette, &policy),
+        Cmd::SignKeygen { out } => cmd_sign_keygen(&out),
+        Cmd::Sign { cassette, key, out } => cmd_sign(&cassette, &key, out),
+        Cmd::VerifySig {
+            cassette,
+            pubkey,
+            sig,
+        } => cmd_verify_sig(&cassette, &pubkey, sig),
     }
 }
 
@@ -7389,6 +7443,438 @@ mod policy_handler_tests {
         };
         let results = evaluate_policy(&meta, None, &require);
         assert!(results.is_empty());
+    }
+}
+
+// =====================================================================
+// `tape sign-keygen` / `tape sign` / `tape verify-sig` — Phase 1 of #18
+// =====================================================================
+
+use base64::Engine as _;
+use ed25519_dalek::Signer as _;
+
+const SIGKEY_HEADER: &str = "# tape/v0 ed25519 secret key";
+const PUBKEY_HEADER: &str = "# tape/v0 ed25519 public key";
+const SIDECAR_HEADER: &str = "# tape/v0 signature";
+
+/// Detached signature sidecar. Five fields, line-oriented. Kept
+/// minimal so the Phase-2 embedded-in-meta slice doesn't have to
+/// retrofit deprecated optional fields.
+#[derive(Debug, PartialEq, Eq)]
+struct Sidecar {
+    algo: String,
+    digest_algo: String,
+    digest: String,
+    pubkey: String,
+    signature: String,
+}
+
+impl Sidecar {
+    fn to_text(&self) -> String {
+        format!(
+            "{header}\nalgo: {algo}\ndigest_algo: {digest_algo}\ndigest: {digest}\npubkey: {pubkey}\nsignature: {signature}\n",
+            header = SIDECAR_HEADER,
+            algo = self.algo,
+            digest_algo = self.digest_algo,
+            digest = self.digest,
+            pubkey = self.pubkey,
+            signature = self.signature,
+        )
+    }
+
+    fn parse(text: &str) -> std::result::Result<Self, String> {
+        let mut algo = None;
+        let mut digest_algo = None;
+        let mut digest = None;
+        let mut pubkey = None;
+        let mut signature = None;
+        for (i, raw_line) in text.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once(':') else {
+                return Err(format!("line {}: expected `key: value`", i + 1));
+            };
+            let value = value.trim().to_owned();
+            match key.trim() {
+                "algo" => algo = Some(value),
+                "digest_algo" => digest_algo = Some(value),
+                "digest" => digest = Some(value),
+                "pubkey" => pubkey = Some(value),
+                "signature" => signature = Some(value),
+                other => return Err(format!("line {}: unknown key `{other}`", i + 1)),
+            }
+        }
+        Ok(Self {
+            algo: algo.ok_or_else(|| "missing `algo`".to_owned())?,
+            digest_algo: digest_algo.ok_or_else(|| "missing `digest_algo`".to_owned())?,
+            digest: digest.ok_or_else(|| "missing `digest`".to_owned())?,
+            pubkey: pubkey.ok_or_else(|| "missing `pubkey`".to_owned())?,
+            signature: signature.ok_or_else(|| "missing `signature`".to_owned())?,
+        })
+    }
+}
+
+fn b64() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
+}
+
+fn pubkey_fingerprint(pubkey_bytes: &[u8]) -> String {
+    let h = blake3::hash(pubkey_bytes);
+    h.to_hex().chars().take(16).collect()
+}
+
+fn read_keyfile(path: &std::path::Path, expected_header: &str) -> Result<Vec<u8>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or("").trim();
+    if header != expected_header {
+        anyhow::bail!(
+            "{}: expected header `{expected_header}`, got `{header}`",
+            path.display()
+        );
+    }
+    let body: String = lines.collect::<Vec<_>>().join("").trim().to_owned();
+    let bytes = b64()
+        .decode(body.as_bytes())
+        .map_err(|e| anyhow::anyhow!("{}: base64 decode failed: {e}", path.display()))?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "{}: expected 32 bytes, got {} bytes",
+            path.display(),
+            bytes.len()
+        );
+    }
+    Ok(bytes)
+}
+
+fn refuse_existing(path: &std::path::Path) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "{}: refusing to overwrite (no --force in Phase 1)",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &std::path::Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut perms = std::fs::metadata(path)
+        .map_err(|e| anyhow::anyhow!("stat {}: {e}", path.display()))?
+        .permissions();
+    perms.set_mode(mode);
+    std::fs::set_permissions(path, perms)
+        .map_err(|e| anyhow::anyhow!("chmod {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &std::path::Path, _mode: u32) -> Result<()> {
+    // No-op on non-Unix; the keyfile-mode invariant is best-effort.
+    Ok(())
+}
+
+fn cmd_sign_keygen(out_base: &std::path::Path) -> Result<()> {
+    let sigkey_path = appended_extension(out_base, "tape.sigkey");
+    let pubkey_path = appended_extension(out_base, "tape.pubkey");
+    if let Err(e) = refuse_existing(&sigkey_path).and_then(|()| refuse_existing(&pubkey_path)) {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    }
+
+    let mut seed = [0u8; 32];
+    if let Err(e) = getrandom::getrandom(&mut seed) {
+        eprintln!("error: getrandom: {e}");
+        std::process::exit(2);
+    }
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let verifying = signing.verifying_key();
+    let pub_bytes = verifying.to_bytes();
+
+    let sigkey_body = format!("{SIGKEY_HEADER}\n{}\n", b64().encode(seed));
+    let pubkey_body = format!("{PUBKEY_HEADER}\n{}\n", b64().encode(pub_bytes));
+
+    std::fs::write(&sigkey_path, sigkey_body)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", sigkey_path.display()))?;
+    set_mode(&sigkey_path, 0o600)?;
+    std::fs::write(&pubkey_path, pubkey_body)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", pubkey_path.display()))?;
+    set_mode(&pubkey_path, 0o644)?;
+
+    eprintln!(
+        "tape sign-keygen: wrote {} + {} (fingerprint {})",
+        sigkey_path.display(),
+        pubkey_path.display(),
+        pubkey_fingerprint(&pub_bytes),
+    );
+    Ok(())
+}
+
+/// `Path::with_extension` *replaces*; we want to append (so
+/// `alice` → `alice.tape.sigkey`, NOT `alice.sigkey`).
+fn appended_extension(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = base.as_os_str().to_owned();
+    s.push(".");
+    s.push(suffix);
+    std::path::PathBuf::from(s)
+}
+
+fn cmd_sign(
+    cassette: &std::path::Path,
+    key_path: &std::path::Path,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // Refuse to sign a malformed zip. The bytes we hash are the
+    // on-disk bytes (see below); RawTape::open is invoked here
+    // purely as a sanity check on the input.
+    // LOAD-BEARING: do NOT switch the hashed bytes to anything
+    // derived from the RawTape — the recipient compares against the
+    // raw file bytes on the wire.
+    if let Err(e) = tape_format::reader::RawTape::open(cassette) {
+        eprintln!("error: open {}: {e}", cassette.display());
+        std::process::exit(2);
+    }
+
+    let bytes = match std::fs::read(cassette) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+    let digest = blake3::hash(&bytes);
+    let digest_hex = digest.to_hex().to_string();
+
+    let seed_bytes = match read_keyfile(key_path, SIGKEY_HEADER) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
+    let seed_array: [u8; 32] = seed_bytes
+        .as_slice()
+        .try_into()
+        .expect("read_keyfile enforces 32-byte length");
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed_array);
+    let verifying = signing.verifying_key();
+    let signature = signing.sign(digest.as_bytes());
+
+    let out_path = out.unwrap_or_else(|| appended_extension(cassette, "sig"));
+    if let Err(e) = refuse_existing(&out_path) {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    }
+
+    let sidecar = Sidecar {
+        algo: "ed25519".to_owned(),
+        digest_algo: "blake3".to_owned(),
+        digest: digest_hex.clone(),
+        pubkey: b64().encode(verifying.to_bytes()),
+        signature: b64().encode(signature.to_bytes()),
+    };
+    std::fs::write(&out_path, sidecar.to_text())
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+
+    eprintln!(
+        "tape sign: wrote {} (digest {}, fingerprint {})",
+        out_path.display(),
+        &digest_hex[..16],
+        pubkey_fingerprint(&verifying.to_bytes()),
+    );
+    Ok(())
+}
+
+fn cmd_verify_sig(
+    cassette: &std::path::Path,
+    pubkey_path: &std::path::Path,
+    sig: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let sig_path = sig.unwrap_or_else(|| appended_extension(cassette, "sig"));
+    let sidecar_text = match std::fs::read_to_string(&sig_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", sig_path.display());
+            std::process::exit(2);
+        }
+    };
+    let sidecar = match Sidecar::parse(&sidecar_text) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: parse {}: {e}", sig_path.display());
+            std::process::exit(2);
+        }
+    };
+    if sidecar.algo != "ed25519" || sidecar.digest_algo != "blake3" {
+        eprintln!(
+            "error: {}: unsupported algo/digest_algo (got {}/{}, want ed25519/blake3)",
+            sig_path.display(),
+            sidecar.algo,
+            sidecar.digest_algo
+        );
+        std::process::exit(2);
+    }
+
+    let cassette_bytes = match std::fs::read(cassette) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", cassette.display());
+            std::process::exit(2);
+        }
+    };
+    let recomputed = blake3::hash(&cassette_bytes);
+    let recomputed_hex = recomputed.to_hex().to_string();
+    if sidecar.digest != recomputed_hex {
+        eprintln!("error: SIGNATURE_DIGEST_MISMATCH (cassette modified after signing)");
+        std::process::exit(2);
+    }
+
+    let pubkey_bytes = match read_keyfile(pubkey_path, PUBKEY_HEADER) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
+    let sidecar_pubkey = match b64().decode(sidecar.pubkey.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "error: {}: pubkey field base64 decode failed: {e}",
+                sig_path.display()
+            );
+            std::process::exit(2);
+        }
+    };
+    if sidecar_pubkey != pubkey_bytes {
+        eprintln!("error: SIGNATURE_PUBKEY_MISMATCH (signed by a different key)");
+        std::process::exit(2);
+    }
+
+    let pubkey_array: [u8; 32] = pubkey_bytes
+        .as_slice()
+        .try_into()
+        .expect("read_keyfile enforces 32-byte length");
+    let verifying = match ed25519_dalek::VerifyingKey::from_bytes(&pubkey_array) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "error: {}: pubkey is not a valid Ed25519 point: {e}",
+                pubkey_path.display()
+            );
+            std::process::exit(2);
+        }
+    };
+    let sig_bytes = match b64().decode(sidecar.signature.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "error: {}: signature field base64 decode failed: {e}",
+                sig_path.display()
+            );
+            std::process::exit(2);
+        }
+    };
+    let sig_array: [u8; 64] = match sig_bytes.as_slice().try_into() {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!(
+                "error: {}: signature must be 64 bytes (got {})",
+                sig_path.display(),
+                sig_bytes.len()
+            );
+            std::process::exit(2);
+        }
+    };
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
+
+    if verifying
+        .verify_strict(recomputed.as_bytes(), &signature)
+        .is_err()
+    {
+        eprintln!("error: SIGNATURE_INVALID");
+        std::process::exit(2);
+    }
+
+    eprintln!(
+        "OK: signature valid (pubkey fingerprint {})",
+        pubkey_fingerprint(&pubkey_bytes)
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod sign_handler_tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_round_trip() {
+        let s = Sidecar {
+            algo: "ed25519".to_owned(),
+            digest_algo: "blake3".to_owned(),
+            digest: "a".repeat(64),
+            pubkey: "BASE64==".to_owned(),
+            signature: "SIG==".to_owned(),
+        };
+        let parsed = Sidecar::parse(&s.to_text()).unwrap();
+        assert_eq!(parsed, s);
+    }
+
+    #[test]
+    fn sidecar_parse_rejects_missing_required_key() {
+        // No `signature:` line.
+        let text =
+            "# tape/v0 signature\nalgo: ed25519\ndigest_algo: blake3\ndigest: x\npubkey: y\n";
+        let err = Sidecar::parse(text).unwrap_err();
+        assert!(err.contains("missing `signature`"));
+    }
+
+    #[test]
+    fn sidecar_parse_rejects_unknown_key() {
+        let text = "# tape/v0 signature\nalgo: ed25519\nbogus: x\n";
+        let err = Sidecar::parse(text).unwrap_err();
+        assert!(err.contains("unknown key `bogus`"));
+    }
+
+    #[test]
+    fn sidecar_parse_skips_blank_and_comment_lines() {
+        let text = "\
+# tape/v0 signature
+
+algo: ed25519
+# inline comment
+digest_algo: blake3
+digest: x
+pubkey: y
+signature: z
+";
+        let parsed = Sidecar::parse(text).unwrap();
+        assert_eq!(parsed.algo, "ed25519");
+    }
+
+    #[test]
+    fn appended_extension_appends_not_replaces() {
+        let p = std::path::Path::new("alice");
+        assert_eq!(
+            appended_extension(p, "tape.sigkey"),
+            std::path::PathBuf::from("alice.tape.sigkey")
+        );
+        let p2 = std::path::Path::new("cassette.tape");
+        assert_eq!(
+            appended_extension(p2, "sig"),
+            std::path::PathBuf::from("cassette.tape.sig")
+        );
+    }
+
+    #[test]
+    fn pubkey_fingerprint_is_sixteen_hex_chars() {
+        let fp = pubkey_fingerprint(b"hello");
+        assert_eq!(fp.len(), 16);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
 
