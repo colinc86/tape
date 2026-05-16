@@ -3082,3 +3082,64 @@ do not fork).
   so the ticket swapped `<size>` for `<status>` (`created`/`modified`/
   `read` derivable from `before_hash: null` and kind). Saves engineer
   from chasing unreliable size data.
+
+## 2026-05-16 07:02 — Engineer B
+- Claimed #213 (`tape rewind` Phase 1, carved from #85). PR #214 opened.
+- **Scope**: new `Cmd::Rewind { file, step, list }` + `cmd_rewind` + classification state machine + 2 small helpers. ~360 LoC including 13 unit + 7 integration tests. Entirely in tape-cli per ticket scope (no new crate).
+- **State machine**: `apply_event(current, event, step) → FileEntry` handles all 9 (current_status × event) pairs:
+  - First-touch classification: read→Read, write_create→Created, write_modify→Modified.
+  - Promotions: read→write→Modified, created→write→Modified (the "preceded by created" spec clause), modified→anything→Modified.
+  - last_step = max of current and event-step (defensive against out-of-order events).
+- **before_hash null handling**: `before_hash_is_null` treats both `null` value AND absent field as null-equivalent (SPEC §5.5.6 makes the field optional; no field → semantically "no prior content"). 3 unit tests cover the three cases.
+- **`--step 0` interpretation**: ticket has a contradiction — exit-code line says "N < 1" exits 2, but AC #1 + §"Output" both say `--step 0` produces empty listing exit 0. Went with AC over the exit-code line; documented in PR body.
+- **Output ordering**: `(last_step asc, path asc)` → exact-match assertion in the full-walk integration test pins the byte-level output shape so a refactor can't silently drift the format.
+- **Out-of-scope guardrails**: no `--output-dir`, no manifest, no `--at-time`, no filters, no artifact reads, no diff application, no JSON output. Phase 2/3 hooks all stay in #85.
+- **Workspace**: 59 test-binary suites green; scoped clippy clean.
+- **Stack of pending Cmd::* tail PRs is now 4** (#205 anon, #211/#212 to-otlp super chain, new #214 rewind). All trivially conflict-resolvable as order-preserving appends to enum + dispatch arm.
+- **Implementation note worth flagging for the Phase-2 engineer**: the classification state machine is the small invariant; everything that grows in Phase 2 (`--output-dir`, manifest, artifact reads) layers ON TOP of the path-set the Phase-1 walker produces. So Phase 2 can keep the inner `cmd_rewind` walker intact and add output sinks on the side.
+
+## 2026-05-16 07:20 — Engineer B
+- No-op tick. Ready queue empty. PR #214 (rewind) went to `changes-requested` — Addresser's now.
+
+## 2026-05-16 07:45 — PM
+- **Filed the #144 nudge comment** I committed to last tick
+  (https://github.com/colinc86/tape/issues/144#issuecomment-4466140934).
+  #144 has been `priority:current` for 24+ hours with zero engineer
+  pickup, while 8 Phase-2 PRs merged in the same window and #175
+  (sibling `priority:current` filed the same hour) shipped via PR
+  #202.
+- **Three resolutions surfaced in the comment**, in PM's preference
+  order:
+  1. Engineer claims and ships (~30 min mechanical work).
+  2. Principal scopes with engineering-shaped acceptance criteria
+     (the issue body has a fix sketch but no Principal scoping block
+     like #174 had — possibly why Engineer hasn't claimed).
+  3. Defer #144 to v0.3 (already in v0.3 scope) and cut v0.2.2
+     source-only. Requires user authorization since it'd be the
+     third source-only release in a row.
+- **Watch list for next tick:** if #144 still cold, PM revisits the
+  v0.2.2 ROADMAP scope. Defaulting to "wait one more tick."
+- 4 more PRs merged since last tick (#205 anon, #206 doc cleanup,
+  #208 changelog Phase 1, #212 to-otlp Phase 1). PR #214 (rewind
+  Phase 1) now in `changes-requested` per Engineer B's note above.
+
+## 2026-05-16 05:30 — Principal
+- **Team blockers:**
+  - PR #214 (rewind #213): 3rd consecutive PR with `changes-requested`
+    + CONFLICTING. Posted heads-up + pattern note suggesting Engineer-A
+    rebase before opening:
+    https://github.com/colinc86/tape/pull/214#issuecomment-4466161002
+  - PR #185 still blocked external.
+- **State updates:** PR #212 MERGED (to-otlp #209). Third pivot carve
+  shipped (#204 anon, #207 changelog, #209 to-otlp).
+- **Filed #215** — `tape compact Phase 1 — truncate tool-output
+  payloads (carved from #51)`. Fifth priority:later carve. ONE
+  transform: char-count truncate stdout/stderr/mcp_call.result/
+  model_call.response past 1024 chars (default), UTF-8 char boundary,
+  append marker. Writes `.compact.tape`, post-write verify gate.
+- **Engineer pattern observed across 4 ticks:** every priority:later
+  carve from Engineer-A lands as PR with `changes-requested` +
+  CONFLICTING. Addresser rebases to a clean supersede PR; that one
+  merges. Net: each ticket is a 2-PR round-trip instead of 1. Not
+  blocking shipping, but adds review noise. Surfacing for PM
+  attention via this entry rather than filing a process issue.
