@@ -87,6 +87,44 @@ enum Cmd {
         #[arg(long)]
         step: Option<u64>,
     },
+    /// Per-track inspector: print one track's full detail page (with
+    /// `--track <N>`) or the cassette's structural index summary
+    /// (without). Phase 1 of #254 (carved from #67): non-interactive,
+    /// no TUI, no `ratatui` / `crossterm` / file-watching. Strictly
+    /// read-only.
+    ///
+    /// Differentiation from the other read-side verbs:
+    /// - `tape view --track N` = the inspector. Shows every field on
+    ///   one track — `kind`, `step`, `ts`, `parent_step`, `refs`,
+    ///   redaction status, the annotation list, and the full
+    ///   pretty-printed payload. Use when `tape replay --step N`
+    ///   leaves you wondering "what's the full prompt? was it
+    ///   redacted? what's the parent step?".
+    /// - `tape replay --step N` = the timeline narrator. One-line
+    ///   semantic label per step; pretty for scrubbing through a
+    ///   trace.
+    /// - `tape ls` = the table of contents. One line per track,
+    ///   meant for at-a-glance scrolling.
+    /// - `tape stats` = the cost / size analytics. Aggregate
+    ///   tokens / dollars; no per-track output.
+    /// - `tape view` (no flag) = the structural index. Track count,
+    ///   first/last ts, redaction presence, per-kind histogram. Use
+    ///   when `tape stats` overshoots and you just want "what's in
+    ///   here and what's it shaped like?".
+    ///
+    /// Out of scope for Phase 1 (deferred to #67 Phase 2+): TUI,
+    /// `--follow`, `--diff`, `--format json`, color/theming,
+    /// per-track redaction scoping, `--track-range A..B`,
+    /// annotation editing.
+    View {
+        /// Cassette to inspect.
+        file: std::path::PathBuf,
+        /// Print the detail page for the track with this step
+        /// number. Without this flag, the structural index summary
+        /// is printed instead. Exit 1 if no track has step N.
+        #[arg(long)]
+        track: Option<u64>,
+    },
     /// One-line-per-track listing.
     Ls { file: std::path::PathBuf },
     /// Read-only analytics over a single cassette. Phase-3 of #31:
@@ -1032,6 +1070,7 @@ fn main() -> Result<()> {
             kind,
         } => cmd_play(&file, step, range.as_deref(), kind.as_deref()),
         Cmd::Replay { file, step } => cmd_replay(&file, step),
+        Cmd::View { file, track } => cmd_view(&file, track),
         Cmd::Diff {
             a,
             b,
@@ -3968,6 +4007,90 @@ fn cmd_replay(file: &std::path::Path, step: Option<u64>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Phase 1 of #254 (carved from #67). Per-track inspector — the
+/// `git show` of cassettes. `track == Some(N)` prints the detail
+/// page for step N; `track == None` prints the cassette's structural
+/// index summary. Exit codes mirror `cmd_replay`: 0 normal, 1 step N
+/// missing, 2 cassette unreadable / malformed.
+///
+/// IO shell only: open the cassette via `RawTape::open`, parse with
+/// `parse_jsonl`, derive a [`tape_play::RedactionStatus`] from the
+/// optional `redactions.json` sidecar, hand off to the pure
+/// renderers. The detail-page and index-summary formatting lives in
+/// `tape-play`.
+fn cmd_view(file: &std::path::Path, track: Option<u64>) -> Result<()> {
+    use std::io::Write as _;
+
+    let raw = match tape_format::reader::RawTape::open(file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: open {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+    let tracks = match tape_format::tracks::parse_jsonl(raw.tracks_jsonl.as_deref().unwrap_or("")) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: parse tracks.jsonl in {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+    let redaction = redaction_status_from_raw(raw.redactions_json.as_deref());
+
+    if let Some(want) = track {
+        let matches: Vec<&tape_format::tracks::Track> =
+            tracks.iter().filter(|t| t.step == want).collect();
+        if matches.is_empty() {
+            eprintln!("tape view: cassette has no track with step {want}");
+            std::process::exit(1);
+        }
+        // SPEC forbids duplicate step numbers and `tape verify`
+        // catches it. If a pathological cassette slips through, print
+        // every match in source order separated by a blank line —
+        // gracefully degrades rather than panicking.
+        let mut first = true;
+        for t in matches {
+            if !first {
+                println!();
+            }
+            print!("{}", tape_play::render_track_detail(t, redaction));
+            first = false;
+        }
+        let _ = std::io::stdout().flush();
+        return Ok(());
+    }
+
+    let cassette_name = file.file_name().map_or_else(
+        || file.display().to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    print!(
+        "{}",
+        tape_play::render_index_summary(&cassette_name, &tracks, redaction)
+    );
+    let _ = std::io::stdout().flush();
+    Ok(())
+}
+
+/// Lift the optional `redactions.json` blob (as already loaded by
+/// `RawTape::open`) into the three-state [`tape_play::RedactionStatus`].
+/// Mirrors the count derivation in `cmd_stats` (`crates/tape-cli/src/main.rs`
+/// ~ line 3776) — kept here as a tiny pure helper for testability.
+fn redaction_status_from_raw(blob: Option<&str>) -> tape_play::RedactionStatus {
+    let Some(s) = blob else {
+        return tape_play::RedactionStatus::NotProcessed;
+    };
+    let n = serde_json::from_str::<serde_json::Value>(s)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len() as u64))
+        .unwrap_or(0);
+    if n == 0 {
+        tape_play::RedactionStatus::NoneApplied
+    } else {
+        tape_play::RedactionStatus::Applied(n)
+    }
 }
 
 fn cmd_verify(

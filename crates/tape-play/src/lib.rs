@@ -130,6 +130,130 @@ pub fn render_track_block(t: &Track) -> String {
     out
 }
 
+/// Three-state per-cassette redaction status, consumed by
+/// [`render_track_detail`] and [`render_index_summary`] (Phase 1 of
+/// #254, carved from #67). Matches the `cmd_stats` semantics
+/// documented at the top of [`render_stats`] — the distinction
+/// between "engine ran with zero hits" and "no `redactions.json` at
+/// all" is load-bearing for cassette-format archaeology.
+///
+/// `Applied(N)` carries the whole-cassette count today; per-track
+/// scoping is a follow-on (#254 / open question — `redactions.json`
+/// in v0 does not carry per-track scoping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionStatus {
+    /// Cassette has no `redactions.json` entry (older format /
+    /// recorder predating the redaction engine).
+    NotProcessed,
+    /// `redactions.json` present, zero entries.
+    NoneApplied,
+    /// `redactions.json` present with N entries (cassette-wide).
+    Applied(u64),
+}
+
+/// Phase 1 of #254 (carved from #67). Render a single track as a
+/// full detail page — every top-level field, the per-track redaction
+/// status, the annotation list, and the pretty-printed payload under
+/// a `── payload ──` divider. Header is `══ track step N ══`
+/// (double box-drawing) to visually differentiate from
+/// [`render_track_block`]'s single-rule header.
+///
+/// Omits the `parent_step:` line when `t.parent_step` is `None` and
+/// the `refs:` line when `t.refs` is empty, matching the
+/// `#[serde(skip_serializing_if)]` posture on those fields in
+/// `tape-format::tracks::Track`. Surfaces `parent_step` and redaction
+/// status — the two pieces of information `tape replay --step N`
+/// does NOT today.
+pub fn render_track_detail(t: &Track, redaction: RedactionStatus) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "══ track step {} ══", t.step);
+    out.push('\n');
+    let _ = writeln!(out, "kind:           {}", kind_name(t.kind));
+    let _ = writeln!(out, "step:           {}", t.step);
+    let _ = writeln!(out, "ts:             {}", t.ts);
+    if let Some(p) = t.parent_step {
+        let _ = writeln!(out, "parent_step:    {p}");
+    }
+    if !t.refs.is_empty() {
+        let _ = writeln!(out, "refs:           {}", t.refs.join(", "));
+    }
+    let _ = writeln!(out, "redaction:      {}", redaction_line(redaction));
+    let _ = writeln!(out, "annotations:    {}", t.annotations.len());
+    for a in &t.annotations {
+        let _ = writeln!(out, "  - by: {}    note: {:?}", a.by, a.note);
+    }
+    out.push_str("\n── payload ──\n");
+    let pretty = serde_json::to_string_pretty(&t.payload).unwrap_or_else(|_| t.payload.to_string());
+    out.push_str(&pretty);
+    out.push('\n');
+    out
+}
+
+/// Phase 1 of #254 (carved from #67). Render the cassette's
+/// structural index — track count, first/last ts (omitted when the
+/// cassette is empty), redaction status, and the full 8-kind
+/// histogram in enum-declaration order (zero-count rows included so
+/// the output shape is constant across cassettes — helpful for
+/// eyeball-diffing two summaries). Sibling of [`render_stats`] but
+/// orthogonal: `tape stats` answers "what did this cost / how big is
+/// it?", `tape view` (no flag) answers "what's in here and what's it
+/// shaped like?".
+pub fn render_index_summary(
+    cassette_name: &str,
+    tracks: &[Track],
+    redaction: RedactionStatus,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "══ tape index: {cassette_name} ══");
+    out.push('\n');
+    let _ = writeln!(out, "tracks:         {}", tracks.len());
+    if let (Some(first), Some(last)) = (tracks.first(), tracks.last()) {
+        let _ = writeln!(out, "first_ts:       {}", first.ts);
+        let _ = writeln!(out, "last_ts:        {}", last.ts);
+    }
+    let _ = writeln!(out, "redactions:     {}", redaction_summary_line(redaction));
+    out.push_str("\n── kind histogram ──\n");
+    let hist = kind_histogram(tracks);
+    for k in [
+        Kind::Task,
+        Kind::ModelCall,
+        Kind::McpCall,
+        Kind::Shell,
+        Kind::FileRead,
+        Kind::FileWrite,
+        Kind::Annotation,
+        Kind::Eject,
+    ] {
+        let _ = writeln!(out, "  {:<12}  {}", kind_name(k), hist[k as usize]);
+    }
+    out
+}
+
+/// One-line redaction status for the detail page. Whole-cassette
+/// scoping today; the `(cassette-wide)` qualifier on the applied
+/// branch flags it for the future per-track carve.
+fn redaction_line(r: RedactionStatus) -> String {
+    match r {
+        RedactionStatus::NotProcessed => "not processed".to_owned(),
+        RedactionStatus::NoneApplied => "none applied".to_owned(),
+        RedactionStatus::Applied(n) => {
+            format!("{n} replacement(s) applied (cassette-wide)")
+        }
+    }
+}
+
+/// One-line redaction status for the index summary. Same three
+/// variants, slightly different phrasing — the index line is a
+/// cassette-wide summary by construction so the `(cassette-wide)`
+/// qualifier reads naturally without scare-quotes.
+fn redaction_summary_line(r: RedactionStatus) -> String {
+    match r {
+        RedactionStatus::NotProcessed => "not processed".to_owned(),
+        RedactionStatus::NoneApplied => "none applied".to_owned(),
+        RedactionStatus::Applied(n) => format!("{n} (cassette-wide)"),
+    }
+}
+
 /// Render full track payloads for `tape play` (default, no filter — but
 /// caller restricts via `--step` / `--range` / `--kind` before passing in).
 pub fn render_play(tracks: &[Track]) -> String {
@@ -1480,6 +1604,211 @@ mod tests {
         let v = render_stats_json(&fresh_meta(), &tracks, None);
         assert!(v["span"]["wall_clock_ms"].is_null());
         assert_eq!(v["span"]["time_accounting"], "unknown");
+    }
+}
+
+// =====================================================================
+// Phase 1 of #254 (carved per #67): `tape view` renderer unit tests.
+// =====================================================================
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use serde_json::json;
+    use tape_format::tracks::Annotation;
+
+    fn t(step: u64, kind: Kind, payload: Value) -> Track {
+        Track {
+            step,
+            kind,
+            ts: format!("2026-05-06T10:00:{step:02}Z"),
+            payload,
+            parent_step: None,
+            refs: vec![],
+            annotations: vec![],
+        }
+    }
+
+    #[test]
+    fn detail_renders_header_kind_step_ts() {
+        let track = t(
+            7,
+            Kind::ModelCall,
+            json!({"vendor": "anthropic", "model": "x"}),
+        );
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("══ track step 7 ══"), "{s}");
+        assert!(s.contains("kind:           model_call"), "{s}");
+        assert!(s.contains("step:           7"), "{s}");
+        assert!(s.contains("ts:             2026-05-06T10:00:07Z"), "{s}");
+    }
+
+    #[test]
+    fn detail_surfaces_parent_step_when_present() {
+        let mut track = t(7, Kind::ModelCall, json!({"vendor": "x", "model": "y"}));
+        track.parent_step = Some(3);
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("parent_step:    3"), "{s}");
+    }
+
+    #[test]
+    fn detail_omits_parent_step_line_when_none() {
+        let track = t(7, Kind::ModelCall, json!({"vendor": "x", "model": "y"}));
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(!s.contains("parent_step:"), "{s}");
+    }
+
+    #[test]
+    fn detail_surfaces_refs_when_non_empty() {
+        let mut track = t(7, Kind::FileRead, json!({"path": "/a"}));
+        track.refs = vec!["sha256:abc".to_owned(), "sha256:def".to_owned()];
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("refs:           sha256:abc, sha256:def"), "{s}");
+    }
+
+    #[test]
+    fn detail_omits_refs_line_when_empty() {
+        let track = t(7, Kind::FileRead, json!({"path": "/a"}));
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(!s.contains("refs:"), "{s}");
+    }
+
+    #[test]
+    fn detail_renders_all_three_redaction_states() {
+        let track = t(7, Kind::Task, json!({"prompt": "x"}));
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("redaction:      not processed"), "{s}");
+        let s = render_track_detail(&track, RedactionStatus::NoneApplied);
+        assert!(s.contains("redaction:      none applied"), "{s}");
+        let s = render_track_detail(&track, RedactionStatus::Applied(3));
+        assert!(
+            s.contains("redaction:      3 replacement(s) applied (cassette-wide)"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn detail_renders_annotation_list_when_non_empty() {
+        let mut track = t(7, Kind::Task, json!({"prompt": "x"}));
+        track.annotations = vec![
+            Annotation {
+                by: "colin".to_owned(),
+                note: "wrong tool choice, retry".to_owned(),
+            },
+            Annotation {
+                by: "agent".to_owned(),
+                note: "follow up".to_owned(),
+            },
+        ];
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("annotations:    2"), "{s}");
+        assert!(
+            s.contains(r#"- by: colin    note: "wrong tool choice, retry""#),
+            "{s}"
+        );
+        assert!(s.contains(r#"- by: agent    note: "follow up""#), "{s}");
+    }
+
+    #[test]
+    fn detail_renders_zero_annotations() {
+        let track = t(7, Kind::Task, json!({"prompt": "x"}));
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("annotations:    0"), "{s}");
+    }
+
+    #[test]
+    fn detail_pretty_prints_full_payload_under_divider() {
+        let track = t(
+            7,
+            Kind::ModelCall,
+            json!({"vendor": "anthropic", "model": "claude-opus-4-7", "tokens_in": 1234}),
+        );
+        let s = render_track_detail(&track, RedactionStatus::NotProcessed);
+        assert!(s.contains("── payload ──"), "{s}");
+        assert!(s.contains("\"vendor\": \"anthropic\""), "{s}");
+        assert!(s.contains("\"tokens_in\": 1234"), "{s}");
+    }
+
+    #[test]
+    fn index_summary_renders_header_and_counts() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::ModelCall, json!({"vendor": "x", "model": "y"})),
+            t(3, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_index_summary("bug.tape", &tracks, RedactionStatus::Applied(2));
+        assert!(s.contains("══ tape index: bug.tape ══"), "{s}");
+        assert!(s.contains("tracks:         3"), "{s}");
+        assert!(s.contains("first_ts:       2026-05-06T10:00:01Z"), "{s}");
+        assert!(s.contains("last_ts:        2026-05-06T10:00:03Z"), "{s}");
+        assert!(s.contains("redactions:     2 (cassette-wide)"), "{s}");
+    }
+
+    #[test]
+    fn index_summary_lists_all_eight_kinds_in_enum_order() {
+        let tracks = vec![
+            t(1, Kind::Task, json!({"prompt": "x"})),
+            t(2, Kind::Eject, json!({"outcome": "success"})),
+        ];
+        let s = render_index_summary("x.tape", &tracks, RedactionStatus::NotProcessed);
+        let hist_section = s
+            .split("── kind histogram ──")
+            .nth(1)
+            .expect("histogram section present");
+        // Every kind must show up — including zero-count rows.
+        for k in [
+            "task",
+            "model_call",
+            "mcp_call",
+            "shell",
+            "file_read",
+            "file_write",
+            "annotation",
+            "eject",
+        ] {
+            assert!(hist_section.contains(k), "missing kind {k}: {s}");
+        }
+        // Ordering: each kind's position in the rendered text must
+        // match the enum declaration order, not alphabetical.
+        let order = [
+            "task",
+            "model_call",
+            "mcp_call",
+            "shell",
+            "file_read",
+            "file_write",
+            "annotation",
+            "eject",
+        ];
+        let mut last_idx = 0usize;
+        for name in order {
+            let idx = hist_section.find(name).unwrap();
+            assert!(idx >= last_idx, "{name} out of order: {s}");
+            last_idx = idx;
+        }
+    }
+
+    #[test]
+    fn index_summary_omits_ts_lines_on_empty_cassette() {
+        let s = render_index_summary("empty.tape", &[], RedactionStatus::NotProcessed);
+        assert!(s.contains("tracks:         0"), "{s}");
+        assert!(!s.contains("first_ts:"), "{s}");
+        assert!(!s.contains("last_ts:"), "{s}");
+        // Histogram still prints with all zeros.
+        assert!(s.contains("── kind histogram ──"), "{s}");
+        assert!(s.contains("task          0"), "{s}");
+        assert!(s.contains("eject         0"), "{s}");
+    }
+
+    #[test]
+    fn index_summary_renders_all_three_redaction_states() {
+        let tracks = vec![t(1, Kind::Task, json!({"prompt": "x"}))];
+        let s = render_index_summary("x.tape", &tracks, RedactionStatus::NotProcessed);
+        assert!(s.contains("redactions:     not processed"), "{s}");
+        let s = render_index_summary("x.tape", &tracks, RedactionStatus::NoneApplied);
+        assert!(s.contains("redactions:     none applied"), "{s}");
+        let s = render_index_summary("x.tape", &tracks, RedactionStatus::Applied(5));
+        assert!(s.contains("redactions:     5 (cassette-wide)"), "{s}");
     }
 }
 
