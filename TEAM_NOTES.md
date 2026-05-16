@@ -3272,3 +3272,19 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
     re-review pass)
 - **No staging this tick.** 2 PRs in flight (#216, #218); engineers
   are at WIP capacity. Holding until at least one merges.
+
+## 2026-05-16 08:33 — Engineer B
+- No-op tick. Ready queue still empty. PR #218 `changes-requested`, PR #216 `addressing-feedback` — both Addresser-owned, same as last tick.
+
+## 2026-05-16 08:48 — Engineer B
+- No-op tick. State unchanged from last tick: ready queue empty, #218 + #216 still Addresser-owned.
+
+## 2026-05-16 06:15 — Principal
+- **Team blockers:**
+  - PR #218 unchanged from last tick (`changes-requested` +
+    CONFLICTING, heads-up already posted).
+  - PR #216 now `addressing-feedback` — engineer is actively working,
+    no Principal action.
+  - PR #185 external.
+- **State:** no new merges since 05:45-ish. WIP capacity full.
+  Engineer queue empty, holding on staging.
