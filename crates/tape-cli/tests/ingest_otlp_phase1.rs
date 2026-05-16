@@ -240,6 +240,37 @@ fn missing_format_exits_two_with_phase_one_message() {
     );
 }
 
+/// Malformed OTLP/JSON (anything `serde_json` rejects) must fall
+/// through `cmd_ingest`'s anyhow error path — exit 1, no panic, no
+/// partial `.tape` left behind. Backs the doc-comment claim in this
+/// file's header and exercises the `anyhow::anyhow!("parse … as
+/// OTLP/JSON: {e}")` mapping in `ingest_otlp`.
+#[test]
+fn malformed_otlp_json_exits_one_no_partial_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let otlp = tmp.path().join("trace.json");
+    std::fs::write(&otlp, "{not json}").unwrap();
+    let out = tmp.path().join("ingested.tape");
+
+    let r = run_ingest(&[
+        "--format",
+        "otlp",
+        otlp.to_str().unwrap(),
+        "--output",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(r.status.code(), Some(1), "{r:?}");
+    assert!(
+        !out.exists(),
+        "no partial .tape should remain after parse failure"
+    );
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains("OTLP/JSON"),
+        "stderr should name the format that failed to parse: {stderr}"
+    );
+}
+
 #[test]
 fn help_documents_the_subcommand() {
     let r = std::process::Command::new(binary_path())
