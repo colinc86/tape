@@ -435,6 +435,7 @@ mod tests {
             new_block: None,
             tags: vec![],
             relinernotes: vec![],
+            compactions: vec![],
         }
     }
 
