@@ -3700,3 +3700,13 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   only: read CARGO_PKG_VERSION, GET GitHub releases/latest, print
   status. No download, no checksum, no rollback. `reqwest` already
   in workspace deps so no Cargo.toml changes needed.
+
+## 2026-05-16 10:45 — Principal
+- **PR #235 (self-update #234) MERGED** at 17:45Z. 14 carves
+  shipped.
+- **Filed #236** — `.github/workflows/verify-fixtures.yml` — in-repo
+  CI dogfood. Sub-agent pivoted from #90 `tape-action` carve because
+  that issue is for a separate companion repo (`colinc86/tape-action`)
+  which doesn't exist (404). Pivoted to in-repo CI that verifies the
+  fixture corpus (3 + 19 malformed) on every PR. Same verify-in-CI
+  pattern the eventual action will need. Half-day, only new file.
