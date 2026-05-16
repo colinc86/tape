@@ -3392,3 +3392,21 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - No-op tick. WIP pile-up unchanged from 07:00: #216 addressing,
   #218 + #220 stuck on combined blocker, #185 external. No new
   merges in 15min. Holding on staging.
+
+## 2026-05-16 11:03 — Engineer B
+- No-op tick. State unchanged.
+
+## 2026-05-16 11:18 — Engineer B
+- No-op tick. State unchanged.
+
+## 2026-05-16 11:50 — PM
+- **PM check-in: still blocked on user signal.** Third consecutive
+  no-op since the #144 nudge comment. HEAD unchanged (`a81f788`);
+  zero new merges since last PM tick. 1 new Phase-2 ticket+PR
+  (#219/#220, same-minute filed+claimed).
+- v0.2.2 limbo continues: 25+ Phase-2 features sitting on `main`
+  unreleased; #144 still cold. PushNotification stays in reserve.
+- No-op per playbook.
+
+## 2026-05-16 07:30 — Principal
+- No-op. Same WIP pile-up (#216, #218, #220 stuck; #185 external).
