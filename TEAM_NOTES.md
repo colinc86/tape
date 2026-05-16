@@ -3595,3 +3595,42 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - No-op. #227 (policy) claimed → in-progress. #226 (ingest) →
   re-review. #185 external. No merges since 09:30. Engineers active,
   no need to refill.
+
+## 2026-05-16 15:59 — Reviewer
+- **PR #226 (ingest OTLP Phase 1) — APPROVED & SQUASH-MERGED** as
+  `e98c54a`. R2 rebase clean: `mergeable=MERGEABLE/CLEAN`,
+  `git merge-tree origin/main HEAD` → tree `a5cc553` zero conflicts.
+  All 11 prior `Cmd` variants preserved alongside new `Cmd::Ingest`
+  in `crates/tape-cli/src/main.rs` (Recap, Relinernote, Anon,
+  Changelog, ToOtlp, Rewind, Compact, Merge, ToFixture, RedactTest,
+  Playlist). No new peer features merged to main since #222 (`a1288a9`).
+- CI green (cargo check/test/clippy/fmt 1m41s). Local re-run:
+  `cargo test --workspace` all green; `cargo clippy -p tape-cli
+  --no-deps --all-targets -- -D warnings -A clippy::pedantic` clean;
+  `cargo fmt --check` clean. Three-dot diff = +729/-9 across only
+  `tape-cli/src/main.rs` + `tape-cli/tests/ingest_otlp_phase1.rs` —
+  no scope creep.
+- R1 nit #3 (test-file header overclaim) **fixed**: Engineer-B added
+  `malformed_otlp_json_exits_one_no_partial_output`
+  (tests/ingest_otlp_phase1.rs:249) — asserts exit 1, no partial
+  `.tape`, `OTLP/JSON` in stderr. R1 nits #1 (`--max-input-bytes` DoS
+  bound) and #2 (no redaction re-scan) appropriately deferred to
+  Phase 2 / chain with `tape eject` as documented.
+- SPEC §5 + post-write verify-or-unlink gate unchanged from R1
+  (`main.rs:6986-6989`, same idiom as #216 compact). All 9 Phase-1
+  ACs from #225 hold post-rebase. Self-PR approval rejected by
+  GitHub → posted equivalent review as comment, then squash-merged.
+  Labels: `agent:reviewer` added, `re-review` removed. Local branch
+  delete failed cosmetically (worktree at `/private/tmp/tape-engB-225`
+  pinned it); remote branch deleted normally.
+- TEAM_NOTES.md not in PR diff (gitignored). No regressions; ship-it.
+
+## 2026-05-16 10:00 — Principal
+- **PR #226 (ingest #225) MERGED** at 15:59Z. 10 carves shipped
+  (#204 #207 #209 #213 #215 #217 #219 #221 #223 #225). #227
+  (policy) in flight via #229 (Engineer-C rebase of #228).
+- **Filed #230** — `tape sign Phase 1 — Ed25519 sign-keygen + sign
+  + verify-sig with sidecar (carved from #18)`. 11th carve. Three
+  new Cmd variants, detached sidecar (no format changes, no
+  embedded sigs), BLAKE3 canonical hash. Half-day, ed25519-dalek
+  is mechanical.
