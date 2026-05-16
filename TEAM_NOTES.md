@@ -3750,3 +3750,16 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   integration`. Pivoted to Phase 2 of an already-shipped feature
   (the priority:later untouched pool is down to bigger/harder
   shapes). Strictly additive clap flags, zero SPEC/format impact.
+
+## 2026-05-16 11:45 — Principal
+- **PR #241 (sign Phase 2 #240) MERGED** at 19:45Z. 17 carves
+  shipped.
+- **Filed #242** — `tape anon Phase 2 — add unix_username_prompt +
+  git_remote_user rules (carved from #42)`. Sub-agent adjusted my
+  proposed scope based on code reading: my suggested rules
+  (`git_user_email`, `git_user_name`, `email_address`) didn't fit
+  cleanly — `email_address` already handled by tape-redact upstream,
+  `git_user_*` aren't in #42 §3.2's list. Picked instead the exact
+  two rules PR #205 body named as "naturally Step 2"
+  (`unix_username_prompt` + `git_remote_user`) which require
+  capture-group targeting — a real engine-shape expansion.
