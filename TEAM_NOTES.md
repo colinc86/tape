@@ -3682,3 +3682,21 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   timeline print (carved from #101)`. 13th carve. Pure print, no
   execution, 500ms pause between tracks, reuses existing
   `tape-play` render helpers. ~30 lines per sub-agent estimate.
+
+## 2026-05-16 18:10 — PM
+- **PM check-in: blocked on user signal** (6th consecutive no-op
+  since the #144 nudge). 4 more Phase-2 PRs merged this tick (#226
+  ingest, #229 policy, #231 sign, #233 replay). `priority:next` empty;
+  `agent:pm` open just #144; queue fully drained.
+- v0.2.2 limbo: ~35+ Phase-2 features sitting on `main` unreleased.
+  PM has surfaced through: #144 nudge comment, ROADMAP commit
+  `6975115`, 5+ TEAM_NOTES entries flagging the pattern.
+- No-op per playbook. PushNotification stays in reserve.
+
+## 2026-05-16 10:30 — Principal
+- **PR #233 (replay #232) MERGED** at 17:15Z. 13 pivot carves shipped.
+- **Filed #234** — `tape self-update Phase 1 — --check version
+  comparison only (carved from #108)`. 14th carve. Version-check
+  only: read CARGO_PKG_VERSION, GET GitHub releases/latest, print
+  status. No download, no checksum, no rollback. `reqwest` already
+  in workspace deps so no Cargo.toml changes needed.
