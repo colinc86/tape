@@ -3,6 +3,7 @@
 mod doctor;
 mod playlist;
 mod self_update;
+mod test_cmd;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -158,6 +159,21 @@ enum Cmd {
         /// when `--judge` is not supplied.
         #[arg(long, value_name = "N", default_value_t = 25)]
         judge_budget: u32,
+    },
+    /// Structural pass/fail comparison of two cassettes. Phase 1 of
+    /// #10 (carved per #252): four independent checks (track count,
+    /// kind sequence, task prompt, eject outcome) — exit 0 if all
+    /// pass, exit 2 if any fail. Read-only — does not invoke an
+    /// agent, model API, or `tape record` proxy. The live re-run
+    /// path (`tape record --replay`-style), `--judge`-narrated
+    /// substantive diff, `--threshold` / `--isolated` /
+    /// `--skip-network` flags, JUnit output, and multi-cassette
+    /// form are all Phase 2+ work on #10.
+    Test {
+        /// Baseline cassette (the recorded reference).
+        baseline: std::path::PathBuf,
+        /// Candidate cassette (the new recording to check).
+        candidate: std::path::PathBuf,
     },
     /// Record a Claude Code session into a `.tape` file.
     Record {
@@ -1030,6 +1046,10 @@ fn main() -> Result<()> {
                 cmd_diff(&a, &b, all, &format)
             }
         }
+        Cmd::Test {
+            baseline,
+            candidate,
+        } => cmd_test(&baseline, &candidate),
         Cmd::Record {
             label,
             out,
@@ -1371,6 +1391,46 @@ fn cmd_diff(a: &std::path::Path, b: &std::path::Path, all: bool, format: &str) -
         }
     }
     Ok(())
+}
+
+/// Phase 1 of #10 (carved per #252). Structural pass/fail
+/// comparison of two cassettes — four independent checks, exit 0
+/// if all pass and 2 if any fail. Read-only: no agent invocation,
+/// no model API, no `tape record` proxy. Loader-error (missing /
+/// malformed cassette) propagates as `anyhow::Error` and lands at
+/// the default exit 1; that's the legitimate exit-1 for Phase 1
+/// (exit 2 means the comparison ran and at least one check failed).
+fn cmd_test(baseline: &std::path::Path, candidate: &std::path::Path) -> Result<()> {
+    let (a_meta, a_tracks) = load_test_input(baseline)?;
+    let (b_meta, b_tracks) = load_test_input(candidate)?;
+    let report = test_cmd::compare(&a_meta, &a_tracks, &b_meta, &b_tracks);
+    print!("{}", test_cmd::render_report(&report));
+    if !report.all_passed() {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// `tape test`'s loader pair — mirrors the four-line sequence
+/// `tape_diff::compute` uses at `crates/tape-diff/src/lib.rs:98-106`
+/// (RawTape::open + Meta::parse + parse_jsonl). Kept inline rather
+/// than in `tape-format` per the ticket's "do NOT add a helper"
+/// guidance.
+fn load_test_input(
+    path: &std::path::Path,
+) -> Result<(tape_format::meta::Meta, Vec<tape_format::tracks::Track>)> {
+    let raw = tape_format::reader::RawTape::open(path)
+        .map_err(|e| anyhow::anyhow!("{}: open cassette: {e}", path.display()))?;
+    let meta_yaml = raw
+        .meta_yaml
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("{}: missing meta.yaml", path.display()))?;
+    let meta = tape_format::meta::Meta::parse(meta_yaml)
+        .map_err(|e| anyhow::anyhow!("{}: parse meta.yaml: {e}", path.display()))?;
+    let tracks_jsonl = raw.tracks_jsonl.as_deref().unwrap_or("");
+    let tracks = tape_format::tracks::parse_jsonl(tracks_jsonl)
+        .map_err(|e| anyhow::anyhow!("{}: parse tracks.jsonl: {e}", path.display()))?;
+    Ok((meta, tracks))
 }
 
 /// Issue #149: `tape diff --judge <MODEL>`. Runs the existing
