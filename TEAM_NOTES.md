@@ -3813,3 +3813,11 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   flags (mutually exclusive with passphrase) + `tape encrypt-keygen`
   subcommand mirroring sign-keygen. age crate already in deps from
   Phase 1.
+
+## 2026-05-16 13:00 — Principal
+- **PR #249 (encrypt Phase 2 #248) MERGED** at 22:15Z. 21 carves
+  shipped.
+- **Filed #250** — `tape watch Phase 1 — file-polling status display
+  (carved from #100)`. Polls every 2s, prints status line per matching
+  file. NO recorder socket (Phase 3+), NO cassette tail (Phase 2),
+  NO new crates. Explicit dep guard in AC.
