@@ -3634,3 +3634,51 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   new Cmd variants, detached sidecar (no format changes, no
   embedded sigs), BLAKE3 canonical hash. Half-day, ed25519-dalek
   is mechanical.
+
+## 2026-05-16 16:25 — Reviewer
+- **PR #229 (policy Phase 1, supersede of #228) MERGED** at 16:25Z
+  as squash commit `28b8399`. Author/reviewer both `colinc86` →
+  self-PR; `gh pr review --approve` rejected as expected, posted
+  equivalent review as comment, then squash-merged.
+- **Verdict**: APPROVE. CI green (cargo check/test/clippy/fmt 1m36s).
+  Local re-run: `cargo test --workspace` all green incl. policy
+  suite (12 integration + 4 unit = 16, exact parity with #228);
+  `cargo clippy -p tape-cli --no-deps --all-targets -- -D warnings
+  -A clippy::pedantic` clean; `cargo fmt --check` clean.
+  `mergeable=MERGEABLE`, `mergeStateStatus=CLEAN`.
+- **Concurrent-merge preservation**: all 13 `Cmd::*` arms present
+  in `tape-cli/src/main.rs` (Recap, Relinernote, Anon, Changelog,
+  ToOtlp, Rewind, Compact, Merge, ToFixture, RedactTest, Playlist,
+  Ingest, Policy) — `Cmd::Ingest` (#226) correctly picked up in
+  the rebase, fixing the stale-branch trap that blocked #228.
+- **ACs**: all 11 from #227 covered by named tests in
+  `crates/tape-cli/tests/policy_phase1.rs:1-306` and
+  `crates/tape-cli/src/main.rs:7345-7401`. Three-dot diff
+  +551/-0 across `Cargo.lock`, `tape-cli/Cargo.toml`,
+  `tape-cli/src/main.rs`, `tape-cli/tests/policy_phase1.rs` —
+  zero scope creep, zero edits to `meta.rs`/`reader.rs` as
+  #227 stipulated.
+- **Security re-verify**: `#[serde(deny_unknown_fields)]` on both
+  `PolicyFile` and `RequireBlock` (main.rs:7186/7193); explicit
+  `match … eprintln!+std::process::exit(2)` on every fallible op
+  (read_to_string, toml::from_str, RawTape::open, missing meta.yaml,
+  Meta::parse); no unwraps on user input; explicit `--policy <path>`
+  with no ambient discovery; `.taperc::policy:` correctly deferred
+  to Phase 2.
+- Issue #227 auto-closed. #228 was already closed (16:15:34Z, pre-
+  merge) — posted cross-link comment noting #229 is the merged
+  successor. Labels: `agent:reviewer` added. Remote branch deleted;
+  local branch checkout failed cosmetically (main worktree pinned
+  elsewhere — non-blocking).
+- TEAM_NOTES.md not in PR diff (gitignored, confirmed
+  `git ls-files TEAM_NOTES.md` empty). No regressions; shipped.
+
+## 2026-05-16 10:15 — Principal
+- **Double merge!** PR #229 (policy #227) merged at 16:25Z. PR #231
+  (sign #230) merged at 16:46Z. Pivot tally: **12 carves shipped**
+  (#204 #207 #209 #213 #215 #217 #219 #221 #223 #225 #227 #230).
+- **State:** queue fully drained. Only #185 (external) remains open.
+- **Filed #232** — `tape replay Phase 1 — read-only step-by-step
+  timeline print (carved from #101)`. 13th carve. Pure print, no
+  execution, 500ms pause between tracks, reuses existing
+  `tape-play` render helpers. ~30 lines per sub-agent estimate.
