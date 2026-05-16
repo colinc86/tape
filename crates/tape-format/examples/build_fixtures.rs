@@ -1,3 +1,4 @@
+#![allow(clippy::doc_markdown)]
 //! Builds the canonical test fixtures into `tests/fixtures/`.
 //!
 //! Run from the workspace root:

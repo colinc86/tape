@@ -1,6 +1,6 @@
 //! Integration test: spawn the recorder Unix socket, spawn `tape-mcp-wrap`
 //! pointed at the `mock_mcp_server` example, drive a `tools/call` through
-//! its stdin/stdout, and assert the recording session captured an mcp_call
+//! its stdin/stdout, and assert the recording session captured an `mcp_call`
 //! event with the expected shape.
 
 use std::process::Stdio;

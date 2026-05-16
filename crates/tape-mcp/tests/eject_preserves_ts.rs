@@ -33,7 +33,7 @@ fn pump(deck: tape_mcp::Deck, requests: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Load + eject the killer-scenario fixture and return (ejected_meta, ejected_tracks).
+/// Load + eject the killer-scenario fixture and return (`ejected_meta`, `ejected_tracks`).
 fn load_and_eject(
     fixture: &std::path::Path,
     out: &std::path::Path,
@@ -139,7 +139,7 @@ fn eject_preserves_per_event_timestamps_from_loaded_tape() {
 }
 
 /// Issue #20 (4): `meta.created_at` on the ejected tape must reflect the
-/// *source* tape's created_at, not the moment eject ran.
+/// *source* tape's `created_at`, not the moment eject ran.
 #[test]
 fn eject_preserves_meta_created_at_from_loaded_tape() {
     let tmp = tempfile::tempdir().unwrap();

@@ -1,7 +1,7 @@
 //! `tape relinernote --template <name>` Step-3 integration coverage.
 //! Issue #196. Most cases use `--dry-run` (no real judge HTTP call
 //! needed; the binary prints the rendered prompt and exits 0); the
-//! template_id audit test uses the axum mock pattern from
+//! `template_id` audit test uses the axum mock pattern from
 //! `relinernote_integration.rs`.
 
 use std::sync::atomic::{AtomicU32, Ordering};

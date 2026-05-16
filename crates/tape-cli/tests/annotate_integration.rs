@@ -162,7 +162,7 @@ fn anthropic_key_in_note_exits_with_annot_leak() {
     assert_eq!(before_bytes, after_bytes, "input must be untouched");
 }
 
-/// Phase-1 test #11 — email in `--note` exits 6 with the `email` rule_id.
+/// Phase-1 test #11 — email in `--note` exits 6 with the `email` `rule_id`.
 #[test]
 fn email_in_note_exits_with_annot_leak() {
     let (_dir, input) = isolated_minimal();

@@ -1,4 +1,4 @@
-//! Smoke test for the OpenAI recording proxy. Same shape as the Anthropic
+//! Smoke test for the `OpenAI` recording proxy. Same shape as the Anthropic
 //! test but pointed at `/v1/chat/completions` and verifying `vendor: "openai"`.
 
 use std::time::Duration;
