@@ -2000,6 +2000,7 @@ fn build_new_meta(
         recaps: vec![],
         tags: vec![],
         relinernotes: vec![],
+        compactions: vec![],
         new_block: Some(tape_format::meta::NewBlock {
             template_id: bundle.id.into(),
             template_version: bundle.version.into(),
@@ -5797,12 +5798,16 @@ mod rewind_tests {
 // is additive work on a real codepath.
 // =====================================================================
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct CompactStats {
     /// How many string leaves were actually truncated. Drives the
     /// success stderr summary; future presets in #51 Phase 2 will
     /// extend this struct with per-rule counts.
     n_truncated: usize,
+    /// Step numbers of tracks whose payload was modified by this
+    /// invocation. Captured for the `meta.compactions[]` audit
+    /// ledger (Phase 2 of #51, carved per #244). Sorted ascending.
+    tracks_affected: Vec<u64>,
 }
 
 /// Truncate `s` to `max_chars` Unicode characters and append the
@@ -5898,8 +5903,18 @@ fn compact_tracks(
 ) -> (Vec<tape_format::tracks::Track>, CompactStats) {
     let mut stats = CompactStats::default();
     for t in &mut tracks {
-        stats.n_truncated += compact_payload(t, max_chars);
+        let n = compact_payload(t, max_chars);
+        if n > 0 {
+            stats.n_truncated += n;
+            stats.tracks_affected.push(t.step);
+        }
     }
+    // `tracks_affected` is already in source order — track iteration
+    // matches the JSONL file order which is monotonically increasing
+    // by `step` per SPEC §5.1. Belt-and-suspenders sort keeps the
+    // invariant explicit so a future change to iteration can't
+    // silently break the ledger's ordering guarantee.
+    stats.tracks_affected.sort_unstable();
     (tracks, stats)
 }
 
@@ -5963,11 +5978,41 @@ fn cmd_compact(
         }
     }
 
-    // 6. Build PendingTape with byte-identical pass-through of every
-    //    non-tracks zip entry. `meta.yaml`, `liner-notes.md`,
-    //    `redactions.json`, and `artifacts/*` are untouched.
+    // 5b. Append the `meta.compactions[]` audit ledger entry (Phase 2
+    //     of #51, carved per #244). One entry per invocation —
+    //     including no-op runs (`stats.tracks_affected.is_empty()`).
+    //     Mirrors the recap audit-append precedent: the audit row is
+    //     about the *invocation*, not whether bytes changed.
+    let meta_yaml_in = raw.meta_yaml.clone().unwrap_or_default();
+    let mut meta = match tape_format::meta::Meta::parse(&meta_yaml_in) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("tape compact: parse meta.yaml: {e}");
+            std::process::exit(2);
+        }
+    };
+    meta.compactions.push(tape_format::meta::CompactionEntry {
+        applied_at: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+        kind: tape_format::meta::CompactionKind::TruncateOutput,
+        max_chars: max_output_chars,
+        tracks_affected: stats.tracks_affected.clone(),
+    });
+    let new_meta_yaml = match meta.to_yaml() {
+        Ok(y) => y,
+        Err(e) => {
+            eprintln!("tape compact: re-serialize meta.yaml: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // 6. Build PendingTape. `meta.yaml` now carries the new
+    //    `compactions[]` audit row; `liner-notes.md`,
+    //    `redactions.json`, and `artifacts/*` are still byte-
+    //    identical pass-through.
     let pending = tape_format::writer::PendingTape {
-        meta_yaml: raw.meta_yaml.clone().unwrap_or_default(),
+        meta_yaml: new_meta_yaml,
         liner_md: raw.liner_md.clone().unwrap_or_default(),
         tracks_jsonl: new_tracks_jsonl,
         redactions_json: raw.redactions_json.clone(),
@@ -7440,6 +7485,7 @@ fn ingest_otlp(input: &std::path::Path, out_path: &std::path::Path) -> Result<()
         recaps: Vec::new(),
         tags: Vec::new(),
         relinernotes: Vec::new(),
+        compactions: Vec::new(),
         new_block: None,
     };
     let meta_yaml =
@@ -7804,6 +7850,7 @@ mod policy_handler_tests {
             recaps: Vec::new(),
             tags: Vec::new(),
             relinernotes: Vec::new(),
+            compactions: Vec::new(),
             new_block: None,
         }
     }
