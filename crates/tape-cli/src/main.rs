@@ -23,6 +23,22 @@ enum Cmd {
         /// Emit machine-readable JSON diagnostics.
         #[arg(long)]
         json: bool,
+        /// Phase 2 of #18 (carved per #240): require a valid
+        /// Ed25519 sidecar signature in addition to structural
+        /// verify. Structural verify runs first; on structural
+        /// failure no sidecar lookup is attempted. Pairs with
+        /// `--pubkey`.
+        #[arg(long, requires = "pubkey")]
+        signed: bool,
+        /// Path to the signer's `.tape.pubkey` (produced by
+        /// `tape sign-keygen`). Required with `--signed`;
+        /// rejected without it.
+        #[arg(long, requires = "signed")]
+        pubkey: Option<std::path::PathBuf>,
+        /// Override the sidecar path. Default: `<cassette>.sig`.
+        /// Only meaningful with `--signed`; rejected without it.
+        #[arg(long, requires = "signed")]
+        sig: Option<std::path::PathBuf>,
     },
     /// Pretty-print a tape's contents.
     Play {
@@ -902,7 +918,13 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Verify { file, json } => cmd_verify(&file, json),
+        Cmd::Verify {
+            file,
+            json,
+            signed,
+            pubkey,
+            sig,
+        } => cmd_verify(&file, json, signed, pubkey.as_deref(), sig.as_deref()),
         Cmd::Ls { file } => cmd_ls(&file),
         Cmd::Stats {
             file,
@@ -3731,12 +3753,23 @@ fn cmd_replay(file: &std::path::Path, step: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_verify(file: &std::path::Path, json: bool) -> Result<()> {
+fn cmd_verify(
+    file: &std::path::Path,
+    json: bool,
+    signed: bool,
+    pubkey: Option<&std::path::Path>,
+    sig: Option<&std::path::Path>,
+) -> Result<()> {
     let raw = match tape_format::reader::RawTape::open(file) {
         Ok(r) => r,
         Err(e) => {
+            // Structural verify failure: the load-bearing rule
+            // for `--signed` is that we do NOT touch the sidecar
+            // here — a malformed zip can't be meaningfully
+            // signature-verified, and surfacing the structural
+            // failure first matches the pre-Phase-2 user model.
             if json {
-                let payload = serde_json::json!({
+                let mut payload = serde_json::json!({
                     "valid": false,
                     "diagnostics": [{
                         "code": "MALFORMED_ZIP",
@@ -3744,6 +3777,9 @@ fn cmd_verify(file: &std::path::Path, json: bool) -> Result<()> {
                         "message": e.to_string(),
                     }],
                 });
+                if signed {
+                    payload["signed"] = serde_json::Value::Bool(true);
+                }
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
                 eprintln!("ERROR MALFORMED_ZIP: {e}");
@@ -3754,56 +3790,158 @@ fn cmd_verify(file: &std::path::Path, json: bool) -> Result<()> {
 
     let report = tape_format::verify::verify(&raw);
 
-    if json {
-        let diags: Vec<_> = report
-            .diagnostics
-            .iter()
-            .map(|d| {
-                serde_json::json!({
-                    "code": d.code.as_str(),
-                    "severity": match d.severity {
-                        tape_format::verify::Severity::Error => "error",
-                        tape_format::verify::Severity::Warning => "warning",
-                    },
-                    "message": d.message,
-                })
-            })
-            .collect();
-        let payload = serde_json::json!({
-            "valid": report.is_valid(),
-            "diagnostics": diags,
-        });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
-    } else if report.diagnostics.is_empty() {
-        println!("OK {}", file.display());
-    } else {
-        for d in &report.diagnostics {
-            let level = match d.severity {
-                tape_format::verify::Severity::Error => "ERROR",
-                tape_format::verify::Severity::Warning => "WARN ",
-            };
-            println!("{level} {}: {}", d.code.as_str(), d.message);
-        }
-        if !report.is_valid() {
+    // Structural verify failed → exit-2 path. Same rule as the
+    // open() failure above: no sidecar lookup, even with --signed.
+    if !report.is_valid() {
+        if json {
+            let diags: Vec<_> = report.diagnostics.iter().map(diagnostic_to_json).collect();
+            let mut payload = serde_json::json!({
+                "valid": false,
+                "diagnostics": diags,
+            });
+            if signed {
+                payload["signed"] = serde_json::Value::Bool(true);
+            }
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            for d in &report.diagnostics {
+                let level = match d.severity {
+                    tape_format::verify::Severity::Error => "ERROR",
+                    tape_format::verify::Severity::Warning => "WARN ",
+                };
+                println!("{level} {}: {}", d.code.as_str(), d.message);
+            }
             println!(
                 "\nFAIL {} ({} errors, {} warnings)",
                 file.display(),
                 report.errors().count(),
                 report.warnings().count(),
             );
+        }
+        std::process::exit(2);
+    }
+
+    // Structural verify passed. Without --signed we're done —
+    // emit the existing OK output verbatim (Phase-1 byte-identity
+    // invariant: this branch is byte-for-byte the same as before
+    // Phase 2's flag plumbing landed).
+    if !signed {
+        if json {
+            let diags: Vec<_> = report.diagnostics.iter().map(diagnostic_to_json).collect();
+            let payload = serde_json::json!({
+                "valid": true,
+                "diagnostics": diags,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else if report.diagnostics.is_empty() {
+            println!("OK {}", file.display());
         } else {
+            for d in &report.diagnostics {
+                let level = match d.severity {
+                    tape_format::verify::Severity::Error => "ERROR",
+                    tape_format::verify::Severity::Warning => "WARN ",
+                };
+                println!("{level} {}: {}", d.code.as_str(), d.message);
+            }
             println!(
                 "\nOK   {} ({} warnings)",
                 file.display(),
                 report.warnings().count()
             );
         }
+        return Ok(());
     }
 
-    if report.is_valid() {
-        Ok(())
-    } else {
-        std::process::exit(2);
+    // --signed path. Pubkey is guaranteed Some by clap (`signed`
+    // `requires = "pubkey"`); panic on absence would be a clap
+    // bug, not a user error.
+    let pubkey = pubkey.expect("clap `requires` should enforce --pubkey when --signed is set");
+    match verify_sig_inner(file, pubkey, sig) {
+        Ok(v) => {
+            if json {
+                let diags: Vec<_> = report.diagnostics.iter().map(diagnostic_to_json).collect();
+                let payload = serde_json::json!({
+                    "valid": true,
+                    "diagnostics": diags,
+                    "signed": true,
+                    "signature": {
+                        "pubkey_fingerprint": v.pubkey_fingerprint,
+                    },
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!(
+                    "OK   {} (signed by {})",
+                    file.display(),
+                    v.pubkey_fingerprint
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if json {
+                let mut diags: Vec<_> = report.diagnostics.iter().map(diagnostic_to_json).collect();
+                diags.push(serde_json::json!({
+                    "code": e.code(),
+                    "severity": "error",
+                    "message": e.message(),
+                }));
+                let payload = serde_json::json!({
+                    "valid": false,
+                    "diagnostics": diags,
+                    "signed": true,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                // Same stderr lines the standalone `tape verify-sig`
+                // would emit — sign_phase1.rs and a Phase-2 test can
+                // both pin on the SIGNATURE_* / SIDECAR_* strings.
+                eprintln!("error: {}", verify_sig_text_message(&e));
+            }
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Render a structural diagnostic as the JSON shape `tape verify`
+/// has emitted since v0.2.0. Factored out so the four code paths
+/// in `cmd_verify` (open-failure, structural-fail, structural-pass,
+/// signed-success/fail) all emit the same shape.
+fn diagnostic_to_json(d: &tape_format::verify::Diagnostic) -> serde_json::Value {
+    serde_json::json!({
+        "code": d.code.as_str(),
+        "severity": match d.severity {
+            tape_format::verify::Severity::Error => "error",
+            tape_format::verify::Severity::Warning => "warning",
+        },
+        "message": d.message,
+    })
+}
+
+/// Text-mode stderr line for a `SigError` in the `tape verify
+/// --signed` path. Matches the stderr the standalone
+/// `tape verify-sig` would emit for the same failure, so audit
+/// scripts grepping `SIGNATURE_DIGEST_MISMATCH` etc. work
+/// against either entry point.
+fn verify_sig_text_message(e: &SigError) -> String {
+    match e {
+        SigError::SidecarMissing { sig_path, reason } => {
+            format!("SIDECAR_MISSING at {}: {reason}", sig_path.display())
+        }
+        SigError::SidecarParse { sig_path, reason } => {
+            format!("SIDECAR_PARSE at {}: {reason}", sig_path.display())
+        }
+        SigError::SidecarField { sig_path, reason } => {
+            format!("SIDECAR_PARSE at {}: {reason}", sig_path.display())
+        }
+        SigError::DigestMismatch => {
+            "SIGNATURE_DIGEST_MISMATCH (cassette modified after signing)".to_owned()
+        }
+        SigError::PubkeyMismatch => {
+            "SIGNATURE_PUBKEY_MISMATCH (signed by a different key)".to_owned()
+        }
+        SigError::Invalid => "SIGNATURE_INVALID".to_owned(),
+        SigError::Other(s) => s.clone(),
     }
 }
 
@@ -7902,122 +8040,228 @@ fn cmd_sign(
     Ok(())
 }
 
-fn cmd_verify_sig(
-    cassette: &std::path::Path,
-    pubkey_path: &std::path::Path,
-    sig: Option<std::path::PathBuf>,
-) -> Result<()> {
-    let sig_path = sig.unwrap_or_else(|| appended_extension(cassette, "sig"));
-    let sidecar_text = match std::fs::read_to_string(&sig_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: read {}: {e}", sig_path.display());
-            std::process::exit(2);
+/// Successful signature verification result. Carries the pubkey
+/// fingerprint so callers can emit it in their preferred shape
+/// (stderr line for `tape verify-sig`, JSON field for
+/// `tape verify --signed --json`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedSignature {
+    pubkey_fingerprint: String,
+}
+
+/// Per-rule signature-verify failure. Variants map 1:1 to the
+/// Phase-1 standalone `tape verify-sig` stderr lines so the
+/// pre-existing UX is preserved byte-for-byte across the
+/// refactor. `SidecarMissing` is the only new variant; it splits
+/// the "can't open sidecar" case out from generic I/O so
+/// `tape verify --signed` can surface `SIDECAR_MISSING` as a
+/// distinct JSON diagnostic code.
+#[derive(Debug)]
+enum SigError {
+    /// Sidecar file does not exist (or is unreadable). Rendered
+    /// in `tape verify-sig` as `error: read <path>: <reason>`.
+    SidecarMissing {
+        sig_path: std::path::PathBuf,
+        reason: String,
+    },
+    /// `Sidecar::parse` rejected the sidecar text. Rendered as
+    /// `error: parse <path>: <reason>` (matches Phase-1 line at
+    /// the former main.rs:7921).
+    SidecarParse {
+        sig_path: std::path::PathBuf,
+        reason: String,
+    },
+    /// Header is well-formed but a field is invalid (unsupported
+    /// algo, bad base64, wrong signature length). Rendered as
+    /// `error: <path>: <reason>` (no `parse ` prefix — matches
+    /// the Phase-1 lines for the algo / base64 / length checks).
+    SidecarField {
+        sig_path: std::path::PathBuf,
+        reason: String,
+    },
+    /// Cassette bytes' BLAKE3 doesn't match `digest:` in the sidecar.
+    DigestMismatch,
+    /// Sidecar's `pubkey:` field doesn't match the verifier's `--pubkey`.
+    PubkeyMismatch,
+    /// Ed25519 `verify_strict` rejected the signature.
+    Invalid,
+    /// I/O reading the cassette / pubkey file. Rendered as
+    /// `error: <reason>` (no prefix — the reason already carries
+    /// any relevant path context).
+    Other(String),
+}
+
+impl SigError {
+    /// SPEC-style diagnostic code. Stable across both
+    /// `tape verify-sig` stderr lines and `tape verify --signed`
+    /// JSON diagnostics.
+    fn code(&self) -> &'static str {
+        match self {
+            SigError::SidecarMissing { .. } => "SIDECAR_MISSING",
+            SigError::SidecarParse { .. } | SigError::SidecarField { .. } => "SIDECAR_PARSE",
+            SigError::DigestMismatch => "SIGNATURE_DIGEST_MISMATCH",
+            SigError::PubkeyMismatch => "SIGNATURE_PUBKEY_MISMATCH",
+            SigError::Invalid => "SIGNATURE_INVALID",
+            SigError::Other(_) => "SIDECAR_IO",
         }
-    };
-    let sidecar = match Sidecar::parse(&sidecar_text) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: parse {}: {e}", sig_path.display());
-            std::process::exit(2);
-        }
-    };
-    if sidecar.algo != "ed25519" || sidecar.digest_algo != "blake3" {
-        eprintln!(
-            "error: {}: unsupported algo/digest_algo (got {}/{}, want ed25519/blake3)",
-            sig_path.display(),
-            sidecar.algo,
-            sidecar.digest_algo
-        );
-        std::process::exit(2);
     }
 
-    let cassette_bytes = match std::fs::read(cassette) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: read {}: {e}", cassette.display());
-            std::process::exit(2);
+    /// Human-readable message for the JSON `message` field.
+    fn message(&self) -> String {
+        match self {
+            SigError::SidecarMissing { sig_path, reason } => {
+                format!("read {}: {reason}", sig_path.display())
+            }
+            SigError::SidecarParse { sig_path, reason } => {
+                format!("parse {}: {reason}", sig_path.display())
+            }
+            SigError::SidecarField { sig_path, reason } => {
+                format!("{}: {reason}", sig_path.display())
+            }
+            SigError::DigestMismatch => "cassette modified after signing".to_owned(),
+            SigError::PubkeyMismatch => "signed by a different key".to_owned(),
+            SigError::Invalid => "Ed25519 verify_strict rejected the signature".to_owned(),
+            SigError::Other(s) => s.clone(),
         }
-    };
+    }
+}
+
+/// Pure signature-verify pipeline. No `std::process::exit`,
+/// no stderr — returns `Result<VerifiedSignature, SigError>` so the
+/// `tape verify-sig` wrapper, the `tape verify --signed` text path,
+/// and the `tape verify --signed --json` payload can each render
+/// the outcome in their own shape. Shared with both call sites
+/// (#240 carve from #18 Phase 2).
+fn verify_sig_inner(
+    cassette: &std::path::Path,
+    pubkey_path: &std::path::Path,
+    sig: Option<&std::path::Path>,
+) -> std::result::Result<VerifiedSignature, SigError> {
+    let sig_path = sig
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| appended_extension(cassette, "sig"));
+    let sidecar_text =
+        std::fs::read_to_string(&sig_path).map_err(|e| SigError::SidecarMissing {
+            sig_path: sig_path.clone(),
+            reason: e.to_string(),
+        })?;
+    let sidecar = Sidecar::parse(&sidecar_text).map_err(|e| SigError::SidecarParse {
+        sig_path: sig_path.clone(),
+        reason: e,
+    })?;
+    if sidecar.algo != "ed25519" || sidecar.digest_algo != "blake3" {
+        return Err(SigError::SidecarField {
+            sig_path: sig_path.clone(),
+            reason: format!(
+                "unsupported algo/digest_algo (got {}/{}, want ed25519/blake3)",
+                sidecar.algo, sidecar.digest_algo
+            ),
+        });
+    }
+
+    let cassette_bytes = std::fs::read(cassette)
+        .map_err(|e| SigError::Other(format!("read {}: {e}", cassette.display())))?;
     let recomputed = blake3::hash(&cassette_bytes);
     let recomputed_hex = recomputed.to_hex().to_string();
     if sidecar.digest != recomputed_hex {
-        eprintln!("error: SIGNATURE_DIGEST_MISMATCH (cassette modified after signing)");
-        std::process::exit(2);
+        return Err(SigError::DigestMismatch);
     }
 
-    let pubkey_bytes = match read_keyfile(pubkey_path, PUBKEY_HEADER) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(2);
-        }
-    };
-    let sidecar_pubkey = match b64().decode(sidecar.pubkey.as_bytes()) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!(
-                "error: {}: pubkey field base64 decode failed: {e}",
-                sig_path.display()
-            );
-            std::process::exit(2);
-        }
-    };
+    let pubkey_bytes =
+        read_keyfile(pubkey_path, PUBKEY_HEADER).map_err(|e| SigError::Other(e.to_string()))?;
+    let sidecar_pubkey =
+        b64()
+            .decode(sidecar.pubkey.as_bytes())
+            .map_err(|e| SigError::SidecarField {
+                sig_path: sig_path.clone(),
+                reason: format!("pubkey field base64 decode failed: {e}"),
+            })?;
     if sidecar_pubkey != pubkey_bytes {
-        eprintln!("error: SIGNATURE_PUBKEY_MISMATCH (signed by a different key)");
-        std::process::exit(2);
+        return Err(SigError::PubkeyMismatch);
     }
 
     let pubkey_array: [u8; 32] = pubkey_bytes
         .as_slice()
         .try_into()
         .expect("read_keyfile enforces 32-byte length");
-    let verifying = match ed25519_dalek::VerifyingKey::from_bytes(&pubkey_array) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "error: {}: pubkey is not a valid Ed25519 point: {e}",
-                pubkey_path.display()
-            );
-            std::process::exit(2);
-        }
-    };
-    let sig_bytes = match b64().decode(sidecar.signature.as_bytes()) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!(
-                "error: {}: signature field base64 decode failed: {e}",
-                sig_path.display()
-            );
-            std::process::exit(2);
-        }
-    };
-    let sig_array: [u8; 64] = match sig_bytes.as_slice().try_into() {
-        Ok(a) => a,
-        Err(_) => {
-            eprintln!(
-                "error: {}: signature must be 64 bytes (got {})",
-                sig_path.display(),
-                sig_bytes.len()
-            );
-            std::process::exit(2);
-        }
-    };
+    let verifying = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_array).map_err(|e| {
+        SigError::Other(format!(
+            "{}: pubkey is not a valid Ed25519 point: {e}",
+            pubkey_path.display()
+        ))
+    })?;
+    let sig_bytes =
+        b64()
+            .decode(sidecar.signature.as_bytes())
+            .map_err(|e| SigError::SidecarField {
+                sig_path: sig_path.clone(),
+                reason: format!("signature field base64 decode failed: {e}"),
+            })?;
+    let sig_array: [u8; 64] =
+        sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| SigError::SidecarField {
+                sig_path: sig_path.clone(),
+                reason: format!("signature must be 64 bytes (got {})", sig_bytes.len()),
+            })?;
     let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
 
     if verifying
         .verify_strict(recomputed.as_bytes(), &signature)
         .is_err()
     {
-        eprintln!("error: SIGNATURE_INVALID");
-        std::process::exit(2);
+        return Err(SigError::Invalid);
     }
 
-    eprintln!(
-        "OK: signature valid (pubkey fingerprint {})",
-        pubkey_fingerprint(&pubkey_bytes)
-    );
-    Ok(())
+    Ok(VerifiedSignature {
+        pubkey_fingerprint: pubkey_fingerprint(&pubkey_bytes),
+    })
+}
+
+fn cmd_verify_sig(
+    cassette: &std::path::Path,
+    pubkey_path: &std::path::Path,
+    sig: Option<std::path::PathBuf>,
+) -> Result<()> {
+    match verify_sig_inner(cassette, pubkey_path, sig.as_deref()) {
+        Ok(v) => {
+            eprintln!(
+                "OK: signature valid (pubkey fingerprint {})",
+                v.pubkey_fingerprint
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // Stderr lines preserved byte-for-byte from Phase 1 so
+            // the existing sign_phase1.rs integration suite keeps
+            // passing verbatim.
+            match &e {
+                SigError::SidecarMissing { sig_path, reason } => {
+                    eprintln!("error: read {}: {reason}", sig_path.display());
+                }
+                SigError::SidecarParse { sig_path, reason } => {
+                    eprintln!("error: parse {}: {reason}", sig_path.display());
+                }
+                SigError::SidecarField { sig_path, reason } => {
+                    eprintln!("error: {}: {reason}", sig_path.display());
+                }
+                SigError::DigestMismatch => {
+                    eprintln!("error: SIGNATURE_DIGEST_MISMATCH (cassette modified after signing)");
+                }
+                SigError::PubkeyMismatch => {
+                    eprintln!("error: SIGNATURE_PUBKEY_MISMATCH (signed by a different key)");
+                }
+                SigError::Invalid => {
+                    eprintln!("error: SIGNATURE_INVALID");
+                }
+                SigError::Other(s) => {
+                    eprintln!("error: {s}");
+                }
+            }
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(test)]
