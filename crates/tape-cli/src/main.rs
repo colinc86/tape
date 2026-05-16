@@ -576,6 +576,32 @@ enum Cmd {
         #[arg(short = 'o', long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Export a cassette as an HTTP test fixture. Phase 1 of issue
+    /// #102 carved per #217: ONE format (`vcr` — Ruby VCR YAML),
+    /// projects `Kind::ModelCall` tracks into VCR `http_interactions[]`
+    /// entries. Other `Kind`s are silently ignored.
+    ///
+    /// Out of scope for Phase 1 (deferred to #102 Phase 2-4):
+    /// `--format polly|httpretty|jsonl` (recognized but unimplemented
+    /// — exit 2 with a "see #102" diagnostic), `--filter-host` /
+    /// `--rewrite-host`, `--strip-header` / `--strip-auth`,
+    /// `--preserve-headers`, `mcp_call` → fixture mapping, per-host
+    /// cassette splitting, second redaction pass.
+    ToFixture {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Output format. Phase 1 only accepts `vcr`. Other names
+        /// (`polly`, `httpretty`, `jsonl`) are recognized but return
+        /// exit 2 with a Phase-1 message — better diagnostic than
+        /// clap's generic "invalid value".
+        #[arg(short = 'f', long)]
+        format: String,
+        /// Output path. Absent: write to stdout. Present: write the
+        /// rendered fixture to the file (parent dirs created as
+        /// needed).
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -706,6 +732,11 @@ fn main() -> Result<()> {
             max_output_chars,
         } => cmd_compact(&file, output, max_output_chars),
         Cmd::Merge { a, b, output } => cmd_merge(&a, &b, output),
+        Cmd::ToFixture {
+            file,
+            format,
+            output,
+        } => cmd_to_fixture(&file, &format, output),
     }
 }
 
@@ -6044,5 +6075,462 @@ mod merge_tests {
         let r3 = merge_two(&a3, &b3).unwrap();
         assert!(r3.pending.redactions_json.is_none());
         assert!(!r3.redactions_both_warning);
+    }
+}
+// =====================================================================
+// `tape to-fixture` — Phase 1 of issue #102 / #217.
+//
+// Export a cassette as an HTTP test fixture. Phase 1 ships one format
+// (`vcr` — Ruby VCR YAML cassette shape). Projects `Kind::ModelCall`
+// tracks into `http_interactions[]` entries; all other Kinds are
+// silently ignored. Out of scope: polly/httpretty/jsonl formats,
+// `mcp_call` mapping, header preservation, host filters.
+//
+// Vendor → upstream + recorded path table is mirrored inline from
+// `crates/tape-record/src/proxy/common.rs` (lines 48/58 at the time
+// of writing). Per ticket Out-of-band: do NOT take a runtime dep on
+// `tape-record` for this — five-line static table.
+// =====================================================================
+
+/// Vendor → (upstream URL, recorded path) for URI reconstruction.
+/// Mirrors `crates/tape-record/src/proxy/common.rs:48` (Anthropic)
+/// and `:58` (`OpenAI`). New vendors land both there and here.
+const VENDOR_URIS: &[(&str, &str)] = &[
+    ("anthropic", "https://api.anthropic.com/v1/messages"),
+    ("openai", "https://api.openai.com/v1/chat/completions"),
+];
+
+#[derive(serde::Serialize)]
+struct VcrCassette {
+    http_interactions: Vec<VcrInteraction>,
+    recorded_with: String,
+}
+
+#[derive(serde::Serialize)]
+struct VcrInteraction {
+    request: VcrRequest,
+    response: VcrResponse,
+    http_version: String,
+    recorded_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct VcrRequest {
+    method: String,
+    uri: String,
+    body: VcrBody,
+    headers: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(serde::Serialize)]
+struct VcrResponse {
+    status: VcrStatus,
+    headers: std::collections::BTreeMap<String, Vec<String>>,
+    body: VcrBody,
+}
+
+#[derive(serde::Serialize)]
+struct VcrStatus {
+    code: u16,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct VcrBody {
+    encoding: String,
+    string: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct VcrSkipReport {
+    unknown_vendor_count: usize,
+    unknown_vendor_names: std::collections::BTreeSet<String>,
+}
+
+/// Synthesize the minimal `{"Content-Type": ["application/json"]}`
+/// header map both request and response carry. Recorder drops the
+/// original headers at `crates/tape-record/src/proxy/common.rs:154`,
+/// so Phase 1 hard-codes JSON content-type for VCR-reader
+/// compatibility.
+fn json_headers() -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "Content-Type".to_owned(),
+        vec!["application/json".to_owned()],
+    );
+    m
+}
+
+/// Look up the vendor's HTTP target URL. Returns `None` for unknown
+/// vendors — the caller is expected to skip + count those tracks.
+fn vendor_uri(vendor: &str) -> Option<&'static str> {
+    VENDOR_URIS
+        .iter()
+        .find_map(|(v, uri)| (*v == vendor).then_some(*uri))
+}
+
+/// Walk a `Vec<Track>` and project each `Kind::ModelCall` into a VCR
+/// `http_interactions` entry. Tracks of other kinds are silently
+/// ignored. Tracks with an unknown vendor are skipped and counted.
+fn to_vcr_cassette(tracks: &[tape_format::tracks::Track]) -> (VcrCassette, VcrSkipReport) {
+    let mut interactions = Vec::new();
+    let mut skip = VcrSkipReport::default();
+
+    for t in tracks {
+        if t.kind != tape_format::tracks::Kind::ModelCall {
+            continue;
+        }
+        let vendor = t
+            .payload
+            .get("vendor")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let Some(uri) = vendor_uri(vendor) else {
+            skip.unknown_vendor_count += 1;
+            skip.unknown_vendor_names.insert(vendor.to_owned());
+            continue;
+        };
+        // Request body: re-serialize the recorded `payload.request`.
+        let req_body = t
+            .payload
+            .get("request")
+            .map_or_else(|| "null".to_owned(), serde_json::Value::to_string);
+        // Response body: re-serialize the recorded `payload.response`.
+        let resp_body = t
+            .payload
+            .get("response")
+            .map_or_else(|| "null".to_owned(), serde_json::Value::to_string);
+        // Status: default to 200 if absent (older cassettes may not
+        // carry status_code — SPEC §5.5.2 doesn't strictly require it).
+        let status_code = t
+            .payload
+            .get("status_code")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u16::try_from(n).ok())
+            .unwrap_or(200);
+        let status_msg = http::StatusCode::from_u16(status_code)
+            .ok()
+            .and_then(|s| s.canonical_reason())
+            .unwrap_or("OK")
+            .to_owned();
+
+        interactions.push(VcrInteraction {
+            request: VcrRequest {
+                method: "POST".to_owned(),
+                uri: uri.to_owned(),
+                body: VcrBody {
+                    encoding: "UTF-8".to_owned(),
+                    string: req_body,
+                },
+                headers: json_headers(),
+            },
+            response: VcrResponse {
+                status: VcrStatus {
+                    code: status_code,
+                    message: status_msg,
+                },
+                headers: json_headers(),
+                body: VcrBody {
+                    encoding: "UTF-8".to_owned(),
+                    string: resp_body,
+                },
+            },
+            http_version: "1.1".to_owned(),
+            recorded_at: t.ts.clone(),
+        });
+    }
+
+    let cassette = VcrCassette {
+        http_interactions: interactions,
+        recorded_with: "VCR 6.2.0".to_owned(),
+    };
+    (cassette, skip)
+}
+
+/// Render the final VCR YAML, prepending a comment if any tracks
+/// were skipped. `serde_yaml` doesn't emit free comments, so the
+/// comment is hand-prepended after serialization.
+fn render_vcr_yaml(cassette: &VcrCassette, skip: &VcrSkipReport) -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+    let yaml = serde_yaml::to_string(cassette)
+        .map_err(|e| anyhow::anyhow!("serialize VCR cassette: {e}"))?;
+    let mut out = String::new();
+    if skip.unknown_vendor_count > 0 {
+        let names: Vec<&str> = skip
+            .unknown_vendor_names
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let _ = writeln!(
+            &mut out,
+            "# tape to-fixture: skipped {} tracks with unknown vendor: {}",
+            skip.unknown_vendor_count,
+            names.join(", ")
+        );
+    }
+    out.push_str(&yaml);
+    Ok(out)
+}
+
+/// `tape to-fixture <FILE> --format <fmt> [--output <path>]` —
+/// Phase 1 of #102.
+fn cmd_to_fixture(
+    file: &std::path::Path,
+    format: &str,
+    output: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // 1. Format dispatch. Phase 1 accepts only `vcr`. The other three
+    //    names are recognized-but-unimplemented (better diagnostic
+    //    than clap's generic "invalid value"). Anything else gets the
+    //    list-of-known-formats message.
+    match format {
+        "vcr" => {} // proceed
+        "polly" | "httpretty" | "jsonl" => {
+            eprintln!(
+                "tape to-fixture: --format {format} is recognized but not yet implemented in Phase 1; see #102"
+            );
+            std::process::exit(2);
+        }
+        other => {
+            eprintln!(
+                "tape to-fixture: unknown --format `{other}`. Phase 1 supports: vcr. \
+                 Recognized-but-unimplemented (see #102): polly, httpretty, jsonl."
+            );
+            std::process::exit(2);
+        }
+    }
+
+    // 2. Open + parse the input cassette. Read-only — no write path.
+    let raw = open_input(file, "tape to-fixture");
+    let tracks = match raw.tracks_jsonl.as_deref() {
+        Some(jsonl) => match tape_format::tracks::parse_jsonl(jsonl) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("tape to-fixture: tracks.jsonl parse failed: {e}");
+                std::process::exit(3);
+            }
+        },
+        None => Vec::new(),
+    };
+
+    // 3. Project into VCR shape + render YAML (with skip comment if
+    //    any tracks were skipped).
+    let (cassette, skip) = to_vcr_cassette(&tracks);
+    let yaml = render_vcr_yaml(&cassette, &skip)?;
+
+    // 4. Emit.
+    if let Some(out_path) = output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+            }
+        }
+        std::fs::write(&out_path, yaml.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+        eprintln!("tape to-fixture: wrote {}", out_path.display());
+    } else {
+        use std::io::Write as _;
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        h.write_all(yaml.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write stdout: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod to_fixture_tests {
+    use super::*;
+    use serde_json::json;
+    use tape_format::tracks::{Kind, Track};
+
+    fn model_call_track(
+        step: u64,
+        vendor: &str,
+        status: u16,
+        request: serde_json::Value,
+        response: serde_json::Value,
+    ) -> Track {
+        Track {
+            step,
+            kind: Kind::ModelCall,
+            ts: "2026-05-16T00:00:00Z".into(),
+            payload: json!({
+                "vendor": vendor,
+                "model": "test-model",
+                "request": request,
+                "response": response,
+                "status_code": status,
+            }),
+            parent_step: None,
+            refs: Vec::new(),
+            annotations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn anthropic_200_projects_to_single_interaction() {
+        let tracks = vec![model_call_track(
+            1,
+            "anthropic",
+            200,
+            json!({"messages": [{"role": "user", "content": "hi"}]}),
+            json!({"content": [{"type": "text", "text": "hello"}]}),
+        )];
+        let (cassette, skip) = to_vcr_cassette(&tracks);
+        assert_eq!(skip.unknown_vendor_count, 0);
+        assert_eq!(cassette.http_interactions.len(), 1);
+        let i = &cassette.http_interactions[0];
+        assert_eq!(i.request.method, "POST");
+        assert_eq!(i.request.uri, "https://api.anthropic.com/v1/messages");
+        assert_eq!(i.response.status.code, 200);
+        assert_eq!(i.response.status.message, "OK");
+        assert_eq!(i.http_version, "1.1");
+        assert_eq!(i.recorded_at, "2026-05-16T00:00:00Z");
+        // Body string is the re-serialized JSON value.
+        assert!(i.request.body.string.contains("messages"));
+        assert!(i.response.body.string.contains("hello"));
+    }
+
+    #[test]
+    fn openai_404_reports_canonical_status_message() {
+        let tracks = vec![model_call_track(
+            1,
+            "openai",
+            404,
+            json!({"model": "missing"}),
+            json!({"error": {"message": "not found"}}),
+        )];
+        let (cassette, _) = to_vcr_cassette(&tracks);
+        let i = &cassette.http_interactions[0];
+        assert_eq!(i.response.status.code, 404);
+        assert_eq!(i.response.status.message, "Not Found");
+        assert_eq!(i.request.uri, "https://api.openai.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn unknown_vendor_track_is_skipped_and_counted() {
+        let tracks = vec![
+            model_call_track(1, "anthropic", 200, json!({}), json!({})),
+            model_call_track(2, "google", 200, json!({}), json!({})),
+            model_call_track(3, "google", 200, json!({}), json!({})),
+            model_call_track(4, "mistral", 200, json!({}), json!({})),
+        ];
+        let (cassette, skip) = to_vcr_cassette(&tracks);
+        assert_eq!(cassette.http_interactions.len(), 1, "only anthropic kept");
+        assert_eq!(skip.unknown_vendor_count, 3);
+        assert!(skip.unknown_vendor_names.contains("google"));
+        assert!(skip.unknown_vendor_names.contains("mistral"));
+    }
+
+    #[test]
+    fn non_model_call_kinds_are_silently_ignored() {
+        let other_kinds = vec![
+            Track {
+                step: 1,
+                kind: Kind::Task,
+                ts: "2026-05-16T00:00:00Z".into(),
+                payload: json!({"prompt": "x"}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+            Track {
+                step: 2,
+                kind: Kind::Shell,
+                ts: "2026-05-16T00:00:01Z".into(),
+                payload: json!({"cmd": "ls"}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+            Track {
+                step: 3,
+                kind: Kind::McpCall,
+                ts: "2026-05-16T00:00:02Z".into(),
+                payload: json!({"server": "db", "tool": "query"}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+            Track {
+                step: 4,
+                kind: Kind::Eject,
+                ts: "2026-05-16T00:00:03Z".into(),
+                payload: json!({"outcome": "success"}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+        ];
+        let (cassette, skip) = to_vcr_cassette(&other_kinds);
+        assert!(cassette.http_interactions.is_empty());
+        assert_eq!(skip.unknown_vendor_count, 0);
+    }
+
+    #[test]
+    fn missing_status_code_defaults_to_200() {
+        let mut t = model_call_track(1, "anthropic", 200, json!({}), json!({}));
+        // Remove the status_code key.
+        t.payload.as_object_mut().unwrap().remove("status_code");
+        let (cassette, _) = to_vcr_cassette(&[t]);
+        assert_eq!(cassette.http_interactions[0].response.status.code, 200);
+    }
+
+    #[test]
+    fn render_yaml_round_trips_via_serde_yaml_parser() {
+        let tracks = vec![
+            model_call_track(1, "anthropic", 200, json!({"a": 1}), json!({"b": 2})),
+            model_call_track(2, "openai", 200, json!({"c": 3}), json!({"d": 4})),
+        ];
+        let (cassette, skip) = to_vcr_cassette(&tracks);
+        let yaml = render_vcr_yaml(&cassette, &skip).unwrap();
+        // No skip comment expected for this fixture.
+        assert!(!yaml.starts_with("# tape to-fixture: skipped"));
+        // Round-trip through serde_yaml.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("YAML parses back");
+        let interactions = parsed
+            .get("http_interactions")
+            .and_then(|v| v.as_sequence())
+            .expect("http_interactions sequence");
+        assert_eq!(interactions.len(), 2);
+        assert_eq!(
+            parsed.get("recorded_with").and_then(|v| v.as_str()),
+            Some("VCR 6.2.0")
+        );
+    }
+
+    #[test]
+    fn render_yaml_prepends_skip_comment_when_unknown_vendors_seen() {
+        let tracks = vec![
+            model_call_track(1, "google", 200, json!({}), json!({})),
+            model_call_track(2, "mistral", 200, json!({}), json!({})),
+        ];
+        let (cassette, skip) = to_vcr_cassette(&tracks);
+        let yaml = render_vcr_yaml(&cassette, &skip).unwrap();
+        assert!(
+            yaml.starts_with("# tape to-fixture: skipped 2"),
+            "yaml: {yaml}"
+        );
+        assert!(yaml.contains("google"));
+        assert!(yaml.contains("mistral"));
+        // YAML body after the comment still parses.
+        let _: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("post-comment YAML parses");
+    }
+
+    #[test]
+    fn vendor_uri_table_lookups_match_proxy_common() {
+        // Sanity check the inline table mirrors the recorder's table.
+        assert_eq!(
+            vendor_uri("anthropic"),
+            Some("https://api.anthropic.com/v1/messages")
+        );
+        assert_eq!(
+            vendor_uri("openai"),
+            Some("https://api.openai.com/v1/chat/completions")
+        );
+        assert_eq!(vendor_uri("unknown"), None);
+        assert_eq!(vendor_uri(""), None);
     }
 }
