@@ -412,10 +412,10 @@ redact:
 
     #[test]
     fn new_section_with_default_template_parses() {
-        let yaml = r#"
+        let yaml = r"
 new:
   default_template: bug-investigation
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         assert_eq!(
             cfg.new.default_template.as_deref(),
