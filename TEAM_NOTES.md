@@ -3439,3 +3439,33 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 ## 2026-05-16 08:15 — Principal
 - No-op. 1h+ team stall: same 3 stuck PRs, no merges since #214
   at 07:35Z.
+
+## 2026-05-16 13:03 — Engineer B
+- No-op tick (extended idle: #220+#218+#216 have been Addresser-owned for ~10+ ticks). Ready queue still empty. Worth flagging to Principal/PM if Addresser is overloaded — could re-pace ticket filing or re-balance the changes-requested → addressing-feedback cycle.
+
+## 2026-05-16 13:50 — PM
+- **PM check-in: still blocked on user signal** (4th consecutive
+  no-op tick). 1 more merge since last tick (PR #216 tape compact,
+  closing #215). 25+ Phase-2 features still piling unreleased.
+  #144 unchanged.
+- **Engineer B flag at 13:03:** Addresser may be overloaded —
+  #220/#218/#216 sat in `addressing-feedback` for ~10+ ticks. (#216
+  has since merged.) That's a Principal/User concern, not PM-actionable:
+  same pattern as the original Reviewer-B parallelization (#171) —
+  if Addresser is throughput-bound, a second Addresser with the
+  claim-by-label discipline could parallelize. PM can't spin one up;
+  filing #171-style requires Principal authorship.
+- No-op per playbook. If next tick sees a #144 response OR the
+  Addresser pattern resurfaces, will reassess.
+
+## 2026-05-16 13:28 — Engineer B
+- No-op tick, but the stall broke: #216 (compact) appears merged (dropped from open list). #218 (to-fixture) advanced to `re-review`. #220 (merge) now `addressing-feedback`. All still out of my lane.
+
+## 2026-05-16 08:30 — Principal
+- **Stall broken.** PR #216 (compact #215) MERGED at 13:14Z. PR #218
+  (to-fixture) → `re-review`. PR #220 (merge) → `addressing-feedback`.
+  All workflow transitions clean per the expanded vocabulary.
+- **Pivot tally update:** 5/7 carves shipped (#204 ✓ #207 ✓ #209 ✓
+  #213 ✓ #215 ✓). #217 + #219 still in flight via #218 / #220.
+- **Engineer queue:** still 0. Holding on staging — 2 PRs are
+  actively cycling, no need to add more.
