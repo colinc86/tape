@@ -452,6 +452,24 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Synthesize a release-notes Markdown block from the `meta.recap`
+    /// fields of one or more cassettes. Phase 1 of issue #103 carved
+    /// per #207.
+    ///
+    /// Reads `meta.recap` from each input (fail-fast if any cassette
+    /// is missing one — run `tape recap --auto <file>` first). Builds
+    /// one consolidated prompt, invokes the configured judge model
+    /// (`.taperc::judge:`), and prints the rendered Markdown to
+    /// stdout. No mutation of input cassettes, no `meta.changelogs[]`
+    /// audit, no `--audience` / `--out` / `--groupby` flags this
+    /// slice — those land in Phase 2+.
+    Changelog {
+        /// One or more `.tape` files. All must have `meta.recap` set
+        /// (use `tape recap --set <text>` or `tape recap --auto`
+        /// first).
+        #[arg(required = true)]
+        files: Vec<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -573,6 +591,7 @@ fn main() -> Result<()> {
             template,
         } => cmd_relinernote(&file, model, dry_run, out, &template),
         Cmd::Anon { file, out } => cmd_anon(&file, out),
+        Cmd::Changelog { files } => cmd_changelog(&files),
     }
 }
 
@@ -3843,6 +3862,306 @@ fn cmd_anon(file: &std::path::Path, out: Option<std::path::PathBuf>) -> Result<(
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
+        }
+    }
+}
+
+/// `tape changelog <FILE>...` — Phase 1 of issue #103 / #207.
+///
+/// Reads `meta.recap` from each input cassette and synthesizes a
+/// release-notes Markdown block via the configured judge model. Hard-
+/// fails (exit 2) when any input lacks a recap — the engineer is
+/// expected to run `tape recap` first; the Phase-1 surface deliberately
+/// does NOT call `tape recap --auto` itself (Phase 2+ scope).
+///
+/// Exit-code discipline (per ticket §"Diagnostic codes"):
+/// - `CHANGELOG_NO_INPUT` (exit 2) — clap's `required = true` on the
+///   positional handles zero args before we reach here, so this code
+///   is reserved for the "called with a non-existent file slot"
+///   degenerate case.
+/// - `CHANGELOG_MISSING_RECAP` (exit 2) — at least one cassette has
+///   `meta.recap == None`. The diagnostic names the offending path.
+/// - `CHANGELOG_JUDGE_FAILED` (exit 2) — config-load, runtime build,
+///   or non-`Rejected` judge call failure. Mirrors `RECAP_AUTO_CONFIG`.
+/// - `CHANGELOG_LEAK` (exit 6) — `JudgeClient::complete` returned
+///   `JudgeError::Rejected(hit)` (the client's defense-in-depth
+///   scanner flagged a prompt-injection-shaped output).
+fn cmd_changelog(files: &[std::path::PathBuf]) -> Result<()> {
+    if files.is_empty() {
+        // Belt-and-braces — clap's `required = true` on the positional
+        // already surfaces a usage error before we get here, but keep
+        // the explicit code path so a future refactor can't silently
+        // collapse it.
+        eprintln!("tape changelog: CHANGELOG_NO_INPUT — at least one .tape file is required");
+        std::process::exit(2);
+    }
+
+    // 1. Read every cassette + project to (task, outcome, created_at, recap).
+    //    Hard-fail with CHANGELOG_MISSING_RECAP on the first cassette
+    //    without a recap. Naming the OFFENDING path (not just "some
+    //    cassette") is what makes the diagnostic actionable.
+    let projections = project_cassettes(files);
+
+    // 2. Build the consolidated prompt up front so a config-load
+    //    failure doesn't drop work-in-progress.
+    let prompt = render_changelog_prompt(&projections);
+
+    // 3. Load `.taperc::judge:`. Uses the same locator the simpler
+    //    `load_judge_config` exposes — Phase 1 has no per-tool
+    //    sub-section, so there's nothing to layer over `judge.model`.
+    let config = match load_judge_config_for_changelog() {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("tape changelog: CHANGELOG_JUDGE_FAILED — {msg}");
+            std::process::exit(2);
+        }
+    };
+
+    // 4. Fresh tokio runtime per invocation (matches the existing
+    //    tape-judge consumer pattern at `run_recap_auto`).
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tape changelog: CHANGELOG_JUDGE_FAILED — build tokio runtime: {e}");
+            std::process::exit(2);
+        }
+    };
+    let result = rt.block_on(async move {
+        let client = tape_judge::JudgeClient::new(config)?;
+        client
+            .complete(&prompt, tape_judge::JudgeOpts::default())
+            .await
+    });
+
+    // 5. Map `JudgeError` → exit codes per ticket §"Diagnostic codes".
+    //    Defense-in-depth gate: `Rejected(hit)` exits 6 BEFORE any
+    //    bytes hit stdout — the client did the scan; surfacing the
+    //    rejection is the Phase-1 gate (ticket §"Defense-in-depth").
+    let out = match result {
+        Ok(o) => o,
+        Err(tape_judge::JudgeError::Rejected(hit)) => {
+            eprintln!(
+                "tape changelog: CHANGELOG_LEAK — judge output rejected by defense-in-depth: {}",
+                hit.rule_id
+            );
+            std::process::exit(6);
+        }
+        Err(e) => {
+            eprintln!("tape changelog: CHANGELOG_JUDGE_FAILED — judge call failed: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // 6. Print to stdout. No `--out` flag in Phase 1 — pipe to a file
+    //    if you want to save it (`tape changelog *.tape > RELEASE.md`).
+    println!("{}", out.text.trim_end());
+    Ok(())
+}
+
+/// Minimal projection of the bits `tape changelog` Phase 1 reads from
+/// each input cassette. Recap is the load-bearing field; the others
+/// give the model temporal + outcome context per #103 §3.4 (Phase 1
+/// uses the minimal projection; the richer signal lands when extra
+/// templates need it).
+struct ChangelogProjection {
+    path: std::path::PathBuf,
+    task: String,
+    outcome: tape_format::meta::Outcome,
+    created_at: String,
+    recap: String,
+}
+
+fn project_cassettes(files: &[std::path::PathBuf]) -> Vec<ChangelogProjection> {
+    let mut out = Vec::with_capacity(files.len());
+    for path in files {
+        let raw = open_input(path, "tape changelog");
+        let meta = parse_meta(&raw, "tape changelog");
+        let Some(recap) = meta.recap.clone() else {
+            eprintln!(
+                "tape changelog: CHANGELOG_MISSING_RECAP — cassette {} has no meta.recap; \
+                 run 'tape recap --auto {}' first",
+                path.display(),
+                path.display()
+            );
+            std::process::exit(2);
+        };
+        out.push(ChangelogProjection {
+            path: path.clone(),
+            task: meta.task,
+            outcome: meta.outcome,
+            created_at: meta.created_at,
+            recap,
+        });
+    }
+    out
+}
+
+/// Hardcoded Phase-1 release-notes prompt. Instruction block first
+/// (so an oversized projection can't push the spec out of the model's
+/// effective context), then per-cassette stanza. Mirrors the
+/// `render_recap_prompt` style; differs in that the audience here is
+/// a release-notes consumer rather than a Slack/PR-description reader.
+fn render_changelog_prompt(projections: &[ChangelogProjection]) -> String {
+    use std::fmt::Write as _;
+
+    let n = projections.len();
+    let mut s = String::with_capacity(2048 + n * 256);
+    s.push_str(
+        "You are synthesising release notes from a series of recorded \
+         AI-agent investigations. Output a single Markdown block under \
+         a top-level `## Release notes` heading.\n\n\
+         Hard constraints:\n\
+         - Plain GitHub-flavored Markdown. No HTML, no embedded code \
+         fences around the whole thing.\n\
+         - Group entries by outcome when the inputs are mixed (a \
+         `### Shipped` section for successes, `### In progress` for \
+         abandoned, `### Investigated but not resolved` for failures). \
+         Skip the empty subsections.\n\
+         - Each entry is one bullet point summarising what changed, \
+         framed for a release-notes audience. Quote the task verbatim \
+         only when the recap is opaque without it.\n\
+         - Be concrete. Name user-visible outcomes (\"ships PR #142\"), \
+         not meta descriptions of the recording (\"the agent \
+         investigated\").\n\
+         - Do not include any secrets, API keys, emails, or PII. If \
+         the source mentions them, refer abstractly.\n\
+         - Do not invent details the recaps don't support.\n\n",
+    );
+    let _ = writeln!(s, "Cassettes summarised: {n}");
+    s.push('\n');
+    for (i, p) in projections.iter().enumerate() {
+        let outcome = match p.outcome {
+            tape_format::meta::Outcome::Success => "success",
+            tape_format::meta::Outcome::Failure => "failure",
+            tape_format::meta::Outcome::Abandoned => "abandoned",
+            tape_format::meta::Outcome::Unknown => "unknown",
+        };
+        let _ = writeln!(s, "--- Cassette {} of {n} ---", i + 1);
+        let _ = writeln!(s, "Path: {}", p.path.display());
+        let _ = writeln!(s, "Task: {}", p.task);
+        let _ = writeln!(s, "Outcome: {outcome}");
+        let _ = writeln!(s, "Created: {}", p.created_at);
+        let _ = writeln!(s, "Recap: {}", p.recap);
+        s.push('\n');
+    }
+    s
+}
+
+/// Locate `.taperc` (workspace first, user-level fallback), parse the
+/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`].
+/// Mirrors `load_judge_config_for_recap` shape exactly — kept as a
+/// separate function so the diagnostic strings name the right command
+/// (`tape changelog: CHANGELOG_JUDGE_FAILED` not
+/// `tape recap: RECAP_AUTO_CONFIG`).
+fn load_judge_config_for_changelog() -> std::result::Result<tape_judge::JudgeConfig, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user);
+    let Some(p) = path else {
+        return Err(".taperc not found (looked in workspace and $HOME); \
+             needed to know the judge model + endpoint"
+            .into());
+    };
+    let yaml = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+    let cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+        .map_err(|e| format!("parse {}: {e}", p.display()))?
+        .ok_or_else(|| {
+            format!(
+                "{}: no `judge:` block; add one (model + api_key_env) and re-run",
+                p.display()
+            )
+        })?;
+    Ok(cfg)
+}
+
+#[cfg(test)]
+mod changelog_tests {
+    use super::*;
+
+    /// Snapshot the rendered prompt for a fixed two-cassette fixture
+    /// pair. Per ticket AC: "a refactor can't silently change the
+    /// prompt shape." Uses literal-string compare rather than `insta`
+    /// (no insta snapshot directory exists for this crate today;
+    /// keeps the dep surface unchanged).
+    #[test]
+    fn render_changelog_prompt_two_cassette_snapshot() {
+        let projections = vec![
+            ChangelogProjection {
+                path: std::path::PathBuf::from("cassette-a.tape"),
+                task: "Investigate payment failures for customer 4471".into(),
+                outcome: tape_format::meta::Outcome::Success,
+                created_at: "2026-05-15T10:00:00Z".into(),
+                recap: "Race condition in process_refund() — repro lands in PR #142.".into(),
+            },
+            ChangelogProjection {
+                path: std::path::PathBuf::from("cassette-b.tape"),
+                task: "Look into stale metrics on dashboard".into(),
+                outcome: tape_format::meta::Outcome::Abandoned,
+                created_at: "2026-05-15T14:30:00Z".into(),
+                recap: "Root cause unclear; needs Grafana access we don't have.".into(),
+            },
+        ];
+        let prompt = render_changelog_prompt(&projections);
+
+        // Shape assertions — refactor-resilient but still pinning the
+        // load-bearing pieces.
+        assert!(prompt.starts_with("You are synthesising release notes"));
+        assert!(prompt.contains("## Release notes"));
+        assert!(prompt.contains("Cassettes summarised: 2"));
+        assert!(prompt.contains("--- Cassette 1 of 2 ---"));
+        assert!(prompt.contains("--- Cassette 2 of 2 ---"));
+        assert!(prompt.contains("Path: cassette-a.tape"));
+        assert!(prompt.contains("Path: cassette-b.tape"));
+        assert!(prompt.contains("Task: Investigate payment failures for customer 4471"));
+        assert!(prompt.contains("Task: Look into stale metrics on dashboard"));
+        assert!(prompt.contains("Outcome: success"));
+        assert!(prompt.contains("Outcome: abandoned"));
+        assert!(prompt.contains("Recap: Race condition in process_refund()"));
+        assert!(prompt.contains("Recap: Root cause unclear"));
+        // Constraint block intact.
+        assert!(prompt.contains("Group entries by outcome"));
+        assert!(prompt.contains("Do not include any secrets"));
+    }
+
+    #[test]
+    fn render_changelog_prompt_handles_single_cassette() {
+        let projections = vec![ChangelogProjection {
+            path: std::path::PathBuf::from("only.tape"),
+            task: "x".into(),
+            outcome: tape_format::meta::Outcome::Failure,
+            created_at: "2026-05-15T00:00:00Z".into(),
+            recap: "didn't ship.".into(),
+        }];
+        let prompt = render_changelog_prompt(&projections);
+        assert!(prompt.contains("Cassettes summarised: 1"));
+        assert!(prompt.contains("--- Cassette 1 of 1 ---"));
+        assert!(prompt.contains("Outcome: failure"));
+    }
+
+    #[test]
+    fn render_changelog_prompt_renders_outcomes_consistently() {
+        // Spot-check each Outcome variant maps to the expected token.
+        for (variant, expected) in [
+            (tape_format::meta::Outcome::Success, "success"),
+            (tape_format::meta::Outcome::Failure, "failure"),
+            (tape_format::meta::Outcome::Abandoned, "abandoned"),
+            (tape_format::meta::Outcome::Unknown, "unknown"),
+        ] {
+            let projections = vec![ChangelogProjection {
+                path: std::path::PathBuf::from("x.tape"),
+                task: "t".into(),
+                outcome: variant,
+                created_at: "2026-05-15T00:00:00Z".into(),
+                recap: "r.".into(),
+            }];
+            let prompt = render_changelog_prompt(&projections);
+            assert!(
+                prompt.contains(&format!("Outcome: {expected}")),
+                "outcome {expected} missing in: {prompt}"
+            );
         }
     }
 }
