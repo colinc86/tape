@@ -92,6 +92,10 @@ hmac = "0.12"
 ed25519-dalek = "2"
 base64 = "0.22"
 
+# Encrypt (#238 Phase 1)
+age = "0.10"
+rpassword = "7"
+
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }
 tempfile = "3"
