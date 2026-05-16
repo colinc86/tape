@@ -470,6 +470,24 @@ enum Cmd {
         #[arg(required = true)]
         files: Vec<std::path::PathBuf>,
     },
+    /// Convert a cassette into OpenTelemetry traces (OTLP/JSON). Phase
+    /// 1 of issue #88 carved per #209: one span per track, flat walk,
+    /// hand-rolled OTLP/JSON struct (no `opentelemetry` crate dep).
+    ///
+    /// Out of scope for Phase 1 (deferred to #88 Phase 2+): protobuf /
+    /// gRPC push, `--endpoint` / `--headers`, env-var fallbacks,
+    /// `--trace-id` override, `--include-kind` / `--exclude-kind` /
+    /// `--max-tracks`, semconv attribute renaming, defense-in-depth
+    /// re-scan, annotations-as-events policy, formats other than
+    /// OTLP/JSON.
+    ToOtlp {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Output path. Default: write to stdout. Refuses if equal to
+        /// the input path. Parent directories are created as needed.
+        #[arg(short = 'o', long)]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -592,6 +610,7 @@ fn main() -> Result<()> {
         } => cmd_relinernote(&file, model, dry_run, out, &template),
         Cmd::Anon { file, out } => cmd_anon(&file, out),
         Cmd::Changelog { files } => cmd_changelog(&files),
+        Cmd::ToOtlp { file, output } => cmd_to_otlp(&file, output),
     }
 }
 
@@ -4163,5 +4182,574 @@ mod changelog_tests {
                 "outcome {expected} missing in: {prompt}"
             );
         }
+    }
+}
+
+// =====================================================================
+// `tape to-otlp` — Phase 1 of issue #88 / #209.
+//
+// Pure data-shape transform: read a `.tape`, emit OpenTelemetry traces
+// as OTLP/JSON to stdout (or --output). One span per track, flat walk.
+// Out of scope for Phase 1: protobuf, gRPC, --endpoint, --include-kind /
+// --exclude-kind / --max-tracks / --trace-id / semconv renaming /
+// defense-in-depth re-scan / annotations-as-events / any format other
+// than OTLP/JSON. See #88 for the full vision; this slice ships the
+// load-bearing engine shape with the minimum surface.
+//
+// OTLP/JSON spec reference: https://opentelemetry.io/docs/specs/otlp/
+// Hand-rolled via serde (per non-goal: no `opentelemetry` crate dep).
+// =====================================================================
+
+/// 4096-byte truncation cap per #88 §3.5. Attributes longer than this
+/// get truncated with a sibling `<key>.truncated = true` co-attribute.
+const OTLP_ATTRIBUTE_MAX_BYTES: usize = 4096;
+
+#[derive(serde::Serialize)]
+struct OtlpExport {
+    #[serde(rename = "resourceSpans")]
+    resource_spans: Vec<OtlpResourceSpans>,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpResourceSpans {
+    resource: OtlpResource,
+    #[serde(rename = "scopeSpans")]
+    scope_spans: Vec<OtlpScopeSpans>,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpResource {
+    attributes: Vec<OtlpAttribute>,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpScopeSpans {
+    scope: OtlpScope,
+    spans: Vec<OtlpSpan>,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpScope {
+    name: String,
+    version: String,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpSpan {
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    #[serde(rename = "spanId")]
+    span_id: String,
+    #[serde(rename = "parentSpanId", skip_serializing_if = "Option::is_none")]
+    parent_span_id: Option<String>,
+    name: String,
+    /// `SPAN_KIND_INTERNAL` for every Phase-1 span — Phase 2+ may
+    /// distinguish CLIENT (model_call) / SERVER (mcp_call) / etc.
+    kind: u32,
+    #[serde(rename = "startTimeUnixNano")]
+    start_time_unix_nano: String,
+    #[serde(rename = "endTimeUnixNano")]
+    end_time_unix_nano: String,
+    attributes: Vec<OtlpAttribute>,
+}
+
+#[derive(serde::Serialize)]
+struct OtlpAttribute {
+    key: String,
+    value: OtlpAnyValue,
+}
+
+/// OTLP `AnyValue` (one-of). We only emit the four variants the
+/// Phase-1 flattener produces; the OTLP spec defines bytes/array/kvlist
+/// too but Phase 1 has no use for them.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum OtlpAnyValue {
+    String {
+        #[serde(rename = "stringValue")]
+        string_value: String,
+    },
+    Bool {
+        #[serde(rename = "boolValue")]
+        bool_value: bool,
+    },
+    Int {
+        #[serde(rename = "intValue")]
+        int_value: String,
+    },
+    Double {
+        #[serde(rename = "doubleValue")]
+        double_value: f64,
+    },
+}
+
+/// `tape to-otlp <cassette> [--output <path>]` — Phase 1 of #88.
+fn cmd_to_otlp(file: &std::path::Path, output: Option<std::path::PathBuf>) -> Result<()> {
+    // 1. Reject `--output == file` before any work (cheap guard).
+    if let Some(ref out) = output {
+        if same_path(file, out) {
+            eprintln!("tape to-otlp: --output must differ from input path");
+            std::process::exit(2);
+        }
+    }
+
+    // 2. Open cassette + parse tracks/meta. Reuses the existing
+    //    helpers so exit codes match the other read-only consumers.
+    let raw = open_input(file, "tape to-otlp");
+    let meta = parse_meta(&raw, "tape to-otlp");
+    let tracks = match raw.tracks_jsonl.as_deref() {
+        Some(jsonl) => match tape_format::tracks::parse_jsonl(jsonl) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("tape to-otlp: tracks.jsonl parse failed: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => Vec::new(),
+    };
+
+    // 3. Build the OTLP document. Deterministic span ids derived from
+    //    a cassette-stable digest + step number (AC #5: re-runs of
+    //    the same cassette emit identical span ids). trace id is
+    //    fresh-random per invocation.
+    let cassette_digest = cassette_digest_for_span_ids(&raw);
+    let trace_id = random_trace_id_hex();
+    let export = build_otlp_export(&meta, &tracks, &cassette_digest, &trace_id);
+
+    // 4. Serialize. Pretty-print so consumers can grep / eyeball.
+    let mut json = serde_json::to_string_pretty(&export)
+        .map_err(|e| anyhow::anyhow!("serialize OTLP/JSON: {e}"))?;
+    json.push('\n');
+
+    // 5. Write.
+    if let Some(out_path) = output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+            }
+        }
+        std::fs::write(&out_path, json.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write {}: {e}", out_path.display()))?;
+        eprintln!("tape to-otlp: wrote {}", out_path.display());
+    } else {
+        use std::io::Write as _;
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        h.write_all(json.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write stdout: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Cassette-stable digest used as the span-id seed. Hashes the
+/// canonical input bytes the writer would have produced if we
+/// re-rendered: `meta.yaml` + `tracks.jsonl`. This keeps the seed
+/// invariant under zip-level re-write quirks (compression level,
+/// timestamps inside the archive) — two cassettes that parse to the
+/// same Meta + Tracks produce identical span ids.
+fn cassette_digest_for_span_ids(raw: &tape_format::reader::RawTape) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    if let Some(m) = raw.meta_yaml.as_deref() {
+        hasher.update(m.as_bytes());
+    }
+    hasher.update(&[0x1F]); // unit separator
+    if let Some(t) = raw.tracks_jsonl.as_deref() {
+        hasher.update(t.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// 16-byte trace id, hex-encoded (32 chars). Fresh-random per
+/// invocation; the deterministic-output AC (#5) excludes this.
+fn random_trace_id_hex() -> String {
+    use std::fmt::Write as _;
+    let mut bytes = [0u8; 16];
+    // getrandom already a workspace dep via #204's tape-anon.
+    getrandom::getrandom(&mut bytes).expect("OS RNG must produce 16 random bytes");
+    let mut out = String::with_capacity(32);
+    for b in &bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Deterministic 8-byte span id derived from `(cassette_digest, step)`.
+/// `BLAKE3(cassette_digest || step.to_be_bytes())[..8]`, hex-encoded
+/// (16 chars).
+fn span_id_for(cassette_digest: &[u8; 32], step: u64) -> String {
+    use std::fmt::Write as _;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(cassette_digest);
+    hasher.update(&step.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(16);
+    for b in &digest.as_bytes()[..8] {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn kind_to_name(k: tape_format::tracks::Kind) -> &'static str {
+    use tape_format::tracks::Kind;
+    match k {
+        Kind::Task => "task",
+        Kind::ModelCall => "model_call",
+        Kind::McpCall => "mcp_call",
+        Kind::Shell => "shell",
+        Kind::FileRead => "file_read",
+        Kind::FileWrite => "file_write",
+        Kind::Annotation => "annotation",
+        Kind::Eject => "eject",
+    }
+}
+
+/// Parse an RFC 3339 timestamp into a nanos-since-epoch string. OTLP
+/// JSON requires `*UnixNano` fields as strings (64-bit values that
+/// would lose precision under JSON's number type — same reason
+/// protobuf encodes them as int64).
+fn ts_to_nanos_str(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .and_then(|dt| dt.timestamp_nanos_opt())
+        .map_or_else(|| "0".to_owned(), |n| n.to_string())
+}
+
+/// Flatten `track.payload` into OTLP attributes. Top-level scalars
+/// become typed attributes (string/bool/int/double); nested
+/// objects/arrays serialize to JSON strings. Anything over 4096 bytes
+/// is truncated and gets a `<key>.truncated = true` co-attribute.
+fn payload_to_attributes(payload: &serde_json::Value) -> Vec<OtlpAttribute> {
+    let mut out = Vec::new();
+    let Some(obj) = payload.as_object() else {
+        // Non-object payload (rare; would be a SPEC violation but we
+        // don't enforce that here). Emit the whole thing as one
+        // `payload` string attribute.
+        let s = payload.to_string();
+        push_attr_with_truncation(&mut out, "payload", &s);
+        return out;
+    };
+    for (k, v) in obj {
+        match v {
+            serde_json::Value::String(s) => push_attr_with_truncation(&mut out, k, s),
+            serde_json::Value::Bool(b) => out.push(OtlpAttribute {
+                key: k.clone(),
+                value: OtlpAnyValue::Bool { bool_value: *b },
+            }),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    out.push(OtlpAttribute {
+                        key: k.clone(),
+                        value: OtlpAnyValue::Int {
+                            int_value: i.to_string(),
+                        },
+                    });
+                } else if let Some(f) = n.as_f64() {
+                    out.push(OtlpAttribute {
+                        key: k.clone(),
+                        value: OtlpAnyValue::Double { double_value: f },
+                    });
+                } else {
+                    // u64 outside i64 range — emit as string.
+                    push_attr_with_truncation(&mut out, k, &n.to_string());
+                }
+            }
+            serde_json::Value::Null => {
+                // OTLP `AnyValue` permits the empty variant for null;
+                // simpler: emit as an empty string attribute, which
+                // preserves the key.
+                push_attr_with_truncation(&mut out, k, "");
+            }
+            // Nested objects/arrays → serialized JSON, then truncated.
+            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                let s = v.to_string();
+                push_attr_with_truncation(&mut out, k, &s);
+            }
+        }
+    }
+    out
+}
+
+fn push_attr_with_truncation(out: &mut Vec<OtlpAttribute>, key: &str, value: &str) {
+    if value.len() <= OTLP_ATTRIBUTE_MAX_BYTES {
+        out.push(OtlpAttribute {
+            key: key.to_owned(),
+            value: OtlpAnyValue::String {
+                string_value: value.to_owned(),
+            },
+        });
+        return;
+    }
+    // UTF-8-safe truncation: walk back to the last char boundary
+    // at-or-before the byte cap.
+    let mut cut = OTLP_ATTRIBUTE_MAX_BYTES;
+    while cut > 0 && !value.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    out.push(OtlpAttribute {
+        key: key.to_owned(),
+        value: OtlpAnyValue::String {
+            string_value: value[..cut].to_owned(),
+        },
+    });
+    out.push(OtlpAttribute {
+        key: format!("{key}.truncated"),
+        value: OtlpAnyValue::Bool { bool_value: true },
+    });
+}
+
+/// Assemble the full OTLP/JSON document from parsed meta + tracks +
+/// span-id seed + trace-id.
+fn build_otlp_export(
+    meta: &tape_format::meta::Meta,
+    tracks: &[tape_format::tracks::Track],
+    cassette_digest: &[u8; 32],
+    trace_id: &str,
+) -> OtlpExport {
+    // Pre-resolve span ids so parent_step lookups work.
+    let span_id_by_step: std::collections::HashMap<u64, String> = tracks
+        .iter()
+        .map(|t| (t.step, span_id_for(cassette_digest, t.step)))
+        .collect();
+
+    let mut spans = Vec::with_capacity(tracks.len());
+    for (i, t) in tracks.iter().enumerate() {
+        let start_ns = ts_to_nanos_str(&t.ts);
+        // End time = start of the next track; for the final track,
+        // reuse start (zero-duration point-in-time event).
+        let end_ns = tracks
+            .get(i + 1)
+            .map_or_else(|| start_ns.clone(), |next| ts_to_nanos_str(&next.ts));
+        let parent = t
+            .parent_step
+            .and_then(|ps| span_id_by_step.get(&ps).cloned());
+        spans.push(OtlpSpan {
+            trace_id: trace_id.to_owned(),
+            span_id: span_id_by_step.get(&t.step).cloned().unwrap_or_default(),
+            parent_span_id: parent,
+            name: kind_to_name(t.kind).to_owned(),
+            kind: 1, // SPAN_KIND_INTERNAL
+            start_time_unix_nano: start_ns,
+            end_time_unix_nano: end_ns,
+            attributes: payload_to_attributes(&t.payload),
+        });
+    }
+
+    OtlpExport {
+        resource_spans: vec![OtlpResourceSpans {
+            resource: OtlpResource {
+                attributes: vec![
+                    OtlpAttribute {
+                        key: "service.name".to_owned(),
+                        value: OtlpAnyValue::String {
+                            string_value: "tape".to_owned(),
+                        },
+                    },
+                    OtlpAttribute {
+                        key: "tape.cassette.task".to_owned(),
+                        value: OtlpAnyValue::String {
+                            string_value: meta.task.clone(),
+                        },
+                    },
+                ],
+            },
+            scope_spans: vec![OtlpScopeSpans {
+                scope: OtlpScope {
+                    name: "tape".to_owned(),
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
+                spans,
+            }],
+        }],
+    }
+}
+
+#[cfg(test)]
+mod to_otlp_tests {
+    use super::*;
+
+    fn fixed_digest() -> [u8; 32] {
+        [0x42; 32]
+    }
+
+    #[test]
+    fn span_id_is_deterministic_for_same_inputs() {
+        let a = span_id_for(&fixed_digest(), 1);
+        let b = span_id_for(&fixed_digest(), 1);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+    }
+
+    #[test]
+    fn span_id_differs_per_step() {
+        let a = span_id_for(&fixed_digest(), 1);
+        let b = span_id_for(&fixed_digest(), 2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn span_id_differs_per_cassette_digest() {
+        let a = span_id_for(&[0x01; 32], 1);
+        let b = span_id_for(&[0x02; 32], 1);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn random_trace_id_is_32_hex_chars() {
+        let t = random_trace_id_hex();
+        assert_eq!(t.len(), 32);
+        assert!(t
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+    }
+
+    #[test]
+    fn ts_to_nanos_rfc3339_roundtrip() {
+        let ns = ts_to_nanos_str("2026-05-16T00:00:00Z");
+        // Sanity-check: the produced value matches chrono's own
+        // computation for the same timestamp (avoids hand-pinning a
+        // magic constant that depends on which calendar reform you
+        // count).
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-05-16T00:00:00Z")
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap()
+            .to_string();
+        assert_eq!(ns, expected);
+    }
+
+    #[test]
+    fn ts_to_nanos_bad_input_returns_zero() {
+        assert_eq!(ts_to_nanos_str("not-a-timestamp"), "0");
+    }
+
+    #[test]
+    fn payload_flattens_scalars_to_typed_attrs() {
+        let payload = serde_json::json!({
+            "s": "hello",
+            "b": true,
+            "i": 42,
+            "f": 2.5,
+        });
+        let attrs = payload_to_attributes(&payload);
+        // Order is not stable (serde_json::Value::as_object yields a
+        // BTreeMap-ish iteration in serde_json 1.x); look up by key.
+        let by_key: std::collections::HashMap<_, _> =
+            attrs.iter().map(|a| (a.key.as_str(), &a.value)).collect();
+        assert!(matches!(by_key["s"], OtlpAnyValue::String { .. }));
+        assert!(matches!(
+            by_key["b"],
+            OtlpAnyValue::Bool { bool_value: true }
+        ));
+        assert!(matches!(by_key["i"], OtlpAnyValue::Int { .. }));
+        assert!(matches!(by_key["f"], OtlpAnyValue::Double { .. }));
+    }
+
+    #[test]
+    fn payload_flattens_nested_to_json_string() {
+        let payload = serde_json::json!({
+            "nested": {"a": 1, "b": 2},
+            "list": [1, 2, 3],
+        });
+        let attrs = payload_to_attributes(&payload);
+        for a in &attrs {
+            assert!(
+                matches!(a.value, OtlpAnyValue::String { .. }),
+                "expected nested object/array → string, got key={}",
+                a.key
+            );
+        }
+    }
+
+    #[test]
+    fn truncation_caps_at_4096_bytes_with_co_attr() {
+        let big = "x".repeat(5000);
+        let payload = serde_json::json!({"big": big});
+        let attrs = payload_to_attributes(&payload);
+        // Find the big attr + the truncated co-attr.
+        let mut by_key: std::collections::HashMap<_, _> =
+            attrs.iter().map(|a| (a.key.as_str(), &a.value)).collect();
+        let big_val = by_key.remove("big").expect("big attr");
+        if let OtlpAnyValue::String { string_value } = big_val {
+            assert!(
+                string_value.len() <= OTLP_ATTRIBUTE_MAX_BYTES,
+                "big attr value not truncated; got {} bytes",
+                string_value.len()
+            );
+        } else {
+            panic!("big attr should be a String variant");
+        }
+        let truncated_marker = by_key
+            .remove("big.truncated")
+            .expect("co-attr big.truncated must be present");
+        assert!(matches!(
+            truncated_marker,
+            OtlpAnyValue::Bool { bool_value: true }
+        ));
+    }
+
+    #[test]
+    fn truncation_skips_short_attrs_no_co_attr() {
+        let payload = serde_json::json!({"small": "abc"});
+        let attrs = payload_to_attributes(&payload);
+        let keys: Vec<&str> = attrs.iter().map(|a| a.key.as_str()).collect();
+        assert_eq!(keys, vec!["small"]); // no `small.truncated`
+    }
+
+    #[test]
+    fn build_otlp_export_links_parents_correctly() {
+        let meta = tape_format::meta::Meta::parse(
+            "tape_version: \"tape/v0\"\n\
+             id: \"01h8xy00-0000-7000-b8aa-000000000209\"\n\
+             created_at: \"2026-05-16T00:00:00Z\"\n\
+             ejected_at: \"2026-05-16T00:00:30Z\"\n\
+             task: \"investigate\"\n\
+             recorder:\n  agent: \"test/0.0.1\"\n\
+             outcome: success\n",
+        )
+        .unwrap();
+        let tracks = vec![
+            tape_format::tracks::Track {
+                step: 1,
+                kind: tape_format::tracks::Kind::Task,
+                ts: "2026-05-16T00:00:00Z".into(),
+                payload: serde_json::json!({"prompt": "investigate"}),
+                parent_step: None,
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+            tape_format::tracks::Track {
+                step: 2,
+                kind: tape_format::tracks::Kind::Annotation,
+                ts: "2026-05-16T00:00:05Z".into(),
+                payload: serde_json::json!({"by": "agent", "note": "thinking"}),
+                parent_step: Some(1),
+                refs: Vec::new(),
+                annotations: Vec::new(),
+            },
+        ];
+        let export = build_otlp_export(
+            &meta,
+            &tracks,
+            &fixed_digest(),
+            "0123456789abcdef0123456789abcdef",
+        );
+        let spans = &export.resource_spans[0].scope_spans[0].spans;
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].name, "task");
+        assert!(spans[0].parent_span_id.is_none(), "root span has no parent");
+        assert_eq!(spans[1].name, "annotation");
+        assert_eq!(
+            spans[1].parent_span_id.as_deref(),
+            Some(spans[0].span_id.as_str()),
+            "child's parentSpanId must match parent's spanId"
+        );
+        // End time of span 1 = start time of span 2 (1 → 2 transition).
+        assert_eq!(spans[0].end_time_unix_nano, spans[1].start_time_unix_nano);
+        // Final span is zero-duration.
+        assert_eq!(spans[1].start_time_unix_nano, spans[1].end_time_unix_nano);
     }
 }
