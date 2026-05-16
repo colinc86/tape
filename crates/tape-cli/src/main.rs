@@ -488,6 +488,31 @@ enum Cmd {
         #[arg(short = 'o', long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Reconstruct (or, in Phase 1, *list*) the file tree the agent saw
+    /// at any step in a cassette. Phase 1 of issue #85 carved per #213:
+    /// `--list` only, no file materialization, no manifest, no
+    /// `--output-dir` / `--include` / `--exclude` / `--at-time` /
+    /// `--strict` / artifact reads. Pure metadata pass over
+    /// `tracks.jsonl`.
+    ///
+    /// Output: one tab-separated line per path —
+    /// `<status>\t<path>\t<last-touched-step>` — where status is
+    /// `created` | `modified` | `read`. Sorted by last-touched-step
+    /// ascending, then by path for determinism.
+    Rewind {
+        /// Input cassette.
+        file: std::path::PathBuf,
+        /// Walk steps `1..=N` (or `0..=N`; `--step 0` produces an
+        /// empty listing). Exits 2 if N exceeds the cassette's max
+        /// step.
+        #[arg(long)]
+        step: u64,
+        /// Required in Phase 1. Refuses to run without it so we don't
+        /// accidentally promise file materialization that hasn't
+        /// shipped yet.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -611,6 +636,7 @@ fn main() -> Result<()> {
         Cmd::Anon { file, out } => cmd_anon(&file, out),
         Cmd::Changelog { files } => cmd_changelog(&files),
         Cmd::ToOtlp { file, output } => cmd_to_otlp(&file, output),
+        Cmd::Rewind { file, step, list } => cmd_rewind(&file, step, list),
     }
 }
 
@@ -4751,5 +4777,291 @@ mod to_otlp_tests {
         assert_eq!(spans[0].end_time_unix_nano, spans[1].start_time_unix_nano);
         // Final span is zero-duration.
         assert_eq!(spans[1].start_time_unix_nano, spans[1].end_time_unix_nano);
+    }
+}
+
+// =====================================================================
+// `tape rewind` — Phase 1 of issue #85 / #213.
+//
+// Read-only inspector. `--list` walks `tracks.jsonl` for steps 0..=N
+// and prints a tab-separated `<status>\t<path>\t<last-touched-step>`
+// line per file path touched. No materialization, no manifest, no
+// artifact reads — pure metadata pass.
+//
+// Status state machine: see `apply_event` below. Only `Kind::FileRead`
+// and `Kind::FileWrite` contribute; other kinds are skipped. v0 has
+// no `file_delete` kind, so the file set is monotonically additive.
+// =====================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RewindStatus {
+    Read,
+    Created,
+    Modified,
+}
+
+impl RewindStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Created => "created",
+            Self::Modified => "modified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RewindEvent {
+    Read,
+    /// `before_hash == null` — the write either created the file or
+    /// truncated it to nothing pre-existing on disk. Either way SPEC
+    /// §5.5.6 says a null `before_hash` means "no prior content".
+    WriteCreate,
+    /// `before_hash != null` — write modified an existing file.
+    WriteModify,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FileEntry {
+    status: RewindStatus,
+    last_step: u64,
+}
+
+/// Apply one event to the per-path state. Caller looks up `path` in
+/// the accumulator, calls this with the current entry (or `None` if
+/// the path is new), and stores the result.
+///
+/// Per the ticket's classification spec:
+/// - Read on unseen path → `Read`.
+/// - Write on unseen path → `Created` if `before_hash == null`, else
+///   `Modified`.
+/// - Read on a path already classified → keep status, update step
+///   (reads never demote `Created` / `Modified`).
+/// - Write on a path classified as `Read` → `Modified` (entry-point
+///   bullet: "promote status from read→modified if a write follows a
+///   read for the same path").
+/// - Write on a path classified as `Created` → `Modified` (ticket
+///   spec clause "preceded by a `created` for that path"). This is
+///   the only place where `Created` decays — once a created path
+///   sees a second write it becomes `Modified`.
+/// - Write on a path classified as `Modified` → stay `Modified`.
+fn apply_event(current: Option<FileEntry>, event: RewindEvent, step: u64) -> FileEntry {
+    let next_status = match (current.map(|e| e.status), event) {
+        (None, RewindEvent::Read) => RewindStatus::Read,
+        (None, RewindEvent::WriteCreate) => RewindStatus::Created,
+        (None, RewindEvent::WriteModify) => RewindStatus::Modified,
+        (Some(RewindStatus::Read), RewindEvent::Read) => RewindStatus::Read,
+        (Some(RewindStatus::Read), RewindEvent::WriteCreate | RewindEvent::WriteModify) => {
+            RewindStatus::Modified
+        }
+        (Some(RewindStatus::Created), RewindEvent::Read) => RewindStatus::Created,
+        (Some(RewindStatus::Created), RewindEvent::WriteCreate | RewindEvent::WriteModify) => {
+            RewindStatus::Modified
+        }
+        (Some(RewindStatus::Modified), _) => RewindStatus::Modified,
+    };
+    let next_step = current.map_or(step, |e| e.last_step.max(step));
+    FileEntry {
+        status: next_status,
+        last_step: next_step,
+    }
+}
+
+/// `tape rewind <FILE> --step <N> --list` — Phase 1 of #85.
+fn cmd_rewind(file: &std::path::Path, step: u64, list: bool) -> Result<()> {
+    if !list {
+        eprintln!(
+            "tape rewind: Phase 1 only supports --list — see #85 for the full rewind design."
+        );
+        std::process::exit(2);
+    }
+
+    // 1. Load cassette + parse tracks. Re-uses the same exit-2 posture
+    //    that every other read-only consumer in this binary uses.
+    let raw = open_input(file, "tape rewind");
+    let tracks = match raw.tracks_jsonl.as_deref() {
+        Some(jsonl) => match tape_format::tracks::parse_jsonl(jsonl) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("tape rewind: tracks.jsonl parse failed: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => Vec::new(),
+    };
+
+    // 2. Validate `--step` upper bound. `step == 0` is allowed (AC
+    //    #1: produces an empty listing). Out-of-range when N > max
+    //    step in the cassette.
+    let max_step = tracks.iter().map(|t| t.step).max().unwrap_or(0);
+    if step > max_step {
+        eprintln!("tape rewind: --step {step} out of range; cassette has max step {max_step}");
+        std::process::exit(2);
+    }
+
+    // 3. Walk events, classify into a path→entry map.
+    let mut entries: std::collections::HashMap<String, FileEntry> =
+        std::collections::HashMap::new();
+    for t in &tracks {
+        if t.step > step {
+            continue;
+        }
+        let (path, event) = match t.kind {
+            tape_format::tracks::Kind::FileRead => {
+                let Some(path) = path_from_payload(&t.payload) else {
+                    // SPEC §5.5.5 requires `path` — but be defensive
+                    // against malformed cassettes (verify would have
+                    // already flagged this; we just skip the event).
+                    continue;
+                };
+                (path, RewindEvent::Read)
+            }
+            tape_format::tracks::Kind::FileWrite => {
+                let Some(path) = path_from_payload(&t.payload) else {
+                    continue;
+                };
+                let event = if before_hash_is_null(&t.payload) {
+                    RewindEvent::WriteCreate
+                } else {
+                    RewindEvent::WriteModify
+                };
+                (path, event)
+            }
+            _ => continue,
+        };
+        let current = entries.get(&path).copied();
+        let next = apply_event(current, event, t.step);
+        entries.insert(path, next);
+    }
+
+    // 4. Sort (last_step asc, path asc) and print.
+    let mut sorted: Vec<(String, FileEntry)> = entries.into_iter().collect();
+    sorted.sort_by(|a, b| {
+        a.1.last_step
+            .cmp(&b.1.last_step)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (path, entry) in sorted {
+        println!("{}\t{}\t{}", entry.status.as_str(), path, entry.last_step);
+    }
+    Ok(())
+}
+
+/// Extract `payload.path` as a String. Returns `None` if absent or
+/// not a string (which would be a SPEC violation — verify catches it).
+fn path_from_payload(payload: &serde_json::Value) -> Option<String> {
+    payload.get("path")?.as_str().map(str::to_owned)
+}
+
+/// `payload.before_hash` is null (or absent — also treat as null since
+/// the field is optional per SPEC §5.5.6 and "not set" is semantically
+/// equivalent to "no prior content").
+fn before_hash_is_null(payload: &serde_json::Value) -> bool {
+    payload
+        .get("before_hash")
+        .is_none_or(serde_json::Value::is_null)
+}
+
+#[cfg(test)]
+mod rewind_tests {
+    use super::*;
+
+    #[test]
+    fn read_on_new_path_classifies_read() {
+        let entry = apply_event(None, RewindEvent::Read, 5);
+        assert_eq!(entry.status, RewindStatus::Read);
+        assert_eq!(entry.last_step, 5);
+    }
+
+    #[test]
+    fn write_create_on_new_path_classifies_created() {
+        let entry = apply_event(None, RewindEvent::WriteCreate, 3);
+        assert_eq!(entry.status, RewindStatus::Created);
+        assert_eq!(entry.last_step, 3);
+    }
+
+    #[test]
+    fn write_modify_on_new_path_classifies_modified() {
+        let entry = apply_event(None, RewindEvent::WriteModify, 7);
+        assert_eq!(entry.status, RewindStatus::Modified);
+        assert_eq!(entry.last_step, 7);
+    }
+
+    #[test]
+    fn read_after_read_stays_read_updates_step() {
+        let e1 = apply_event(None, RewindEvent::Read, 2);
+        let e2 = apply_event(Some(e1), RewindEvent::Read, 8);
+        assert_eq!(e2.status, RewindStatus::Read);
+        assert_eq!(e2.last_step, 8);
+    }
+
+    #[test]
+    fn write_after_read_promotes_to_modified() {
+        // Entry-point bullet: "promote status from read→modified if a
+        // write follows a read for the same path".
+        let e1 = apply_event(None, RewindEvent::Read, 2);
+        let e2 = apply_event(Some(e1), RewindEvent::WriteCreate, 5);
+        assert_eq!(e2.status, RewindStatus::Modified);
+        assert_eq!(e2.last_step, 5);
+    }
+
+    #[test]
+    fn write_after_create_promotes_to_modified() {
+        // Spec clause: a path is `modified` if at least one write was
+        // "preceded by a created for that path". So Created → Write →
+        // Modified.
+        let e1 = apply_event(None, RewindEvent::WriteCreate, 1);
+        let e2 = apply_event(Some(e1), RewindEvent::WriteModify, 4);
+        assert_eq!(e2.status, RewindStatus::Modified);
+        assert_eq!(e2.last_step, 4);
+    }
+
+    #[test]
+    fn read_after_create_keeps_created() {
+        // Reads never demote a Created/Modified classification.
+        let e1 = apply_event(None, RewindEvent::WriteCreate, 1);
+        let e2 = apply_event(Some(e1), RewindEvent::Read, 9);
+        assert_eq!(e2.status, RewindStatus::Created);
+        assert_eq!(e2.last_step, 9);
+    }
+
+    #[test]
+    fn last_step_is_max_not_overwrite() {
+        // Defensive: out-of-order events (which shouldn't occur in a
+        // well-formed cassette since steps are ascending) still
+        // produce the maximum step.
+        let e1 = apply_event(None, RewindEvent::WriteCreate, 10);
+        let e2 = apply_event(Some(e1), RewindEvent::Read, 3);
+        assert_eq!(e2.last_step, 10);
+    }
+
+    #[test]
+    fn before_hash_null_value_is_null() {
+        let p = serde_json::json!({"path": "/tmp/x", "before_hash": null});
+        assert!(before_hash_is_null(&p));
+    }
+
+    #[test]
+    fn before_hash_absent_is_null() {
+        let p = serde_json::json!({"path": "/tmp/x"});
+        assert!(before_hash_is_null(&p));
+    }
+
+    #[test]
+    fn before_hash_present_is_not_null() {
+        let p = serde_json::json!({"path": "/tmp/x", "before_hash": "blake3:abc"});
+        assert!(!before_hash_is_null(&p));
+    }
+
+    #[test]
+    fn path_from_payload_extracts_string() {
+        let p = serde_json::json!({"path": "/etc/hosts"});
+        assert_eq!(path_from_payload(&p).as_deref(), Some("/etc/hosts"));
+    }
+
+    #[test]
+    fn path_from_payload_missing_returns_none() {
+        let p = serde_json::json!({"content_hash": "blake3:abc"});
+        assert!(path_from_payload(&p).is_none());
     }
 }
