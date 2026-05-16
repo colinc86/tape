@@ -88,6 +88,10 @@ tape-anon = { path = "crates/tape-anon", version = "0.2.0" }
 # Anon (#204 Phase 1)
 hmac = "0.12"
 
+# Sign (#230 Phase 1)
+ed25519-dalek = "2"
+base64 = "0.22"
+
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }
 tempfile = "3"
