@@ -1,6 +1,6 @@
 //! Simulates Claude Code hook firings against the recorder Unix socket via
-//! the `tape-hook` binary, and asserts the corresponding shell/file_read/
-//! file_write events land in the session.
+//! the `tape-hook` binary, and asserts the corresponding `shell`/`file_read`/
+//! `file_write` events land in the session.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -852,11 +852,11 @@ async fn multiedit_existing_file_before_after_differ_and_diff_is_unified() {
     rig.handle.shutdown().await;
 }
 
-/// Issue #83: `NotebookEdit` was missing from both the PreToolUse and
-/// PostToolUse dispatch lists in hook.rs. PreToolUse fell through to the
-/// `return` on line 73 (no before-hash buffered), and PostToolUse fell
-/// through to `None` (no file_write event posted at all). After the fix
-/// both branches accept NotebookEdit.
+/// Issue #83: `NotebookEdit` was missing from both the `PreToolUse` and
+/// `PostToolUse` dispatch lists in hook.rs. `PreToolUse` fell through to the
+/// `return` on line 73 (no before-hash buffered), and `PostToolUse` fell
+/// through to `None` (no `file_write` event posted at all). After the fix
+/// both branches accept `NotebookEdit`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notebook_edit_pre_and_post_dispatch_produce_event_with_before_hash() {
     let work = tempfile::tempdir().unwrap();

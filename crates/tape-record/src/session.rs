@@ -32,7 +32,7 @@ impl Session {
     /// Start a session at an explicit timestamp. Used by `tape.snapshot` to
     /// align `meta.created_at` with the first user prompt's actual time
     /// rather than "now"; otherwise replaying an older transcript would
-    /// produce a tape whose meta.created_at is in the future relative to
+    /// produce a tape whose `meta.created_at` is in the future relative to
     /// its first track.
     pub fn start_at(
         task: impl Into<String>,

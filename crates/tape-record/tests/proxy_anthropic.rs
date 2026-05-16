@@ -133,7 +133,7 @@ async fn spawn_canned_upstream(
 }
 
 /// Drive a non-streaming POST through the proxy and return the recorded
-/// model_call payload.
+/// `model_call` payload.
 async fn record_non_streaming_against(
     upstream_addr: std::net::SocketAddr,
     task: &'static str,

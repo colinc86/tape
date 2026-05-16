@@ -3,7 +3,7 @@
 //! converted tracks when round-tripping through the replay path. Before
 //! `Session::append_track`, every replay call site went through
 //! `append_at(kind, payload, ts)` which hardcoded those three fields to
-//! their defaults — so refs (the addresses of spilled artifacts), parent_step
+//! their defaults — so refs (the addresses of spilled artifacts), `parent_step`
 //! linkage, and inline annotations were all silently dropped.
 
 use serde_json::{json, Value};

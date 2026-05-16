@@ -1,7 +1,7 @@
 //! Built-in redaction rules. See SPEC.md §7.
 //!
 //! Order matters: `anthropic_api_key` runs before `openai_api_key` so an
-//! `sk-ant-…` value isn't first matched as an OpenAI key. `aws_secret_key`
+//! `sk-ant-…` value isn't first matched as an `OpenAI` key. `aws_secret_key`
 //! runs before `generic_high_entropy` so a context-tagged AWS secret gets
 //! a typed placeholder rather than the generic `<SECRET>`.
 
@@ -51,7 +51,7 @@ pub fn built_in() -> Vec<Rule> {
                 // non-newline, then 40 base64 chars. Lazy quantifier finds
                 // the shortest gap; the {0,50} ceiling keeps the rule from
                 // pairing a label with a secret far away in the document.
-                r#"(?i)aws[_\-]?secret(?:[_\-](?:access[_\-])?key)?[^\n]{0,50}?([A-Za-z0-9/+=]{40})"#,
+                r"(?i)aws[_\-]?secret(?:[_\-](?:access[_\-])?key)?[^\n]{0,50}?([A-Za-z0-9/+=]{40})",
             )
             .unwrap(),
             replacement: "<API_KEY:aws_secret>".into(),

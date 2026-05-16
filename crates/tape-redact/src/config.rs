@@ -286,12 +286,12 @@ mod tests {
 
     #[test]
     fn parses_minimal_config() {
-        let yaml = r#"
+        let yaml = r"
 redact:
   custom:
     - id: pii_customer
       pattern: 'CUST-\d{6}'
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         assert_eq!(cfg.redact.custom.len(), 1);
         assert_eq!(cfg.redact.custom[0].id, "pii_customer");
@@ -299,12 +299,12 @@ redact:
 
     #[test]
     fn applies_custom_rule_to_engine() {
-        let yaml = r#"
+        let yaml = r"
 redact:
   custom:
     - id: pii_customer
       pattern: 'CUST-\d{6}'
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         let mut engine = crate::Engine::with_default_rules();
         cfg.apply(&mut engine).unwrap();
@@ -331,13 +331,13 @@ redact:
     #[test]
     fn rejects_non_typed_placeholder() {
         // P1 #2: SPEC §6.2 forbids replacements that aren't typed placeholders.
-        let yaml = r#"
+        let yaml = r"
 redact:
   custom:
     - id: leaky
       pattern: 'CUST-\d{6}'
       replacement: 'literal_secret_value'
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         let mut engine = crate::Engine::with_default_rules();
         let err = cfg.apply(&mut engine).unwrap_err();
@@ -349,13 +349,13 @@ redact:
 
     #[test]
     fn accepts_typed_placeholder_subtype() {
-        let yaml = r#"
+        let yaml = r"
 redact:
   custom:
     - id: pii
       pattern: 'CUST-\d{6}'
       replacement: '<CUST_ID:internal>'
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         let mut engine = crate::Engine::with_default_rules();
         cfg.apply(&mut engine).unwrap(); // no error
@@ -363,13 +363,13 @@ redact:
 
     #[test]
     fn rejects_replacement_that_is_a_hash() {
-        let yaml = r#"
+        let yaml = r"
 redact:
   custom:
     - id: leaky2
       pattern: 'CUST-\d{6}'
       replacement: 'sha256:abcdef'
-"#;
+";
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         let mut engine = crate::Engine::with_default_rules();
         assert!(cfg.apply(&mut engine).is_err());

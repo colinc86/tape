@@ -11,10 +11,10 @@
 //! Recording happens on a side-channel.
 //!
 //! Configuration via env (set by `tape record` when generating the temp config):
-//!   TAPE_WRAP_CMD          path to the real MCP server binary
-//!   TAPE_WRAP_ARGS_JSON    JSON array of args to pass to the real server
-//!   TAPE_WRAP_SOCKET       path to the recorder Unix socket
-//!   TAPE_WRAP_SERVER_NAME  logical server name to attribute mcp_call events to
+//!   `TAPE_WRAP_CMD`          path to the real MCP server binary
+//!   `TAPE_WRAP_ARGS_JSON`    JSON array of args to pass to the real server
+//!   `TAPE_WRAP_SOCKET`       path to the recorder Unix socket
+//!   `TAPE_WRAP_SERVER_NAME`  logical server name to attribute `mcp_call` events to
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,7 +127,7 @@ struct PendingCall {
     started: Instant,
 }
 
-/// Maximum age for a pending tool_use entry before it's evicted as stale.
+/// Maximum age for a pending `tool_use` entry before it's evicted as stale.
 ///
 /// Bounds memory if the server never replies to a request. Set to 1 hour
 /// (well past any realistic single MCP tool call) so that slow tools — e.g.
@@ -283,7 +283,7 @@ mod tests {
 
     /// Regression test for issue #53.
     ///
-    /// The wrap evicts pending tools/call entries older than PENDING_TTL when a
+    /// The wrap evicts pending tools/call entries older than `PENDING_TTL` when a
     /// new tools/call arrives. With the old 5-minute TTL, slow tools (>5 min)
     /// had their pending entries evicted before the response arrived, so the
     /// response could not be paired with its request — the `mcp_call` event was
