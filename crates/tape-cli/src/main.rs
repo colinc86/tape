@@ -14,6 +14,21 @@ struct Cli {
     command: Cmd,
 }
 
+/// Output template for `tape changelog`. Phase 2 of issue #103 (carved
+/// per #246). `release-notes` is the default and preserves Phase-1
+/// behavior byte-for-byte; the other two re-narrate the same recap
+/// projection for non-release-notes audiences.
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum ChangelogAudience {
+    /// External release-notes Markdown block (Phase-1 default).
+    ReleaseNotes,
+    /// Internal sprint retro: what shipped / what we learned / what's open.
+    SprintRetro,
+    /// Postmortem timeline: timeline + impact + root cause + follow-ups.
+    Incident,
+}
+
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// Validate a `.tape` file against the tape/v0 spec.
@@ -515,23 +530,31 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
     },
-    /// Synthesize a release-notes Markdown block from the `meta.recap`
-    /// fields of one or more cassettes. Phase 1 of issue #103 carved
-    /// per #207.
+    /// Synthesize a Markdown block from the `meta.recap` fields of one
+    /// or more cassettes. Phase 1 of issue #103 carved per #207; Phase
+    /// 2 of #103 carved per #246 adds the `--audience` flag with three
+    /// bundled templates (release-notes default, sprint-retro,
+    /// incident).
     ///
     /// Reads `meta.recap` from each input (fail-fast if any cassette
     /// is missing one — run `tape recap --auto <file>` first). Builds
     /// one consolidated prompt, invokes the configured judge model
     /// (`.taperc::judge:`), and prints the rendered Markdown to
     /// stdout. No mutation of input cassettes, no `meta.changelogs[]`
-    /// audit, no `--audience` / `--out` / `--groupby` flags this
-    /// slice — those land in Phase 2+.
+    /// audit, no `--out` / `--groupby` flags this slice — those land
+    /// in Phase 3+.
     Changelog {
         /// One or more `.tape` files. All must have `meta.recap` set
         /// (use `tape recap --set <text>` or `tape recap --auto`
         /// first).
         #[arg(required = true)]
         files: Vec<std::path::PathBuf>,
+        /// Output template. Default `release-notes` preserves Phase-1
+        /// behavior byte-for-byte; `sprint-retro` re-narrates the same
+        /// projection for a team-internal retrospective; `incident`
+        /// for a postmortem timeline.
+        #[arg(long, value_enum, default_value_t = ChangelogAudience::ReleaseNotes)]
+        audience: ChangelogAudience,
     },
     /// Convert a cassette into OpenTelemetry traces (OTLP/JSON). Phase
     /// 1 of issue #88 carved per #209: one span per track, flat walk,
@@ -1035,7 +1058,7 @@ fn main() -> Result<()> {
             template,
         } => cmd_relinernote(&file, model, dry_run, out, &template),
         Cmd::Anon { file, out } => cmd_anon(&file, out),
-        Cmd::Changelog { files } => cmd_changelog(&files),
+        Cmd::Changelog { files, audience } => cmd_changelog(&files, audience),
         Cmd::ToOtlp { file, output } => cmd_to_otlp(&file, output),
         Cmd::Rewind { file, step, list } => cmd_rewind(&file, step, list),
         Cmd::Compact {
@@ -4645,7 +4668,7 @@ mod anon_summary_tests {
 /// - `CHANGELOG_LEAK` (exit 6) — `JudgeClient::complete` returned
 ///   `JudgeError::Rejected(hit)` (the client's defense-in-depth
 ///   scanner flagged a prompt-injection-shaped output).
-fn cmd_changelog(files: &[std::path::PathBuf]) -> Result<()> {
+fn cmd_changelog(files: &[std::path::PathBuf], audience: ChangelogAudience) -> Result<()> {
     if files.is_empty() {
         // Belt-and-braces — clap's `required = true` on the positional
         // already surfaces a usage error before we get here, but keep
@@ -4663,7 +4686,7 @@ fn cmd_changelog(files: &[std::path::PathBuf]) -> Result<()> {
 
     // 2. Build the consolidated prompt up front so a config-load
     //    failure doesn't drop work-in-progress.
-    let prompt = render_changelog_prompt(&projections);
+    let prompt = render_changelog_prompt(&projections, audience);
 
     // 3. Load `.taperc::judge:`. Uses the same locator the simpler
     //    `load_judge_config` exposes — Phase 1 has no per-tool
@@ -4763,32 +4786,102 @@ fn project_cassettes(files: &[std::path::PathBuf]) -> Vec<ChangelogProjection> {
 /// effective context), then per-cassette stanza. Mirrors the
 /// `render_recap_prompt` style; differs in that the audience here is
 /// a release-notes consumer rather than a Slack/PR-description reader.
-fn render_changelog_prompt(projections: &[ChangelogProjection]) -> String {
+/// Instruction block for the Phase-1 `release-notes` template. Kept
+/// byte-identical to the Phase-1 inline string so the Phase-1
+/// snapshot tests pass unchanged when the audience defaults to
+/// `ReleaseNotes`. Do not edit without updating the snapshot.
+const CHANGELOG_PROMPT_RELEASE_NOTES: &str =
+    "You are synthesising release notes from a series of recorded \
+     AI-agent investigations. Output a single Markdown block under \
+     a top-level `## Release notes` heading.\n\n\
+     Hard constraints:\n\
+     - Plain GitHub-flavored Markdown. No HTML, no embedded code \
+     fences around the whole thing.\n\
+     - Group entries by outcome when the inputs are mixed (a \
+     `### Shipped` section for successes, `### In progress` for \
+     abandoned, `### Investigated but not resolved` for failures). \
+     Skip the empty subsections.\n\
+     - Each entry is one bullet point summarising what changed, \
+     framed for a release-notes audience. Quote the task verbatim \
+     only when the recap is opaque without it.\n\
+     - Be concrete. Name user-visible outcomes (\"ships PR #142\"), \
+     not meta descriptions of the recording (\"the agent \
+     investigated\").\n\
+     - Do not include any secrets, API keys, emails, or PII. If \
+     the source mentions them, refer abstractly.\n\
+     - Do not invent details the recaps don't support.\n\n";
+
+/// Instruction block for the Phase-2 `sprint-retro` template
+/// (issue #246). Same hard constraints around no PII / no invention
+/// as the release-notes block; different framing and section
+/// structure.
+const CHANGELOG_PROMPT_SPRINT_RETRO: &str =
+    "You are synthesising a sprint retro from a series of recorded \
+     AI-agent investigations. Output a single Markdown block under \
+     a top-level `## Sprint retro` heading.\n\n\
+     Hard constraints:\n\
+     - Plain GitHub-flavored Markdown. No HTML, no embedded code \
+     fences around the whole thing.\n\
+     - Three subsections in this order: `### What shipped` (one \
+     bullet per success, framed as team accomplishment); \
+     `### What we learned` (cross-cutting lessons drawn from the \
+     recaps, narrative not bulleted); `### What's still open` (one \
+     bullet per failure / abandoned outcome, framed as carry-over \
+     work for the next sprint). Skip any subsection whose \
+     contributing cassettes are empty.\n\
+     - Tone is team-internal and reflective. Reference the agent \
+     process as context (e.g. \"during the sprint the agent \
+     attempted N investigations\") when relevant.\n\
+     - Be concrete. Name user-visible outcomes, not meta \
+     descriptions of the recording.\n\
+     - Do not include any secrets, API keys, emails, or PII. If \
+     the source mentions them, refer abstractly.\n\
+     - Do not invent details the recaps don't support.\n\n";
+
+/// Instruction block for the Phase-2 `incident` template
+/// (issue #246). Postmortem framing — timeline + impact + (best-
+/// effort) root cause + follow-ups. Same hard constraints.
+const CHANGELOG_PROMPT_INCIDENT: &str =
+    "You are synthesising an incident postmortem from a series of \
+     recorded AI-agent investigations. Output a single Markdown \
+     block under a top-level `## Incident postmortem` heading.\n\n\
+     Hard constraints:\n\
+     - Plain GitHub-flavored Markdown. No HTML, no embedded code \
+     fences around the whole thing.\n\
+     - Four subsections in this order: `### Timeline` (chronological \
+     by Created timestamp, one bullet per cassette with the Created \
+     time + the recap distilled to a single sentence); `### Impact` \
+     (what users / systems were affected, drawn from the recaps); \
+     `### Root cause` (only if the recaps support a confident \
+     attribution — otherwise the literal text \"Unknown — recaps \
+     insufficient\"); `### Follow-ups` (one bullet per concrete \
+     action item the recaps imply).\n\
+     - Be concrete. Name user-visible outcomes, not meta \
+     descriptions of the recording.\n\
+     - Do not include any secrets, API keys, emails, or PII. If \
+     the source mentions them, refer abstractly.\n\
+     - Do not invent details the recaps don't support.\n\n";
+
+/// Map an audience to its compile-time instruction block. The shared
+/// per-cassette stanza loop comes after the block; only this leading
+/// section varies between audiences.
+fn instruction_block_for(audience: ChangelogAudience) -> &'static str {
+    match audience {
+        ChangelogAudience::ReleaseNotes => CHANGELOG_PROMPT_RELEASE_NOTES,
+        ChangelogAudience::SprintRetro => CHANGELOG_PROMPT_SPRINT_RETRO,
+        ChangelogAudience::Incident => CHANGELOG_PROMPT_INCIDENT,
+    }
+}
+
+fn render_changelog_prompt(
+    projections: &[ChangelogProjection],
+    audience: ChangelogAudience,
+) -> String {
     use std::fmt::Write as _;
 
     let n = projections.len();
     let mut s = String::with_capacity(2048 + n * 256);
-    s.push_str(
-        "You are synthesising release notes from a series of recorded \
-         AI-agent investigations. Output a single Markdown block under \
-         a top-level `## Release notes` heading.\n\n\
-         Hard constraints:\n\
-         - Plain GitHub-flavored Markdown. No HTML, no embedded code \
-         fences around the whole thing.\n\
-         - Group entries by outcome when the inputs are mixed (a \
-         `### Shipped` section for successes, `### In progress` for \
-         abandoned, `### Investigated but not resolved` for failures). \
-         Skip the empty subsections.\n\
-         - Each entry is one bullet point summarising what changed, \
-         framed for a release-notes audience. Quote the task verbatim \
-         only when the recap is opaque without it.\n\
-         - Be concrete. Name user-visible outcomes (\"ships PR #142\"), \
-         not meta descriptions of the recording (\"the agent \
-         investigated\").\n\
-         - Do not include any secrets, API keys, emails, or PII. If \
-         the source mentions them, refer abstractly.\n\
-         - Do not invent details the recaps don't support.\n\n",
-    );
+    s.push_str(instruction_block_for(audience));
     let _ = writeln!(s, "Cassettes summarised: {n}");
     s.push('\n');
     for (i, p) in projections.iter().enumerate() {
@@ -4863,7 +4956,7 @@ mod changelog_tests {
                 recap: "Root cause unclear; needs Grafana access we don't have.".into(),
             },
         ];
-        let prompt = render_changelog_prompt(&projections);
+        let prompt = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
 
         // Shape assertions — refactor-resilient but still pinning the
         // load-bearing pieces.
@@ -4894,7 +4987,7 @@ mod changelog_tests {
             created_at: "2026-05-15T00:00:00Z".into(),
             recap: "didn't ship.".into(),
         }];
-        let prompt = render_changelog_prompt(&projections);
+        let prompt = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
         assert!(prompt.contains("Cassettes summarised: 1"));
         assert!(prompt.contains("--- Cassette 1 of 1 ---"));
         assert!(prompt.contains("Outcome: failure"));
@@ -4916,12 +5009,102 @@ mod changelog_tests {
                 created_at: "2026-05-15T00:00:00Z".into(),
                 recap: "r.".into(),
             }];
-            let prompt = render_changelog_prompt(&projections);
+            let prompt = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
             assert!(
                 prompt.contains(&format!("Outcome: {expected}")),
                 "outcome {expected} missing in: {prompt}"
             );
         }
+    }
+
+    // =====================================================================
+    // Phase 2 of #103 (carved per #246): --audience flag templates.
+    // =====================================================================
+
+    fn two_cassette_fixture() -> Vec<ChangelogProjection> {
+        vec![
+            ChangelogProjection {
+                path: std::path::PathBuf::from("cassette-a.tape"),
+                task: "Investigate payment failures for customer 4471".into(),
+                outcome: tape_format::meta::Outcome::Success,
+                created_at: "2026-05-15T10:00:00Z".into(),
+                recap: "Race condition in process_refund() — repro lands in PR #142.".into(),
+            },
+            ChangelogProjection {
+                path: std::path::PathBuf::from("cassette-b.tape"),
+                task: "Look into stale metrics on dashboard".into(),
+                outcome: tape_format::meta::Outcome::Abandoned,
+                created_at: "2026-05-15T14:30:00Z".into(),
+                recap: "Root cause unclear; needs Grafana access we don't have.".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn render_changelog_prompt_sprint_retro_snapshot() {
+        let projections = two_cassette_fixture();
+        let prompt = render_changelog_prompt(&projections, ChangelogAudience::SprintRetro);
+
+        // Template-specific shape assertions.
+        assert!(prompt.starts_with("You are synthesising a sprint retro"));
+        assert!(prompt.contains("## Sprint retro"));
+        assert!(prompt.contains("### What shipped"));
+        assert!(prompt.contains("### What we learned"));
+        assert!(prompt.contains("### What's still open"));
+        // Shared per-cassette stanza still emitted.
+        assert!(prompt.contains("Cassettes summarised: 2"));
+        assert!(prompt.contains("--- Cassette 1 of 2 ---"));
+        assert!(prompt.contains("Recap: Race condition in process_refund()"));
+        // Hard constraint intact.
+        assert!(prompt.contains("Do not include any secrets"));
+        assert!(prompt.contains("Do not invent details"));
+        // Must NOT carry release-notes-specific copy.
+        assert!(!prompt.contains("## Release notes"));
+        assert!(!prompt.contains("### Shipped"));
+    }
+
+    #[test]
+    fn render_changelog_prompt_incident_snapshot() {
+        let projections = two_cassette_fixture();
+        let prompt = render_changelog_prompt(&projections, ChangelogAudience::Incident);
+
+        assert!(prompt.starts_with("You are synthesising an incident postmortem"));
+        assert!(prompt.contains("## Incident postmortem"));
+        assert!(prompt.contains("### Timeline"));
+        assert!(prompt.contains("### Impact"));
+        assert!(prompt.contains("### Root cause"));
+        assert!(prompt.contains("### Follow-ups"));
+        assert!(prompt.contains("Unknown — recaps insufficient"));
+        // Shared per-cassette stanza still emitted.
+        assert!(prompt.contains("Cassettes summarised: 2"));
+        assert!(prompt.contains("Created: 2026-05-15T10:00:00Z"));
+        // Hard constraint intact.
+        assert!(prompt.contains("Do not include any secrets"));
+        // Must NOT carry release-notes-specific copy.
+        assert!(!prompt.contains("## Release notes"));
+        assert!(!prompt.contains("### Shipped"));
+    }
+
+    #[test]
+    fn explicit_release_notes_audience_matches_default_byte_for_byte() {
+        // Bare `tape changelog` (clap default) and
+        // `tape changelog --audience release-notes` MUST produce
+        // identical prompts. Phase-1 backwards-compat invariant.
+        let projections = two_cassette_fixture();
+        let default = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
+        let explicit = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
+        assert_eq!(default, explicit);
+    }
+
+    #[test]
+    fn three_audiences_produce_distinct_prompts() {
+        let projections = two_cassette_fixture();
+        let rn = render_changelog_prompt(&projections, ChangelogAudience::ReleaseNotes);
+        let sr = render_changelog_prompt(&projections, ChangelogAudience::SprintRetro);
+        let inc = render_changelog_prompt(&projections, ChangelogAudience::Incident);
+        assert_ne!(rn, sr);
+        assert_ne!(rn, inc);
+        assert_ne!(sr, inc);
     }
 }
 

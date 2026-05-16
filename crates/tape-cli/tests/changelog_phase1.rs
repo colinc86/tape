@@ -322,3 +322,43 @@ fn missing_taperc_exits_two_with_actionable_diagnostic() {
         "stderr should name `.taperc`: {stderr}"
     );
 }
+
+#[test]
+fn audience_bogus_value_clap_rejects() {
+    // Phase 2 of #103 (carved per #246): `--audience` accepts only
+    // the three bundled kebab-case values. Anything else hits
+    // clap's stock invalid-value diagnostic (exit 2). No need to
+    // arm a mock — clap fails before the dispatch arm runs, so a
+    // dummy fixture path is fine.
+    let tmp = tempfile::tempdir().unwrap();
+    let cassette = tmp.path().join("nope.tape");
+    let r = std::process::Command::new(binary_path())
+        .args([
+            "changelog",
+            "--audience",
+            "ceo-summary",
+            cassette.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(r.status.code(), Some(2), "{r:?}");
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains("invalid value") || stderr.contains("'ceo-summary'"),
+        "stderr should be clap's invalid-value diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn audience_help_lists_three_bundled_kebab_case_values() {
+    let r = std::process::Command::new(binary_path())
+        .args(["changelog", "--help"])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{r:?}");
+    let stdout = String::from_utf8(r.stdout).unwrap();
+    let lower = stdout.to_lowercase();
+    assert!(lower.contains("release-notes"), "{stdout}");
+    assert!(lower.contains("sprint-retro"), "{stdout}");
+    assert!(lower.contains("incident"), "{stdout}");
+}
