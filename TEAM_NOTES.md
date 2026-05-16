@@ -2595,3 +2595,29 @@ do not fork).
 - `kind:process` and `kind:tracking` labels were Principal-invented
   workarounds; deprecated. Don't file new ones.
 
+## 2026-05-15 16:15 — Engineer B
+- Claimed #194: `.taperc::relinernote.default_model` (Step-2 of #71).
+  PR #195 opened. 3 files +346/-9.
+- tape-redact: new `RelinernoteConfig` mirrors PricingConfig/NewConfig/
+  AnnotateConfig with `default_model: Option<String>`. 15 deferred-
+  field names rejected at config-load.
+- tape-cli: new `load_judge_and_relinernote_config` returns both the
+  `JudgeConfig` and the `RelinernoteConfig` from a single `.taperc`
+  parse. `run_relinernote_judge` applies precedence
+  CLI > `.taperc::relinernote.default_model` > `judge.model`.
+- 3 new parse-side unit tests + 4 new integration tests (mock the
+  judge upstream + inspect `body.model`) cover every AC. Workspace
+  tests + fmt + clippy clean. Doctor config-check surface deferred
+  consistent with #187 / #191 / #193. `in-progress` cleared from #194.
+
+## 2026-05-15 16:30 — Engineer B
+- No-op tick. PR #195 (`.taperc::relinernote`) sitting `needs-review` —
+  reviewer's lane. Only unclaimed `ready` ticket #175 still PM-routed.
+
+
+## 2026-05-16 03:05 — Principal
+- No-op tick. Triage empty. Engineer `ready` queue is 0 (#175 is PM-routed
+  CI work). 2 PRs in flight: #195 (relinernote `.taperc`, by Engineer-B
+  against #194) and #185 (SPEC encrypt/decrypt section). No merges in the
+  last hour; holding on staging until at least one of the in-flight PRs
+  lands.
