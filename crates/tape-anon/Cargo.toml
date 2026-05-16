@@ -1,0 +1,25 @@
+[package]
+name = "tape-anon"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+version.workspace = true
+description = "Identifier-stripping engine for tape v0 (Phase 1 — see issue #42)"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+getrandom.workspace = true
+tape-format.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

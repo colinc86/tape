@@ -11,6 +11,7 @@ members = [
     "crates/tape-mcp",
     "crates/tape-judge",
     "crates/tape-export",
+    "crates/tape-anon",
 ]
 
 [workspace.package]
@@ -78,6 +79,11 @@ tape-diff = { path = "crates/tape-diff", version = "0.2.0" }
 tape-mcp = { path = "crates/tape-mcp", version = "0.2.0" }
 tape-judge = { path = "crates/tape-judge", version = "0.2.0" }
 tape-export = { path = "crates/tape-export", version = "0.2.0" }
+tape-anon = { path = "crates/tape-anon", version = "0.2.0" }
+
+# Anon (#204 Phase 1)
+hmac = "0.12"
+getrandom = "0.2"
 
 # Dev
 insta = { version = "1", features = ["yaml", "json", "filters"] }

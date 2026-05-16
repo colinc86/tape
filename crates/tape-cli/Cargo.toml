@@ -26,6 +26,7 @@ tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tape-anon.workspace = true
 tape-format.workspace = true
 tape-play.workspace = true
 tape-diff.workspace = true
