@@ -33,6 +33,27 @@ enum Cmd {
         #[arg(long)]
         kind: Option<String>,
     },
+    /// Walk a cassette's tracks in chronological order, printing one
+    /// per pause. Phase 1 of #101 (carved per #232): strictly
+    /// read-only — nothing executes, no LLM is called, no shell is
+    /// run. Hard-coded 500 ms inter-step pause; the future `--speed`
+    /// flag from #101 will replace it. `--step N` skips the pacing
+    /// and prints exactly the matching track.
+    ///
+    /// Out of scope for Phase 1 (deferred to #101 Phase 2+):
+    /// `--speed`, `--pause-on`, `--from-step`/`--to-step` range
+    /// filters, `--format markdown|slides|tui`, `--narrate`,
+    /// `--theme`/`--no-color`, `--execute`/`--yes-execute`,
+    /// `--emit-otlp`, interactive keypress / TTY detection,
+    /// annotation rendering.
+    Replay {
+        /// Cassette to walk.
+        file: std::path::PathBuf,
+        /// Print only the track with this step number; suppresses
+        /// the inter-step pause. Exit 1 if no track has step N.
+        #[arg(long)]
+        step: Option<u64>,
+    },
     /// One-line-per-track listing.
     Ls { file: std::path::PathBuf },
     /// Read-only analytics over a single cassette. Phase-3 of #31:
@@ -807,6 +828,7 @@ fn main() -> Result<()> {
             range,
             kind,
         } => cmd_play(&file, step, range.as_deref(), kind.as_deref()),
+        Cmd::Replay { file, step } => cmd_replay(&file, step),
         Cmd::Diff {
             a,
             b,
@@ -3514,6 +3536,64 @@ fn cmd_play(
         let filtered = tape_play::filter(&tracks, step, parsed_range, kind);
         let owned: Vec<tape_format::tracks::Track> = filtered.into_iter().cloned().collect();
         print!("{}", tape_play::render_play(&owned));
+    }
+    Ok(())
+}
+
+/// Hard-coded inter-step pause for `tape replay` Phase 1. The
+/// future `--speed` flag from #101 §3.1 will replace this with a
+/// CLI-configurable rate.
+const REPLAY_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Phase 1 of #101 (carved per #232). Walk the cassette's tracks in
+/// source order, printing each via `tape_play::render_track_block`
+/// with a 500 ms pause between blocks. `--step N` skips the pacing
+/// and prints exactly the matching track(s).
+fn cmd_replay(file: &std::path::Path, step: Option<u64>) -> Result<()> {
+    use std::io::Write as _;
+
+    let raw = match tape_format::reader::RawTape::open(file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: open {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+    let tracks = match tape_format::tracks::parse_jsonl(raw.tracks_jsonl.as_deref().unwrap_or("")) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: parse tracks.jsonl in {}: {e}", file.display());
+            std::process::exit(2);
+        }
+    };
+
+    if let Some(want) = step {
+        let matches: Vec<&tape_format::tracks::Track> =
+            tracks.iter().filter(|t| t.step == want).collect();
+        if matches.is_empty() {
+            eprintln!("tape replay: cassette has no track with step {want}");
+            std::process::exit(1);
+        }
+        // SPEC forbids duplicate step numbers; `tape verify` catches
+        // it. If it ever slips through, print all matches in source
+        // order rather than fail — graceful per the ticket.
+        for t in matches {
+            print!("{}", tape_play::render_track_block(t));
+        }
+        let _ = std::io::stdout().flush();
+        return Ok(());
+    }
+
+    let last_idx = tracks.len().saturating_sub(1);
+    for (i, t) in tracks.iter().enumerate() {
+        print!("{}", tape_play::render_track_block(t));
+        // Flush so the terminal shows the just-printed block during
+        // the subsequent sleep — without this, line-buffered modes
+        // would queue everything and defeat the pacing UX.
+        let _ = std::io::stdout().flush();
+        if i < last_idx {
+            std::thread::sleep(REPLAY_PAUSE);
+        }
     }
     Ok(())
 }
