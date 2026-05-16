@@ -27,6 +27,88 @@ pub fn render_ls(tracks: &[Track]) -> String {
     out
 }
 
+/// One row in the `tape watch` polled status table. Phase 1 of #100
+/// (carved per #250). `tracks` is `None` when the file doesn't yet
+/// parse as a valid `.tape` (mid-eject, partial zip) — the renderer
+/// emits `—` in that cell rather than aborting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRow {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+    pub modified: std::time::SystemTime,
+    pub tracks: Option<u64>,
+}
+
+/// Render the `tape watch` status table. Pure function over a slice
+/// and an explicit `now` so relative-time strings (`3s ago`) are
+/// deterministic for snapshot tests. The IO shell in `tape-cli`
+/// passes `SystemTime::now()`; tests pass a fixed instant.
+#[must_use]
+pub fn render_watch(rows: &[WatchRow], now: std::time::SystemTime) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<40}  {:>10}  {:>10}  {:>8}",
+        "path", "size", "modified", "tracks"
+    );
+    for row in rows {
+        let modified_rel = format_relative_time(row.modified, now);
+        let tracks_cell = match row.tracks {
+            Some(n) => n.to_string(),
+            None => "—".to_owned(),
+        };
+        let _ = writeln!(
+            out,
+            "{:<40}  {:>10}  {:>10}  {:>8}",
+            row.path.display(),
+            format_size(row.size),
+            modified_rel,
+            tracks_cell
+        );
+    }
+    out
+}
+
+/// Human-friendly byte-size formatter — binary units (KiB / MiB /
+/// GiB) so `tape ls -lh`-style output matches what users expect on
+/// disk. Values < 1024 are integer bytes; anything larger gets one
+/// fractional digit.
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut v = bytes as f64;
+    let mut idx = 0;
+    while v >= 1024.0 && idx < UNITS.len() - 1 {
+        v /= 1024.0;
+        idx += 1;
+    }
+    format!("{v:.1} {}", UNITS[idx])
+}
+
+/// Format `then` as a human-friendly delta against `now`. Returns
+/// `"now"` for ≤1s, `"<N>s ago"` for sub-minute, `"<N>m ago"`
+/// minutes, `"<N>h ago"` hours, `"<N>d ago"` days. Negative deltas
+/// (clock skew — `then` in the future) collapse to `"now"`.
+pub fn format_relative_time(then: std::time::SystemTime, now: std::time::SystemTime) -> String {
+    let elapsed = now.duration_since(then).unwrap_or_default();
+    let secs = elapsed.as_secs();
+    if secs <= 1 {
+        return "now".to_owned();
+    }
+    if secs < 60 {
+        return format!("{secs}s ago");
+    }
+    if secs < 3600 {
+        return format!("{}m ago", secs / 60);
+    }
+    if secs < 86_400 {
+        return format!("{}h ago", secs / 3600);
+    }
+    format!("{}d ago", secs / 86_400)
+}
+
 /// Render a single track as a header + one-line semantic body + blank
 /// separator. Used by `tape replay` (#101 Phase 1, carved per #232) so
 /// the timeline-walk narration shares the exact `── step N · kind ·
@@ -1398,5 +1480,87 @@ mod tests {
         let v = render_stats_json(&fresh_meta(), &tracks, None);
         assert!(v["span"]["wall_clock_ms"].is_null());
         assert_eq!(v["span"]["time_accounting"], "unknown");
+    }
+}
+
+// =====================================================================
+// Phase 1 of #100 (carved per #250): `tape watch` renderer + helpers.
+// =====================================================================
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn epoch_at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn format_size_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1.0 KiB");
+        assert_eq!(format_size(1536), "1.5 KiB");
+        assert_eq!(format_size(1024 * 1024 + 1024 * 512), "1.5 MiB");
+        assert_eq!(format_size(2 * 1024 * 1024 * 1024), "2.0 GiB");
+    }
+
+    #[test]
+    fn format_relative_time_buckets() {
+        let now = epoch_at(1_000_000);
+        assert_eq!(format_relative_time(epoch_at(1_000_000), now), "now");
+        assert_eq!(format_relative_time(epoch_at(999_999), now), "now");
+        assert_eq!(format_relative_time(epoch_at(999_958), now), "42s ago");
+        assert_eq!(format_relative_time(epoch_at(999_700), now), "5m ago");
+        assert_eq!(format_relative_time(epoch_at(992_800), now), "2h ago");
+        assert_eq!(format_relative_time(epoch_at(913_600), now), "1d ago");
+        // Clock skew: `then` after `now` collapses to "now" rather
+        // than panicking on a signed-overflow.
+        assert_eq!(format_relative_time(epoch_at(1_000_100), now), "now");
+    }
+
+    #[test]
+    fn render_watch_two_row_snapshot() {
+        let now = epoch_at(1_000_000);
+        let rows = vec![
+            WatchRow {
+                path: PathBuf::from("a.tape"),
+                size: 4_300,
+                modified: epoch_at(999_997),
+                tracks: Some(12),
+            },
+            WatchRow {
+                path: PathBuf::from("b.tape"),
+                size: 17,
+                modified: epoch_at(999_700),
+                tracks: None,
+            },
+        ];
+        let rendered = render_watch(&rows, now);
+        // Header is present.
+        assert!(rendered.contains("path"), "{rendered}");
+        assert!(rendered.contains("size"), "{rendered}");
+        assert!(rendered.contains("modified"), "{rendered}");
+        assert!(rendered.contains("tracks"), "{rendered}");
+        // First row: parsed tracks count.
+        assert!(rendered.contains("a.tape"), "{rendered}");
+        assert!(rendered.contains("4.2 KiB"), "{rendered}");
+        assert!(rendered.contains("3s ago"), "{rendered}");
+        // Second row: unparsed → em-dash.
+        assert!(rendered.contains("b.tape"), "{rendered}");
+        assert!(rendered.contains("17 B"), "{rendered}");
+        assert!(rendered.contains("5m ago"), "{rendered}");
+        assert!(rendered.contains("—"), "{rendered}");
+    }
+
+    #[test]
+    fn render_watch_empty_input_renders_header_only() {
+        let rendered = render_watch(&[], epoch_at(1_000_000));
+        // Just the header line — no row data.
+        assert!(rendered.contains("path"));
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 1);
     }
 }

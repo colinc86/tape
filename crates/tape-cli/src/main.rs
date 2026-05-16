@@ -119,6 +119,23 @@ enum Cmd {
         #[arg(long, value_name = "PATH")]
         pricing_file: Option<std::path::PathBuf>,
     },
+    /// Poll one or more cassette paths and redraw a status table
+    /// every 2 seconds until Ctrl-C. Phase 1 of #100 (carved per
+    /// #250): file-polling only — no recorder-socket integration,
+    /// no in-flight `tracks.jsonl` tailing, no event stream, no
+    /// budget guard, no output formats. Per-file partial-zip
+    /// failures show `tracks: —` rather than aborting the loop, so
+    /// the display stays useful while `tape record` is mid-eject.
+    ///
+    /// `<pattern>` is a glob (e.g. `~/tapes/*.tape`) or a single
+    /// concrete path. Polls every 2s. `--interval`, `--budget-tokens`,
+    /// `--until`, `--once`, `--include-kind`, `--format json|stream`,
+    /// and the recorder-socket / cassette-tailing flows are all Phase
+    /// 2+ work on #100.
+    Watch {
+        /// Glob pattern matching one or more cassette paths.
+        pattern: String,
+    },
     /// Compare two tapes.
     Diff {
         a: std::path::PathBuf,
@@ -991,6 +1008,7 @@ fn main() -> Result<()> {
             with_cost,
             pricing_file,
         } => cmd_stats(&file, &format, with_cost, pricing_file.as_deref()),
+        Cmd::Watch { pattern } => cmd_watch(&pattern),
         Cmd::Play {
             file,
             step,
@@ -3746,6 +3764,68 @@ fn cmd_stats(
         other => unreachable!("clap should reject this: {other}"),
     }
     Ok(())
+}
+
+/// Hard-coded poll interval. The future `--interval <ms>` flag from
+/// #100's full surface will replace this; Phase 1 takes the 2s
+/// default the ticket pins.
+const WATCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `tape watch <pattern>` — Phase 1 of #100 (carved per #250).
+/// IO shell only: expand the glob, snapshot each matching path,
+/// hand the rows to the pure `tape_play::render_watch` formatter,
+/// clear+redraw, sleep, repeat. Loops until SIGINT (Ctrl-C); no
+/// alt-screen, no `crossterm`, no signal handler — Rust's default
+/// SIGINT behavior exits with code 130 which is the standard.
+fn cmd_watch(pattern: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    loop {
+        let rows = collect_watch_rows(pattern);
+        // ANSI clear-screen + cursor-home. Phase 1 doesn't enter
+        // the alt-screen so terminal scrollback is preserved
+        // post-Ctrl-C.
+        let rendered = tape_play::render_watch(&rows, std::time::SystemTime::now());
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        let _ = write!(h, "\x1b[2J\x1b[H{rendered}");
+        let _ = h.flush();
+        std::thread::sleep(WATCH_POLL_INTERVAL);
+    }
+}
+
+/// Snapshot one polling tick. Glob the pattern, build one
+/// `WatchRow` per match (swallowing per-file parse failures so the
+/// display stays useful while `tape record` is mid-eject). Empty
+/// matches return an empty Vec — the caller still renders a header
+/// + sleeps, so the next tick picks up newly-created files.
+fn collect_watch_rows(pattern: &str) -> Vec<tape_play::WatchRow> {
+    let mut out = Vec::new();
+    let entries = match glob::glob(pattern) {
+        Ok(it) => it,
+        Err(_) => return out, // Malformed pattern → empty table.
+    };
+    for entry in entries {
+        let Ok(path) = entry else { continue };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let size = meta.len();
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        // Per AC #3: a partial / not-yet-valid `.tape` shows
+        // `tracks: —`, not an error.
+        let tracks = match load_tracks(&path) {
+            Ok((_, tracks)) => Some(tracks.len() as u64),
+            Err(_) => None,
+        };
+        out.push(tape_play::WatchRow {
+            path,
+            size,
+            modified,
+            tracks,
+        });
+    }
+    out
 }
 
 fn cmd_play(
