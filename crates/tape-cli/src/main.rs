@@ -2,6 +2,7 @@
 
 mod doctor;
 mod playlist;
+mod self_update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -160,6 +161,30 @@ enum Cmd {
         /// Strip ANSI color. Also honors `$NO_COLOR`.
         #[arg(long)]
         no_color: bool,
+    },
+    /// Compare the running binary's version against the latest
+    /// GitHub Release tag. Phase 1 of #108 (carved per #234):
+    /// read-only — no download, no checksum, no rollback. Phase 2+
+    /// adds the install path, signature verification, rollback,
+    /// multi-binary atomic updates, and the `.taperc::self_update`
+    /// section.
+    ///
+    /// `--check` is required in Phase 1; running `tape self-update`
+    /// without it exits 2 with a pointer to #108.
+    ///
+    /// Network failures collapse to `status: unknown` and exit 0 —
+    /// `--check` is informational and must not break onboarding
+    /// scripts behind flaky networks.
+    SelfUpdate {
+        /// Required in Phase 1. Compares versions and prints the
+        /// result; no install path.
+        #[arg(long)]
+        check: bool,
+        /// Output format. `text` (default) prints a human-readable
+        /// 3- or 4-line report; `json` emits a pinned
+        /// `schema_version: "1.0"` shape suitable for scripting.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Generate a new `tape/v0` cassette from a bundled template.
     ///
@@ -881,6 +906,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::SelfUpdate { check, format } => cmd_self_update(check, &format),
         cmd @ Cmd::New { .. } => dispatch_new(cmd),
         Cmd::Recap {
             file,
@@ -957,6 +983,36 @@ fn main() -> Result<()> {
             sig,
         } => cmd_verify_sig(&cassette, &pubkey, sig),
     }
+}
+
+/// Phase 1 of #108 (carved per #234). `--check` is required;
+/// without it we exit 2 with a pointer to #108 so the Phase-2
+/// install path lands behind a known shape. Network errors collapse
+/// to `status: unknown` and exit 0 — the `--check` UX must not
+/// break onboarding scripts behind flaky networks.
+fn cmd_self_update(check: bool, format: &str) -> Result<()> {
+    if !check {
+        eprintln!("tape self-update: Phase 2 (install) not yet implemented — see #108");
+        std::process::exit(2);
+    }
+    let fmt = match format {
+        "text" => self_update::OutputFormat::Text,
+        "json" => self_update::OutputFormat::Json,
+        other => {
+            eprintln!("tape self-update: unknown --format {other:?} (use text or json)");
+            std::process::exit(2);
+        }
+    };
+    // `TAPE_SELF_UPDATE_URL` lets the integration tests point at an
+    // axum mock server on `127.0.0.1:0`. Not documented for users —
+    // this is purely a test seam.
+    let api_url = std::env::var("TAPE_SELF_UPDATE_URL")
+        .unwrap_or_else(|_| self_update::GITHUB_API_URL.to_owned());
+    let code = self_update::check(fmt, &api_url);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 /// Thin trampoline from the `Cmd::New` match arm into `cmd_new`.
