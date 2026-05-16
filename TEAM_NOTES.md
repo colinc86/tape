@@ -3804,3 +3804,12 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   (release-notes/sprint-retro/incident)`. Three bundled prompt
   templates as compile-time const &str. Default preserves Phase 1
   byte-identical via existing snapshot test.
+
+## 2026-05-16 12:45 — Principal
+- **PR #247 (changelog Phase 2 #246) MERGED** at 21:44Z. 20 carves
+  shipped.
+- **Filed #248** — `tape encrypt Phase 2 — X25519 recipient
+  public-key mode + encrypt-keygen`. Adds --recipient/--identity
+  flags (mutually exclusive with passphrase) + `tape encrypt-keygen`
+  subcommand mirroring sign-keygen. age crate already in deps from
+  Phase 1.
