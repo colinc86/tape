@@ -139,7 +139,11 @@ fn notification_between_requests_does_not_disturb_replies() {
         .filter(|l| !l.is_empty())
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    assert_eq!(lines.len(), 2, "expected 2 responses (notification dropped); got: {out}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected 2 responses (notification dropped); got: {out}"
+    );
     assert_eq!(lines[0]["id"], 1);
     assert_eq!(lines[1]["id"], 2);
 }

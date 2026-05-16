@@ -161,7 +161,7 @@ fn file_read_event(input: &Value, response: &Value) -> Value {
     let content_hash = response
         .get("file_content")
         .and_then(Value::as_str)
-        .map(|c| hash_str(c))
+        .map(hash_str)
         .or_else(|| {
             if path.is_empty() {
                 None
@@ -199,10 +199,7 @@ fn file_read_event(input: &Value, response: &Value) -> Value {
 /// added by #43) means a multi-GB pre-image is hashed without sitting in
 /// RSS — the hook runs synchronously inside Claude Code's tool flow.
 fn handle_file_write_pre(input: &Value, tool_use_id: Option<&str>) {
-    let path = input
-        .get("file_path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let path = input.get("file_path").and_then(Value::as_str).unwrap_or("");
     if path.is_empty() {
         return;
     }
@@ -224,10 +221,7 @@ fn handle_file_write_pre(input: &Value, tool_use_id: Option<&str>) {
     };
     let dir = before_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!(
-            "tape-hook: create before-dir {}: {e}",
-            dir.display()
-        );
+        eprintln!("tape-hook: create before-dir {}: {e}", dir.display());
         return;
     }
     let buf_path = dir.join(format!("{key}.before"));

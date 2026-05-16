@@ -70,9 +70,8 @@ pub fn parse_jsonl(content: &str) -> crate::Result<Vec<Track>> {
                 i + 1
             )));
         }
-        let t = Track::from_line(line).map_err(|e| {
-            crate::Error::Invalid(format!("line {}: {e}", i + 1))
-        })?;
+        let t = Track::from_line(line)
+            .map_err(|e| crate::Error::Invalid(format!("line {}: {e}", i + 1)))?;
         tracks.push(t);
     }
     Ok(tracks)

@@ -7,7 +7,7 @@
 //! - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` → `Kind::FileWrite`
 //! - `mcp__<server>__<tool>`                    → `Kind::McpCall`, `payload.server = <server>`
 //! - everything else (Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, ...)
-//!                                              → `Kind::McpCall`, `payload.server = "builtin"`
+//!   → `Kind::McpCall`, `payload.server = "builtin"`
 //!
 //! Stretching `McpCall` to cover Claude Code's built-in non-MCP tools
 //! preserves the closed v0 `Kind` enum. v0.2 / `tape/v1` may introduce a
@@ -119,9 +119,10 @@ fn user_to_track(
     // Skip user messages whose content is purely tool_result blocks — those
     // were already consumed by the assistant tool_use mapping.
     if let Value::Array(blocks) = &u.message.content {
-        if blocks.iter().all(|b| {
-            b.get("type").and_then(Value::as_str) == Some("tool_result")
-        }) {
+        if blocks
+            .iter()
+            .all(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        {
             return None;
         }
     }
@@ -373,10 +374,8 @@ fn map_tool_to_track(name: &str, input: &Value, result: Option<&Value>) -> (Kind
             // `blake3:<64 hex>` shape. (Issue #13.)
             let mut payload = json!({"path": path});
             if let Some(text) = extract_tool_result_text(result) {
-                payload["content_hash"] = Value::String(format!(
-                    "blake3:{}",
-                    blake3::hash(text.as_bytes()).to_hex()
-                ));
+                payload["content_hash"] =
+                    Value::String(format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex()));
             }
             (Kind::FileRead, payload)
         }
@@ -408,10 +407,8 @@ fn map_tool_to_track(name: &str, input: &Value, result: Option<&Value>) -> (Kind
                 "before_hash": Value::Null,
             });
             if let Some(text) = after_text {
-                payload["after_hash"] = Value::String(format!(
-                    "blake3:{}",
-                    blake3::hash(text.as_bytes()).to_hex()
-                ));
+                payload["after_hash"] =
+                    Value::String(format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex()));
             }
             if name == "Edit" {
                 if let (Some(o), Some(n)) = (
@@ -463,16 +460,14 @@ fn now_ts() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::parser::parse_jsonl;
+    use super::*;
     use std::io::BufReader;
     use std::path::PathBuf;
 
     fn convert_fixture(name: &str) -> (Vec<Track>, ConvertReport) {
-        let s = std::fs::read_to_string(format!(
-            "tests/fixtures/transcripts/{name}.jsonl"
-        ))
-        .unwrap();
+        let s =
+            std::fs::read_to_string(format!("tests/fixtures/transcripts/{name}.jsonl")).unwrap();
         let (entries, parse) = parse_jsonl(BufReader::new(s.as_bytes())).unwrap();
         let sibling = PathBuf::from(format!(
             "tests/fixtures/transcripts/sessions/session-{}",
@@ -537,9 +532,9 @@ mod tests {
         assert!(kinds.contains(&Kind::FileRead));
         assert!(kinds.contains(&Kind::FileWrite));
         // Grep (builtin) → McpCall
-        let grep = tracks.iter().find(|t| {
-            t.kind == Kind::McpCall && t.payload["tool"] == "Grep"
-        });
+        let grep = tracks
+            .iter()
+            .find(|t| t.kind == Kind::McpCall && t.payload["tool"] == "Grep");
         assert!(grep.is_some(), "Grep should map to McpCall server=builtin");
     }
 

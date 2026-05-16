@@ -34,9 +34,8 @@ struct ScanRule {
 
 impl ScanRule {
     fn compiled(&self) -> &'static Regex {
-        self.regex.get_or_init(|| {
-            Regex::new(self.pattern).expect("compile-time-valid regex")
-        })
+        self.regex
+            .get_or_init(|| Regex::new(self.pattern).expect("compile-time-valid regex"))
     }
 }
 

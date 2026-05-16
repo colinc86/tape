@@ -167,7 +167,8 @@ mod tests {
                 "args": {"path": "/etc/hosts"},
                 "result": {"bytes": 0}
             }
-        })).unwrap();
+        }))
+        .unwrap();
         client.write_all(line.as_bytes()).await.unwrap();
         client.write_all(b"\n").await.unwrap();
         client.shutdown().await.unwrap();

@@ -60,23 +60,27 @@ fn handle_line(deck: &Deck, line: &str) -> Option<Response> {
     let req: Request = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return Some(Response::err(None, PARSE_ERROR, format!("parse error: {e}")));
+            return Some(Response::err(
+                None,
+                PARSE_ERROR,
+                format!("parse error: {e}"),
+            ));
         }
     };
     if req.jsonrpc != "2.0" {
         // A notification with a wrong jsonrpc version is still a notification —
         // silent drop. Only respond when the client gave us an id to reply to.
-        if req.id.is_none() {
-            return None;
-        }
-        return Some(Response::err(req.id, INVALID_REQUEST, "jsonrpc must be '2.0'"));
+        req.id.as_ref()?;
+        return Some(Response::err(
+            req.id,
+            INVALID_REQUEST,
+            "jsonrpc must be '2.0'",
+        ));
     }
-    if req.id.is_none() {
-        // Notification — per JSON-RPC 2.0 §4.1, the server MUST NOT reply.
-        // The deck has no notification-handling state machine yet, so this
-        // is a silent no-op.
-        return None;
-    }
+    // Notification — per JSON-RPC 2.0 §4.1, the server MUST NOT reply.
+    // The deck has no notification-handling state machine yet, so this
+    // is a silent no-op.
+    req.id.as_ref()?;
 
     let id = req.id.clone();
 
@@ -139,6 +143,10 @@ fn handle_line(deck: &Deck, line: &str) -> Option<Response> {
                 ),
             }
         }
-        _ => Response::err(id, METHOD_NOT_FOUND, format!("unknown method: {}", req.method)),
+        _ => Response::err(
+            id,
+            METHOD_NOT_FOUND,
+            format!("unknown method: {}", req.method),
+        ),
     })
 }

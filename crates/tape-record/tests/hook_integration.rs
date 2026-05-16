@@ -47,7 +47,11 @@ async fn bash_hook_records_shell_event() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = session.snapshot();
-    let shell_events: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::Shell).collect();
+    let shell_events: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::Shell)
+        .collect();
     assert_eq!(shell_events.len(), 1, "expected one shell event");
     let payload = &shell_events[0].payload;
     assert_eq!(payload["command"], "ls /tmp");
@@ -88,15 +92,17 @@ async fn read_hook_records_file_read_event() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = session.snapshot();
-    let reads: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileRead).collect();
+    let reads: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileRead)
+        .collect();
     assert_eq!(reads.len(), 1);
     assert_eq!(reads[0].payload["path"], "/etc/hosts");
-    assert!(
-        reads[0].payload["content_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("blake3:")
-    );
+    assert!(reads[0].payload["content_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("blake3:"));
 
     handle.shutdown().await;
 }
@@ -132,15 +138,17 @@ async fn write_hook_records_file_write_event() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].payload["path"], "/tmp/x.txt");
-    assert!(
-        writes[0].payload["after_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("blake3:")
-    );
+    assert!(writes[0].payload["after_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("blake3:"));
 
     handle.shutdown().await;
 }
@@ -180,7 +188,11 @@ async fn edit_hook_records_diff() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
     assert!(payload["diff"].as_str().unwrap().contains("foo"));
@@ -253,11 +265,20 @@ async fn write_hook_emits_unified_diff_and_after_hash() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    assert!(payload["before_hash"].is_null(), "PR 1 leaves before_hash null");
-    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    assert!(
+        payload["before_hash"].is_null(),
+        "PR 1 leaves before_hash null"
+    );
+    let after = payload["after_hash"]
+        .as_str()
+        .expect("after_hash always present");
     assert!(after.starts_with("blake3:") && after.len() == "blake3:".len() + 64);
     let diff = payload["diff"].as_str().expect("diff always present");
     assert_unified_diff_shape(diff);
@@ -281,10 +302,16 @@ async fn edit_hook_emits_unified_diff_with_post_image() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let after = payload["after_hash"]
+        .as_str()
+        .expect("after_hash always present");
     assert!(after.starts_with("blake3:"));
     // Hash should match blake3 of the post-image we declared.
     let expected = format!(
@@ -316,10 +343,16 @@ async fn multiedit_hook_emits_unified_diff() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let after = payload["after_hash"]
+        .as_str()
+        .expect("after_hash always present");
     assert_eq!(
         after,
         format!("blake3:{}", blake3::hash(b"ALPHA\nbeta\nGAMMA\n").to_hex())
@@ -347,10 +380,16 @@ async fn read_hook_hashes_from_disk_when_response_omits_content() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let reads: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileRead).collect();
+    let reads: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileRead)
+        .collect();
     assert_eq!(reads.len(), 1);
     let payload = &reads[0].payload;
-    let h = payload["content_hash"].as_str().expect("content_hash always present");
+    let h = payload["content_hash"]
+        .as_str()
+        .expect("content_hash always present");
     let expected = format!("blake3:{}", blake3::hash(b"hello\n").to_hex());
     assert_eq!(h, expected);
 
@@ -379,7 +418,11 @@ async fn read_hook_streaming_hash_matches_one_shot_on_large_sparse_file() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let reads: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileRead).collect();
+    let reads: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileRead)
+        .collect();
     assert_eq!(reads.len(), 1);
     let h = reads[0].payload["content_hash"]
         .as_str()
@@ -421,18 +464,33 @@ async fn edit_hook_disk_fallback_stream_hashes_and_diffs() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
 
-    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let after = payload["after_hash"]
+        .as_str()
+        .expect("after_hash always present");
     let expected = format!("blake3:{}", blake3::hash(post.as_bytes()).to_hex());
-    assert_eq!(after, expected, "stream-hash must match one-shot hash of post-image");
+    assert_eq!(
+        after, expected,
+        "stream-hash must match one-shot hash of post-image"
+    );
 
     let diff = payload["diff"].as_str().expect("diff always present");
     assert_unified_diff_shape(diff);
-    assert!(diff.contains("-BAR"), "diff missing pre-image substring: {diff}");
-    assert!(diff.contains("+FOO"), "diff missing post-image substring: {diff}");
+    assert!(
+        diff.contains("-BAR"),
+        "diff missing pre-image substring: {diff}"
+    );
+    assert!(
+        diff.contains("+FOO"),
+        "diff missing post-image substring: {diff}"
+    );
 
     handle.shutdown().await;
 }
@@ -461,13 +519,22 @@ async fn multiedit_hook_disk_fallback_stream_hashes_and_diffs() {
     });
 
     let (snap, handle, _session) = run_hook_and_snapshot(event).await;
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
 
-    let after = payload["after_hash"].as_str().expect("after_hash always present");
+    let after = payload["after_hash"]
+        .as_str()
+        .expect("after_hash always present");
     let expected = format!("blake3:{}", blake3::hash(post.as_bytes()).to_hex());
-    assert_eq!(after, expected, "stream-hash must match one-shot hash of post-image");
+    assert_eq!(
+        after, expected,
+        "stream-hash must match one-shot hash of post-image"
+    );
 
     let diff = payload["diff"].as_str().expect("diff always present");
     assert_unified_diff_shape(diff);
@@ -567,7 +634,11 @@ async fn write_new_file_before_hash_is_null_after_pretooluse_pair() {
 
     tokio::time::sleep(Duration::from_millis(120)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
     assert!(
@@ -614,10 +685,16 @@ async fn write_existing_file_before_and_after_hashes_differ() {
 
     tokio::time::sleep(Duration::from_millis(120)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    let before = payload["before_hash"].as_str().expect("before_hash present for existing file");
+    let before = payload["before_hash"]
+        .as_str()
+        .expect("before_hash present for existing file");
     let after = payload["after_hash"].as_str().expect("after_hash present");
     assert_eq!(
         before,
@@ -673,10 +750,16 @@ async fn edit_existing_file_before_after_differ_and_diff_is_unified() {
 
     tokio::time::sleep(Duration::from_millis(120)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    let before = payload["before_hash"].as_str().expect("before_hash present");
+    let before = payload["before_hash"]
+        .as_str()
+        .expect("before_hash present");
     let after = payload["after_hash"].as_str().expect("after_hash present");
     assert_eq!(
         before,
@@ -739,10 +822,16 @@ async fn multiedit_existing_file_before_after_differ_and_diff_is_unified() {
 
     tokio::time::sleep(Duration::from_millis(120)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
-    let before = payload["before_hash"].as_str().expect("before_hash present");
+    let before = payload["before_hash"]
+        .as_str()
+        .expect("before_hash present");
     let after = payload["after_hash"].as_str().expect("after_hash present");
     assert_eq!(
         before,
@@ -809,7 +898,11 @@ async fn notebook_edit_pre_and_post_dispatch_produce_event_with_before_hash() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(
         writes.len(),
         1,
@@ -824,7 +917,10 @@ async fn notebook_edit_pre_and_post_dispatch_produce_event_with_before_hash() {
         "before_hash should be a real blake3 hex (not null); got {before:?}"
     );
     assert!(
-        payload["after_hash"].as_str().unwrap().starts_with("blake3:"),
+        payload["after_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"),
         "after_hash still populated"
     );
 
@@ -848,7 +944,10 @@ async fn posttooluse_only_falls_back_to_null_before_hash_with_stderr_warning() {
         "tool_response": {}
     });
     let out = drive_hook(&rig.sock, &rig.before_dir, &post);
-    assert!(out.status.success(), "PostToolUse hook should not crash without a preceding PreToolUse");
+    assert!(
+        out.status.success(),
+        "PostToolUse hook should not crash without a preceding PreToolUse"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("no buffered before_hash"),
@@ -857,7 +956,11 @@ async fn posttooluse_only_falls_back_to_null_before_hash_with_stderr_warning() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let snap = rig.session.snapshot();
-    let writes: Vec<_> = snap.tracks.iter().filter(|t| t.kind == Kind::FileWrite).collect();
+    let writes: Vec<_> = snap
+        .tracks
+        .iter()
+        .filter(|t| t.kind == Kind::FileWrite)
+        .collect();
     assert_eq!(writes.len(), 1);
     let payload = &writes[0].payload;
     assert!(
@@ -865,10 +968,12 @@ async fn posttooluse_only_falls_back_to_null_before_hash_with_stderr_warning() {
         "orphan PostToolUse → before_hash falls back to null"
     );
     assert!(
-        payload["after_hash"].as_str().unwrap().starts_with("blake3:"),
+        payload["after_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"),
         "after_hash still populated"
     );
 
     rig.handle.shutdown().await;
 }
-

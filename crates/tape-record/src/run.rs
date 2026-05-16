@@ -113,9 +113,7 @@ pub async fn record(opts: RecordOptions) -> anyhow::Result<RecordResult> {
     // etc. This is the cleanup invariant the brief is strict about; the
     // RuntimeAdapter's `cleanup` runs BEFORE this dir is dropped, so the
     // two cleanup paths are sequential and non-racing.
-    let temp_dir = tempfile::Builder::new()
-        .prefix("tape-")
-        .tempdir()?;
+    let temp_dir = tempfile::Builder::new().prefix("tape-").tempdir()?;
     let recorder_socket_path = temp_dir.path().join("recorder.sock");
     // Per-recording dir for the PreToolUse hook to buffer before-hashes
     // (#9 PR 2). Lives inside `temp_dir` so it's cleaned up automatically

@@ -118,12 +118,12 @@ recorder:
 outcome: success
 "#;
 
+    let middle = format!(
+        r#"{{"step":2,"kind":"file_read","ts":"2026-05-06T10:00:10Z","payload":{{"path":"/var/log/app.log","content_hash":"blake3:{hex}","content":{{"ref":"sha:{hex}"}}}},"refs":["sha:{hex}"]}}"#
+    );
     let tracks = format!(
-        "{}\n{}\n{}\n",
+        "{}\n{middle}\n{}\n",
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"Read a large log"}}"#,
-        format!(
-            r#"{{"step":2,"kind":"file_read","ts":"2026-05-06T10:00:10Z","payload":{{"path":"/var/log/app.log","content_hash":"blake3:{hex}","content":{{"ref":"sha:{hex}"}}}},"refs":["sha:{hex}"]}}"#
-        ),
         r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
     );
 
@@ -174,12 +174,18 @@ Whether other adjacent flows (chargeback, partial refund) share the same lock do
 ";
 
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"Investigate payment failures for customer 4471"}}"#, "\n",
-        r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:15Z","payload":{"vendor":"anthropic","model":"claude-opus-4-7","request":{"messages":[{"role":"user","content":"Investigate"}]},"response":{"content":[{"type":"text","text":"Let me query the payments table."}]}}}"#, "\n",
-        r#"{"step":3,"kind":"mcp_call","ts":"2026-05-06T10:00:25Z","payload":{"server":"db","tool":"query","args":{"sql":"SELECT * FROM payments WHERE customer_id=4471 AND status='failed'"},"result":{"rows":3}}}"#, "\n",
-        r#"{"step":4,"kind":"annotation","ts":"2026-05-06T10:00:40Z","payload":{"by":"agent","note":"smoking gun: race condition in process_refund() — customer CUST-447139"}}"#, "\n",
-        r#"{"step":5,"kind":"model_call","ts":"2026-05-06T10:00:50Z","payload":{"vendor":"anthropic","model":"claude-opus-4-7","request":{"messages":[{"role":"user","content":"summarize"}]},"response":{"content":[{"type":"text","text":"Race condition confirmed in payments.rs"}]}}}"#, "\n",
-        r#"{"step":6,"kind":"eject","ts":"2026-05-06T10:01:00Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"Investigate payment failures for customer 4471"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:15Z","payload":{"vendor":"anthropic","model":"claude-opus-4-7","request":{"messages":[{"role":"user","content":"Investigate"}]},"response":{"content":[{"type":"text","text":"Let me query the payments table."}]}}}"#,
+        "\n",
+        r#"{"step":3,"kind":"mcp_call","ts":"2026-05-06T10:00:25Z","payload":{"server":"db","tool":"query","args":{"sql":"SELECT * FROM payments WHERE customer_id=4471 AND status='failed'"},"result":{"rows":3}}}"#,
+        "\n",
+        r#"{"step":4,"kind":"annotation","ts":"2026-05-06T10:00:40Z","payload":{"by":"agent","note":"smoking gun: race condition in process_refund() — customer CUST-447139"}}"#,
+        "\n",
+        r#"{"step":5,"kind":"model_call","ts":"2026-05-06T10:00:50Z","payload":{"vendor":"anthropic","model":"claude-opus-4-7","request":{"messages":[{"role":"user","content":"summarize"}]},"response":{"content":[{"type":"text","text":"Race condition confirmed in payments.rs"}]}}}"#,
+        "\n",
+        r#"{"step":6,"kind":"eject","ts":"2026-05-06T10:01:00Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
 
     let pending = PendingTape {
@@ -202,10 +208,16 @@ fn write_expected(path: &Path, codes: &[&str]) -> anyhow::Result<()> {
 }
 
 fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000101", "Missing eject", "success");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000101",
+        "Missing eject",
+        "success",
+    );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:05Z","payload":{"vendor":"anthropic","model":"x","request":{},"response":{}}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"model_call","ts":"2026-05-06T10:00:05Z","payload":{"vendor":"anthropic","model":"x","request":{},"response":{}}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -215,15 +227,24 @@ fn malformed_missing_eject(out: &Path) -> anyhow::Result<()> {
         artifacts: BTreeMap::new(),
     };
     pending.write_to(out.join("missing-eject.tape"))?;
-    write_expected(&out.join("missing-eject.expected.json"), &["MISSING_EJECT_EVENT"])?;
+    write_expected(
+        &out.join("missing-eject.expected.json"),
+        &["MISSING_EJECT_EVENT"],
+    )?;
     Ok(())
 }
 
 fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000102", "Step gap", "success");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000102",
+        "Step gap",
+        "success",
+    );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -238,11 +259,18 @@ fn malformed_step_gap(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000103", "Unknown kind", "success");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000103",
+        "Unknown kind",
+        "success",
+    );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
-        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"sneeze","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -257,10 +285,16 @@ fn malformed_unknown_kind(out: &Path) -> anyhow::Result<()> {
 }
 
 fn malformed_outcome_mismatch(out: &Path) -> anyhow::Result<()> {
-    let meta = std_meta("01h8xy00-0000-7000-b8aa-000000000104", "Outcome mismatch", "success");
+    let meta = std_meta(
+        "01h8xy00-0000-7000-b8aa-000000000104",
+        "Outcome mismatch",
+        "success",
+    );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"failure"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"failure"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -270,7 +304,10 @@ fn malformed_outcome_mismatch(out: &Path) -> anyhow::Result<()> {
         artifacts: BTreeMap::new(),
     };
     pending.write_to(out.join("outcome-mismatch.tape"))?;
-    write_expected(&out.join("outcome-mismatch.expected.json"), &["OUTCOME_MISMATCH"])?;
+    write_expected(
+        &out.join("outcome-mismatch.expected.json"),
+        &["OUTCOME_MISMATCH"],
+    )?;
     Ok(())
 }
 
@@ -288,12 +325,12 @@ fn malformed_artifact_hash_mismatch(out: &Path) -> anyhow::Result<()> {
         "Artifact hash mismatch",
         "success",
     );
+    let middle = format!(
+        r#"{{"step":2,"kind":"file_read","ts":"2026-05-06T10:00:10Z","payload":{{"path":"/x","content_hash":"blake3:{claimed_hex}","content":{{"ref":"sha:{claimed_hex}"}}}},"refs":["sha:{claimed_hex}"]}}"#
+    );
     let tracks = format!(
-        "{}\n{}\n{}\n",
+        "{}\n{middle}\n{}\n",
         r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
-        format!(
-            r#"{{"step":2,"kind":"file_read","ts":"2026-05-06T10:00:10Z","payload":{{"path":"/x","content_hash":"blake3:{claimed_hex}","content":{{"ref":"sha:{claimed_hex}"}}}},"refs":["sha:{claimed_hex}"]}}"#
-        ),
         r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
     );
     let mut artifacts = BTreeMap::new();
@@ -351,7 +388,8 @@ fn malformed_oversized_inline(out: &Path) -> anyhow::Result<()> {
 fn malformed_leaked_anthropic_key(out: &Path) -> anyhow::Result<()> {
     // Synthetic key: matches the rule's prefix shape but is obviously test data.
     let leak = "sk-ant-leaked0123456789012345678901234567890123testfixture";
-    let liner = format!("## What I was asked to do
+    let liner = format!(
+        "## What I was asked to do
 Demonstrate the defense-in-depth scan.
 
 ## What I found
@@ -362,15 +400,18 @@ Flag this fixture as malformed.
 
 ## What I'm uncertain about
 Nothing.
-");
+"
+    );
     let meta = std_meta(
         "01h8xy00-0000-7000-b8aa-000000000107",
         "Leaked anthropic key in liner",
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -398,8 +439,10 @@ recorder:
 outcome: success
 "#;
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta.into(),
@@ -421,8 +464,10 @@ outcome: success
 /// the `leaked-anthropic-key` template for `jwt`, `aws_access_key`, and
 /// `email` — the rules that pre-#33 `tape verify` silently let through.
 fn malformed_leaked_jwt(out: &Path) -> anyhow::Result<()> {
-    let leak = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
-    let liner = format!("## What I was asked to do
+    let leak =
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let liner = format!(
+        "## What I was asked to do
 Demonstrate the defense-in-depth scan.
 
 ## What I found
@@ -433,15 +478,18 @@ Flag this fixture as malformed.
 
 ## What I'm uncertain about
 Nothing.
-");
+"
+    );
     let meta = std_meta(
         "01h8xy00-0000-7000-b8aa-00000000010a",
         "Leaked JWT in liner",
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -460,7 +508,8 @@ Nothing.
 
 fn malformed_leaked_aws_access_key(out: &Path) -> anyhow::Result<()> {
     let leak = "AKIA1234567890ABCDEF";
-    let liner = format!("## What I was asked to do
+    let liner = format!(
+        "## What I was asked to do
 Demonstrate the defense-in-depth scan.
 
 ## What I found
@@ -471,15 +520,18 @@ Flag this fixture as malformed.
 
 ## What I'm uncertain about
 Nothing.
-");
+"
+    );
     let meta = std_meta(
         "01h8xy00-0000-7000-b8aa-00000000010b",
         "Leaked AWS access key in liner",
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -515,8 +567,10 @@ Nothing.
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -581,9 +635,12 @@ fn malformed_reserved_kind_fork(out: &Path) -> anyhow::Result<()> {
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
-        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"fork","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -607,9 +664,12 @@ fn malformed_reserved_kind_splice(out: &Path) -> anyhow::Result<()> {
         "success",
     );
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#, "\n",
-        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"splice","ts":"2026-05-06T10:00:05Z","payload":{}}"#,
+        "\n",
+        r#"{"step":3,"kind":"eject","ts":"2026-05-06T10:00:30Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta,
@@ -740,8 +800,10 @@ recorder:
 outcome: success
 "#;
     let tracks = concat!(
-        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#, "\n",
-        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:01Z","payload":{"outcome":"success"}}"#, "\n",
+        r#"{"step":1,"kind":"task","ts":"2026-05-06T10:00:00Z","payload":{"prompt":"x"}}"#,
+        "\n",
+        r#"{"step":2,"kind":"eject","ts":"2026-05-06T10:00:01Z","payload":{"outcome":"success"}}"#,
+        "\n",
     );
     let pending = PendingTape {
         meta_yaml: meta.into(),
