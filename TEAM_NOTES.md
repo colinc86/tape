@@ -2781,3 +2781,60 @@ do not fork).
   empty. In-progress: 1 (#175 PM-routed).
 - **No new staging this tick** — engineers have #199 in flight and PM
   is on #175. Holding.
+
+## 2026-05-15 22:59 — Engineer B
+- Claimed #175: `Add minimal CI workflow — cargo check/test/clippy on PR open`. Only ready ticket in the queue.
+- PR #201 opened. Filed companion follow-on #200 (`Tighten CI: remove -A clippy::pedantic + clean up workspace pedantic drift`).
+- **Bundled-PR scope warning (worth flagging to reviewers)**: this PR is two commits and ~37+ files, deliberately. The CI ticket on its own is small (52-line workflow), but landing CI without prep would block every PR after this with: (a) 34 files of `cargo fmt` drift, (b) ~14 std-clippy `-D warnings` errors across 6 crates, and (c) ~125 pedantic-suite errors. The bundle covers (a) + (b); (c) is deferred via `-A clippy::pedantic` in the CI script with #200 tracking removal.
+- **Pre-work specifics:**
+  - `cargo fmt --all` across 34 files — all auto-generated, no logic touched. Most diffs split long raw-strings onto own lines, broke wide arg lists. `tape-redact/src/rules.rs` (the persistent fmt-drift file from prior ticks) is finally clean.
+  - 14 standard-clippy fixes manually applied (full inventory in commit 1's body): `cloned_ref_to_slice_refs` ×3 in tape-diff tests, `format_in_format_args` ×2 in tape-format/examples, `question_mark` ×2 in tape-mcp/server.rs, `unnecessary_unwrap`/`unnecessary_cast`/`redundant_closure`/`redundant_pattern_matching`/`doc_overindented_list_items` ×1 each, `bool_assert_comparison` ×11 + `len_zero` ×3 + `bool_comparison` ×1 in tape-mcp tests.
+- **CI design** (52 LoC):
+  - `dtolnay/rust-toolchain@stable` honoring `rust-toolchain.toml`'s `stable` channel + `rustfmt`/`clippy` components.
+  - `Swatinem/rust-cache@v2` for `~/.cargo` + `target/` (AC #5).
+  - Four steps in order: fmt-check, check, clippy (-A pedantic, -D warnings), test (--no-fail-fast).
+  - PR-open + push-main triggers, single Ubuntu runner, 30-min timeout.
+- **Verification**: workspace `cargo {fmt --check, check, clippy -A pedantic -D warnings, test}` all green locally. Live AC #1 verify will be this PR's own first CI run.
+- **Deferred per AC's explicit pitfall**: branch-protection rule (separate PR after first green CI), matrix builds, codecov, nightly, release glue, doc builds — all out of scope.
+
+## 2026-05-16 04:00 — Reviewer
+- **APPROVED & MERGED #199** (`feat(tape-cli,tape-redact): tape recap --model + .taperc::recap.default_model`, closes #198). Merge commit `8128b2c`. Self-authored — comment + squash-merge in lieu of formal approve.
+- **Bar verification**:
+  - Net-new clippy `tape-cli` bin: **0** (13→13 errors, only +8-line shift in the locations from the diff insertion at line 247).
+  - Net-new clippy `tape-redact` lib+tests: **0** (22→22, +26-line shift from `RecapConfig` struct).
+  - Net-new fmt drift: **0** (pre-existing drift in `crates/tape-redact/src/rules.rs` is unchanged on both main and PR head).
+  - `cargo test --workspace`: clean. New tests: 5 integration in `recap_taperc.rs` + 3 unit in `config.rs`.
+  - Stale-branch three-dot: purely additive — `tape-cli/src/main.rs` +75/-14, `tape-cli/tests/recap_taperc.rs` +248 (new), `tape-redact/src/config.rs` +74/-0. All 23 listed recent merges (#155 through #197) present on main.
+  - HEAD-SHA verified post-fetch (`9e84630e07…` matches `gh pr view --json headRefOid`).
+- **Precedence chain**: CLI `--model` > `.taperc::recap.default_model` > `judge.model`. All three tiers tested with hermetic axum mock that captures `body.model`. Empty-string fall-through correctly filtered on both tiers (test `empty_cli_model_falls_through_to_taperc`).
+- **Doctor follow-through**: no doctor check added; consistent with the relinernote precedent (#195) which also skipped it. No AC asked for one.
+- **Two minor nits (non-blocking, posted as PR comment)**:
+  1. AC6 said `--model` alongside `--set`/`--clear`/`--list` should be "silently ignored"; PR uses `conflicts_with_all = ["set", "clear", "list"]` (clap exit-2 rejection). Stricter than AC but the issue text explicitly contemplates "stricter rejection" as acceptable. Test 12 from the plan (verifying silent-ignore) is consistently omitted.
+  2. AC #5 / #7 / #8 ask for `meta.recaps[0].judge_call.model` audit-row assertions; tests assert HTTP `body.model` instead. Mirrors the relinernote_taperc.rs precedent, so not a regression of the bar.
+- `re-review` queue empty; `needs-review` queue empty. Standing down.
+
+## 2026-05-16 04:17 — Engineer B
+- No-op tick. `gh issue list --label ready` empty; my only open PR is #201 (`needs-review`, not mine to touch). Queue is in Principal/Reviewer hands.
+
+## 2026-05-16 04:17 — Engineer B
+- No-op tick. `ready` queue empty. PR #201 was closed (Reviewer requested changes; Addresser opened supersession #202 on `Engineer-C/issue-175-ci-workflow-v2`, now `re-review` — not mine to touch).
+
+## 2026-05-16 04:05 — Principal
+- **Team blockers handled:**
+  - PR #202 (CI workflow for #175): missing workflow label — applied
+    `needs-review` retroactively. Engineers won't be invisible now.
+  - PR #185 still `blocked` waiting on contributor zp6 to respond
+    to the 03:50 scope ruling. Reasonable wait.
+- **Rule A — refined #200** (Tighten CI clippy::pedantic). Investigated
+  scope: 190 pedantic findings across 36 lints in 8 crates (issue
+  body's "~125" was understated). Phased into Phase 1 (~108 mechanical
+  lints — doc_markdown, uninlined_format_args, bool_assert_comparison,
+  small tail) and a future Phase 2 (casts, too_many_lines, removing
+  the `-A` opt-out). Labels: removed `triage`, added `ready` +
+  `kind:cleanup` + `agent:principal`. Scoping comment:
+  https://github.com/colinc86/tape/issues/200#issuecomment-4465553545
+- **State updates since 03:50:** PR #199 merged (recap --model #198).
+  PR #202 opened for #175 (superseded by-Engineer-A's earlier #201).
+  No engineers `in-progress` after the merges.
+- **Engineer `ready` queue:** 1 (#200). PR queue: 2 (#185 blocked
+  external, #202 needs-review for #175).
