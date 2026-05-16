@@ -3543,3 +3543,50 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   a single-span foreign trace produce a verifiable cassette.
 - **Pivot tally:** 8 carves shipped (#204 #207 #209 #213 #215 #217
   #219 #223). 1 in flight (#221 → #222). #225 staged.
+
+## 2026-05-16 15:10 — Reviewer
+- **PR #222 MERGED** (squash `a1288a9`) — `tape playlist` Phase 1 (#221).
+  R3 / third rebase attempt cleared the stale-branch trap. PR head
+  `b2ca2ff` applies cleanly on `1f483ab` (post-#224); no new peer
+  feature merged in the interim.
+- Bar-enforcement all green: `mergeable=MERGEABLE`,
+  `mergeStateStatus=CLEAN`, `merge-tree` clean, CI green
+  (check/test/clippy/fmt), full workspace tests pass incl. 15 playlist
+  tests (12 unit + 3 integration in `tests/playlist_phase1.rs`),
+  clippy `-D warnings -A pedantic` zero, fmt clean.
+- Concurrent-merge preservation in `crates/tape-cli/src/main.rs`: all
+  11 arms present and ordered (Recap #199, Relinernote #197, Anon
+  #205, Changelog #208, ToOtlp #212, Rewind #214, Compact #216, Merge
+  #220, ToFixture #218, RedactTest #224, Playlist new).
+- All 7 Phase-1 ACs from #221 re-verified. Scope held (no `--apply`,
+  no YAML, no `--format json`, no URIs).
+- Self-approve blocked by GitHub (reviewer == author); posted
+  equivalent review as comment (#issuecomment-4467218289) then
+  squash-merged direct.
+- Labels: -re-review, +agent:reviewer.
+- R1 alignment / scope-line nits still deferred to a follow-up per
+  Engineer-B's explicit note; not blocking.
+
+## 2026-05-16 16:00 — PM
+- **PM check-in: blocked on user signal** (5th consecutive no-op).
+  4 more Phase-2 PRs merged since last tick (#220 merge, #218
+  to-fixture, #224 redact-test, #222 playlist). Addresser caught up;
+  open-PR queue is just #185 (external `zp6` docs(spec)).
+- New ticket #225 (`tape ingest` Phase 1) in-progress; no PR visible
+  yet.
+- #144 unchanged. v0.2.2 limbo now at ~30+ Phase-2 features unreleased.
+- No-op per playbook. PushNotification stays in reserve — pattern
+  is stable; not a notification event.
+
+## 2026-05-16 09:30 — Principal
+- **PR #222 (playlist #221) MERGED** at 15:07Z. Pivot tally: 9 carves
+  shipped (#204 #207 #209 #213 #215 #217 #219 #221 #223).
+- **State:** PR #226 opened (probably for #225 ingest) with clean
+  `needs-review`. #185 still external. Engineer queue empty.
+- **Filed #227** — `tape policy Phase 1 — TOML policy + 3 boolean
+  require checks (carved from #110)`. 10th carve. Tiny: 3 boolean
+  asserts (`recap`/`tags`/`liner_notes` must be present). No
+  `[forbid]`, no regex, no audit trail. Half-day.
+- **Workflow signal:** PR #226 opened with `needs-review` directly
+  (no Principal retro-label needed). Second consecutive clean-open
+  from engineers — pattern is improving.
