@@ -22,6 +22,10 @@ pub struct TapeRcConfig {
     /// as later `tape relinernote` slices land. Issue #194.
     #[serde(default)]
     pub relinernote: RelinernoteConfig,
+    /// `[recap]` block. Currently single-field; gains options as
+    /// later `tape recap` slices land. Issue #198.
+    #[serde(default)]
+    pub recap: RecapConfig,
 }
 
 /// `.taperc::pricing` block. One field today: `pricing_file`, the
@@ -106,6 +110,28 @@ pub struct RelinernoteConfig {
     /// Default judge-model id. When set, takes precedence over the
     /// `judge:` block's `model` field for `tape relinernote` only.
     /// CLI `--model` still wins.
+    #[serde(default)]
+    pub default_model: Option<String>,
+}
+
+/// `.taperc::recap` block. One field today: `default_model`, which
+/// overrides the `judge:` block's `model` field for `tape recap
+/// --auto` only (the other tape-judge consumers — `tape diff
+/// --judge`, `tape relinernote` — are unchanged). Resolution
+/// order: CLI `--model` > this field > `judge.model`.
+///
+/// `default_template_id` / `default_temperature` / `default_max_tokens`
+/// / `default_report` are deliberately absent — they depend on
+/// not-yet-shipped flags from #105's Phase-3+ rollout.
+/// `deny_unknown_fields` keeps that boundary load-bearing: a user
+/// who tries to set them today gets a clean typo-style error
+/// rather than a silent no-op. (Issue #198 / Step-3 of #105.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecapConfig {
+    /// Default judge-model id. When set, takes precedence over the
+    /// `judge:` block's `model` field for `tape recap --auto`
+    /// only. CLI `--model` still wins.
     #[serde(default)]
     pub default_model: Option<String>,
 }
@@ -622,6 +648,54 @@ annotate:
             "relinernote:\n  dry_run: true\n",
             "relinernote:\n  default_out: ./out.tape\n",
             "relinernote:\n  out_dir: ./out\n",
+        ] {
+            assert!(
+                TapeRcConfig::parse(bad).is_err(),
+                "expected typo to fail config-load: {bad}"
+            );
+        }
+    }
+
+    // --- Issue #198: `recap:` block parse tests ---
+
+    #[test]
+    fn recap_section_with_default_model_parses() {
+        let yaml = "recap:\n  default_model: claude-haiku-4-5\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.recap.default_model.as_deref(), Some("claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn missing_recap_section_is_default() {
+        let yaml = "redact:\n  disable_default: [\"email\"]\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert!(cfg.recap.default_model.is_none());
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    #[test]
+    fn typo_under_recap_rejects() {
+        // `#[serde(deny_unknown_fields)]` boundary: realistic typos
+        // and deferred-field names from #105's Phase-3+ rollout
+        // (template / temperature / max-tokens / report). Future
+        // slices that add them extend `RecapConfig` and they start
+        // parsing cleanly — until then, fail load.
+        for bad in [
+            "recap:\n  default-model: claude-haiku-4-5\n",
+            "recap:\n  defaultModel: claude-haiku-4-5\n",
+            "recap:\n  model: claude-haiku-4-5\n",
+            "recap:\n  default_template: short\n",
+            "recap:\n  default_template_id: short\n",
+            "recap:\n  template_id: short\n",
+            "recap:\n  default_temperature: 0.5\n",
+            "recap:\n  temperature: 0.5\n",
+            "recap:\n  default_max_tokens: 256\n",
+            "recap:\n  max_tokens: 256\n",
+            "recap:\n  default_report: ./report.json\n",
+            "recap:\n  report: ./report.json\n",
+            "recap:\n  dry_run: true\n",
+            "recap:\n  default_out: ./out.tape\n",
+            "recap:\n  out_dir: ./out\n",
         ] {
             assert!(
                 TapeRcConfig::parse(bad).is_err(),

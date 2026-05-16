@@ -247,6 +247,14 @@ enum Cmd {
         /// `--set` / `--clear` / `--list`. Issue #151.
         #[arg(long, conflicts_with_all = ["set", "clear", "list"])]
         auto: bool,
+        /// Override the judge model for this `tape recap --auto`
+        /// invocation only. Precedence: this flag >
+        /// `.taperc::recap.default_model` > `.taperc::judge.model`.
+        /// Leaves other tape-judge consumers (`tape diff --judge`,
+        /// `tape relinernote`) unchanged. Only meaningful with
+        /// `--auto`. (Issue #198 / Step-3 of #105.)
+        #[arg(long, value_name = "MODEL", conflicts_with_all = ["set", "clear", "list"])]
+        model: Option<String>,
         /// Output path for `--set` / `--clear` / `--auto`. Default
         /// `<basename>.recap.tape` next to the input. Refuses if equal
         /// to the input path.
@@ -506,8 +514,9 @@ fn main() -> Result<()> {
             clear,
             list,
             auto,
+            model,
             out,
-        } => cmd_recap(&file, set, clear, list, auto, out),
+        } => cmd_recap(&file, set, clear, list, auto, model, out),
         Cmd::Tag {
             file,
             add,
@@ -1537,12 +1546,13 @@ fn resolve_recap_edit(
     out_path: &std::path::Path,
     set: Option<&str>,
     auto: bool,
+    cli_model: Option<&str>,
 ) -> (
     tape_format::meta::RecapKind,
     Option<tape_judge::JudgeCallRecord>,
 ) {
     if auto {
-        let (new_recap, record) = run_recap_auto(meta, raw, out_path);
+        let (new_recap, record) = run_recap_auto(meta, raw, out_path, cli_model);
         meta.recap = Some(new_recap);
         return (tape_format::meta::RecapKind::Auto, Some(record));
     }
@@ -1563,12 +1573,14 @@ fn resolve_recap_edit(
     (tape_format::meta::RecapKind::Clear, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_recap(
     file: &std::path::Path,
     set: Option<String>,
     clear: bool,
     list: bool,
     auto: bool,
+    model: Option<String>,
     out: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // 1. Verify exactly one mode flag is set. clap's `conflicts_with_all`
@@ -1622,7 +1634,14 @@ fn cmd_recap(
     //    `--clear` stay in this synchronous body. The helper keeps
     //    `cmd_recap` under the 100-line pedantic threshold by lifting
     //    the per-mode decision out.
-    let (kind, judge_call) = resolve_recap_edit(&mut meta, &raw, &out_path, set.as_deref(), auto);
+    let (kind, judge_call) = resolve_recap_edit(
+        &mut meta,
+        &raw,
+        &out_path,
+        set.as_deref(),
+        auto,
+        model.as_deref(),
+    );
 
     let entry = tape_format::meta::RecapEntry {
         applied_at: chrono::Utc::now()
@@ -1907,17 +1926,30 @@ fn run_recap_auto(
     meta: &tape_format::meta::Meta,
     raw: &tape_format::reader::RawTape,
     out_path: &std::path::Path,
+    cli_model: Option<&str>,
 ) -> (String, tape_judge::JudgeCallRecord) {
-    // a. Load `.taperc::judge:`. Workspace-local takes precedence over
-    //    `$HOME/.taperc`, matching the existing tape-judge consumer
-    //    pattern.
-    let config = match load_judge_config_for_recap() {
-        Ok(c) => c,
+    // a. Load `.taperc::judge:` plus the `[recap]` block. Workspace-local
+    //    takes precedence over `$HOME/.taperc`, matching the existing
+    //    tape-judge consumer pattern.
+    let (mut config, recap_cfg) = match load_judge_and_recap_config() {
+        Ok(pair) => pair,
         Err(msg) => {
             eprintln!("tape recap: RECAP_AUTO_CONFIG — {msg}");
             std::process::exit(2);
         }
     };
+
+    // a.1. Resolve the effective model: CLI `--model` > `.taperc::recap.default_model`
+    //      > `judge.model` (already in `config.model`). Empty strings on
+    //      either tier fall through — they're typo-prone and the next
+    //      tier almost always has a real value.
+    let effective_override = cli_model
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty())
+        .or_else(|| recap_cfg.default_model.clone().filter(|s| !s.is_empty()));
+    if let Some(m) = effective_override {
+        config.model = m;
+    }
 
     // b. Build the prompt up front so a 0-byte tracks.jsonl can't
     //    silently feed the model an empty context.
@@ -1981,10 +2013,15 @@ fn run_recap_auto(
 }
 
 /// Locate `.taperc` (workspace first, user-level fallback), parse the
-/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`].
-/// Returns a CLI-shaped error message when no `judge:` block is found
-/// anywhere — without one, `--auto` has nowhere to send the call.
-fn load_judge_config_for_recap() -> std::result::Result<tape_judge::JudgeConfig, String> {
+/// `judge:` block, and return the resolved [`tape_judge::JudgeConfig`]
+/// alongside the parsed `[recap]` config block. The latter supplies
+/// the `default_model` fallback layered between CLI `--model` and
+/// `judge.model` per issue #198. A failure to read or parse the
+/// `.taperc` itself surfaces an exit-2 error with the file path
+/// named; an absent `[recap]` block returns a default-empty
+/// `RecapConfig` rather than failing.
+fn load_judge_and_recap_config(
+) -> std::result::Result<(tape_judge::JudgeConfig, tape_redact::config::RecapConfig), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
         .or_else(tape_redact::config::TapeRcConfig::locate_user);
@@ -1994,7 +2031,14 @@ fn load_judge_config_for_recap() -> std::result::Result<tape_judge::JudgeConfig,
             .into());
     };
     let yaml = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-    let cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
+    // Parse the `judge:` block via tape-judge's loader (existing path)
+    // and the `[recap]` block via the redact-crate parser (post-#198).
+    // Two parses against the same bytes; the cost is negligible (the
+    // file is small enough that the second parse is a microsecond) and
+    // the alternative would be reshaping the tape-judge loader to
+    // surface `RecapConfig`, which crosses a crate boundary for one
+    // field. Two parses keeps the change local.
+    let judge_cfg = tape_judge::JudgeConfig::from_taperc_yaml(&yaml)
         .map_err(|e| format!("parse {}: {e}", p.display()))?
         .ok_or_else(|| {
             format!(
@@ -2002,7 +2046,10 @@ fn load_judge_config_for_recap() -> std::result::Result<tape_judge::JudgeConfig,
                 p.display()
             )
         })?;
-    Ok(cfg)
+    let recap_cfg = tape_redact::config::TapeRcConfig::parse(&yaml)
+        .map(|c| c.recap)
+        .map_err(|e| format!("parse {}: {e}", p.display()))?;
+    Ok((judge_cfg, recap_cfg))
 }
 
 /// Compose the prompt the judge model receives for `--auto`. Hardcoded
