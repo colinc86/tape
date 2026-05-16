@@ -334,10 +334,15 @@ enum Cmd {
         /// `{by, note}` only).
         #[arg(long)]
         actor: Option<String>,
-        /// Who is making the note. Default `human` for the CLI (the deck
-        /// defaults to `agent`).
-        #[arg(long, default_value = "human", value_parser = ["agent", "human"])]
-        by: String,
+        /// Who is making the note. Default `human` for the CLI when
+        /// neither this flag nor `.taperc::annotate.default_by` is
+        /// set (the deck defaults to `agent`). Resolution order
+        /// (issue #192): this flag > `.taperc::annotate.default_by`
+        /// > `"human"`. Value-set `{"agent", "human"}` validates the
+        /// *resolved* value; an invalid `.taperc` value exits 2
+        /// with the config path named.
+        #[arg(long, value_parser = ["agent", "human"])]
+        by: Option<String>,
         /// Output path. Default: `<basename>.annotated.tape` next to the
         /// input. Refuses if equal to the input path; use `--in-place`
         /// for atomic rewrite of the input. Mutually exclusive with
@@ -515,7 +520,7 @@ fn main() -> Result<()> {
             ts,
             json,
         } => cmd_annotate(
-            &file, note, editor, import, step, actor, &by, out, in_place, ts, json,
+            &file, note, editor, import, step, actor, by, out, in_place, ts, json,
         ),
         Cmd::Export { file, format, out } => cmd_export(&file, &format, out),
         Cmd::Relinernote {
@@ -2210,9 +2215,10 @@ fn resolve_note_body(
     editor: bool,
     import: Option<std::path::PathBuf>,
     by: &str,
+    editor_override: Option<&str>,
 ) -> Option<String> {
     if editor {
-        match compose_note_via_editor(file, by) {
+        match compose_note_via_editor(file, by, editor_override) {
             Ok(Some(body)) => Some(body),
             Ok(None) => {
                 eprintln!("tape annotate: nothing to annotate (empty body)");
@@ -2287,6 +2293,32 @@ fn sibling_path(file: &std::path::Path, suffix: &str) -> std::path::PathBuf {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Load the `.taperc::annotate` block, if any. Returns `Some((path,
+/// cfg))` when a `.taperc` was found AND its parse succeeded; `None`
+/// when no `.taperc` is in scope. A parse failure surfaces an
+/// exit-2 diagnostic with the config path named and the binary
+/// terminates (no original-cassette mutation happens before this
+/// returns). The returned path is the `.taperc`'s location so the
+/// `default_by`-validation diagnostic can name it. Issue #192.
+fn load_annotate_config() -> Option<(std::path::PathBuf, tape_redact::config::AnnotateConfig)> {
+    let cwd = std::env::current_dir().ok()?;
+    let taperc = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+        .or_else(tape_redact::config::TapeRcConfig::locate_user)?;
+    match std::fs::read_to_string(&taperc) {
+        Ok(yaml) => match tape_redact::config::TapeRcConfig::parse(&yaml) {
+            Ok(cfg) => Some((taperc, cfg.annotate)),
+            Err(e) => {
+                eprintln!("tape annotate: failed to parse {}: {e}", taperc.display());
+                std::process::exit(2);
+            }
+        },
+        Err(e) => {
+            eprintln!("tape annotate: failed to read {}: {e}", taperc.display());
+            std::process::exit(2);
+        }
+    }
+}
+
 fn cmd_annotate(
     file: &std::path::Path,
     note: Option<String>,
@@ -2294,16 +2326,52 @@ fn cmd_annotate(
     import: Option<std::path::PathBuf>,
     step: Option<u64>,
     actor: Option<String>,
-    by: &str,
+    by: Option<String>,
     out: Option<std::path::PathBuf>,
     in_place: bool,
     ts: Option<String>,
     json: bool,
 ) -> Result<()> {
+    // 0. Load `.taperc::annotate` (issue #192) for the three
+    //    fallback fields (default_actor / default_by / editor).
+    //    Failed parse exits 2 with the config path named; missing
+    //    file / missing section falls through to defaults.
+    let annotate_cfg = load_annotate_config();
+
+    // Resolve `by`: CLI flag > .taperc::annotate.default_by >
+    // `"human"`. Validate the *resolved* value against
+    // `{"agent", "human"}` — clap already enforced the CLI flag
+    // shape; this catches a typo in the config file.
+    let by_resolved: String = match by {
+        Some(v) => v,
+        None => match annotate_cfg
+            .as_ref()
+            .and_then(|(_, c)| c.default_by.clone())
+        {
+            Some(v) => {
+                if v != "agent" && v != "human" {
+                    let path = annotate_cfg
+                        .as_ref()
+                        .map_or_else(|| "<unknown>".to_owned(), |(p, _)| p.display().to_string());
+                    eprintln!(
+                        "tape annotate: --by: {v:?} from {} is not one of [\"agent\", \"human\"]",
+                        path,
+                    );
+                    std::process::exit(2);
+                }
+                v
+            }
+            None => "human".to_owned(),
+        },
+    };
+    let by: &str = by_resolved.as_str();
+
+    let editor_override = annotate_cfg.as_ref().and_then(|(_, c)| c.editor.as_deref());
+
     // 1a. Acquire the note body. clap already enforces the
     //     mutually-exclusive / required-unless-present-any set, so
     //     exactly one of note/editor/import fires.
-    let Some(note) = resolve_note_body(file, note, editor, import, by) else {
+    let Some(note) = resolve_note_body(file, note, editor, import, by, editor_override) else {
         // `None` is the empty-body cancel from `--editor`. The helper
         // already printed the cancel message; exit 0 with no output.
         return Ok(());
@@ -2478,8 +2546,16 @@ fn cmd_annotate(
         out_path.clone()
     };
 
-    let actor_display =
-        actor.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()));
+    // `--actor` resolution (issue #192): CLI flag > .taperc::annotate.default_actor
+    // > `$USER` > "unknown". Each link checks only its own
+    // source; the next falls through unchanged from pre-#192.
+    let actor_display = actor
+        .or_else(|| {
+            annotate_cfg
+                .as_ref()
+                .and_then(|(_, c)| c.default_actor.clone())
+        })
+        .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()));
 
     if json {
         let mut payload = serde_json::json!({
@@ -2544,14 +2620,19 @@ enum EditorError {
 fn compose_note_via_editor(
     file: &std::path::Path,
     by: &str,
+    editor_override: Option<&str>,
 ) -> std::result::Result<Option<String>, EditorError> {
-    // 1. Resolve the editor. Standard Unix precedence: `$VISUAL`
-    //    overrides `$EDITOR`, which falls back to `vi`. Empty / unset
-    //    env vars are treated as missing so an exported-but-empty
-    //    `EDITOR=` doesn't try to spawn `""`.
-    let editor_cmd = std::env::var("VISUAL")
-        .ok()
+    // 1. Resolve the editor. Precedence (issue #192):
+    //    `.taperc::annotate.editor` (when supplied) > `$VISUAL` >
+    //    `$EDITOR` > `vi`. Empty / unset env vars are treated as
+    //    missing so an exported-but-empty `EDITOR=` doesn't try to
+    //    spawn `""`. The `.taperc` value is consulted by the caller
+    //    and threaded in via `editor_override`; this helper stays
+    //    config-system-agnostic.
+    let editor_cmd = editor_override
         .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| std::env::var("VISUAL").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "vi".to_owned());
 
