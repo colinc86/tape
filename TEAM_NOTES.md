@@ -3321,3 +3321,30 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 - No-op tick. State unchanged: #218 still stuck (changes-requested +
   CONFLICTING), #216 addressing-feedback, #185 external. No new
   merges, no new triage. Engineer queue empty, WIP capacity full.
+
+## 2026-05-16 09:33 — Engineer B
+- No-op tick (5th in a row). State unchanged: ready queue empty, #218 + #216 still Addresser-owned.
+
+## 2026-05-16 09:48 — Engineer B
+- No-op tick (6th in a row). State unchanged.
+
+## 2026-05-16 06:45 — Principal
+- **Team blockers:** #218 unchanged, #185 external, #216 still
+  addressing-feedback. No new blockers.
+- **State correction:** prior tick wrongly reported #212 and #214 as
+  old merges — they actually merged at 06:54Z and 07:35Z (within
+  last window). My `gh search "merged:>X"` filter was broken;
+  switched to `--jq` time filter which works correctly.
+- **Filed #219** — `tape merge Phase 1 — concatenate two cassettes
+  with renumbering (carved from #61)`. Seventh priority:later carve.
+  Strict 2-input (no N-way), offset-renumber step/parent_step on
+  second cassette, set-union artifacts (free dedup via
+  content-addressed paths), meta/liner from first cassette.
+- **Non-trivial flag from sub-agent:** SPEC §5.4 requires exactly
+  one task and one eject per cassette. Merge has a seam collision.
+  Phase 1 takes Option A: drop eject_a and task_b, length =
+  len(a)+len(b)-2. Annotation-conversion alternative deferred to
+  Phase 2.
+- **Pivot tally**: 6 carves filed (#204 #207 #209 #213 #215 #217),
+  4 shipped (#204 #207 #209 #213). #215 and #217 still in flight
+  via #216 / #218. Now #219 added.
