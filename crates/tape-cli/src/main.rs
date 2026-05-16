@@ -602,6 +602,40 @@ enum Cmd {
         #[arg(short = 'o', long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Run a JSONL test-case file against a `.taperc::redact` rules
+    /// configuration and report false positives / false negatives.
+    /// Phase 1 of issue #104 (carved per #223): the rules-runner
+    /// skeleton — no fuzz generation, no JUnit output, no `--baseline`
+    /// rule-drift mode. Read-only consumer of the existing public
+    /// `tape-redact` API (`TapeRcConfig::parse` + `Engine::scan`).
+    ///
+    /// Rules file: any YAML the `.taperc` parser accepts; engine =
+    /// `Engine::with_default_rules()` + `TapeRcConfig::apply(...)`, so
+    /// the user can exercise their `redact.custom` rules alongside
+    /// the built-ins.
+    ///
+    /// Test-cases file: one JSON object per line,
+    /// `{"input": "<string>", "expect_match": true|false}`. Blank
+    /// lines are skipped. Malformed lines exit 2 with the offending
+    /// line number.
+    ///
+    /// Exit codes: `0` every case classified correctly; `1` at least
+    /// one false positive / false negative; `2` rules file unreadable
+    /// / YAML or regex invalid / JSONL parse error / test-cases file
+    /// unreadable.
+    ///
+    /// Out of scope for Phase 1 (deferred to #104): fuzz/canary
+    /// generation, JUnit XML, TOML / YAML / inline test-case formats,
+    /// per-rule pass/fail attribution, `--baseline` drift mode.
+    RedactTest {
+        /// Path to a `.taperc` YAML file (the `redact:` block is the
+        /// only one consulted; others are tolerated to match the
+        /// shared `.taperc` shape).
+        rules_file: std::path::PathBuf,
+        /// Path to a JSONL test-cases file
+        /// (`{"input": "...", "expect_match": true|false}` per line).
+        cases_file: std::path::PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -737,6 +771,10 @@ fn main() -> Result<()> {
             format,
             output,
         } => cmd_to_fixture(&file, &format, output),
+        Cmd::RedactTest {
+            rules_file,
+            cases_file,
+        } => cmd_redact_test(&rules_file, &cases_file),
     }
 }
 
@@ -6337,6 +6375,147 @@ fn cmd_to_fixture(
             .map_err(|e| anyhow::anyhow!("write stdout: {e}"))?;
     }
     Ok(())
+}
+
+/// JSONL line shape for `tape redact-test`. `deny_unknown_fields` is
+/// load-bearing: a stray `expectmatch` typo would otherwise quietly
+/// default to `false`, flipping every case's expected classification.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct RedactTestCase {
+    input: String,
+    expect_match: bool,
+}
+
+const REDACT_TEST_INPUT_TRUNCATE: usize = 200;
+
+/// Phase 1 of #104 (carved per #223). Read-only consumer of the
+/// existing `tape-redact` public API — assemble the engine from a
+/// `.taperc` YAML rules file, walk a JSONL test-cases file, classify
+/// each case via `Engine::scan`, and report FPs / FNs. Exit codes
+/// follow `tape verify`'s convention: 0 clean, 1 any failure, 2 any
+/// configuration / I/O / parse error.
+fn cmd_redact_test(rules_file: &std::path::Path, cases_file: &std::path::Path) -> Result<()> {
+    let rules_yaml = match std::fs::read_to_string(rules_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", rules_file.display());
+            std::process::exit(2);
+        }
+    };
+    let config = match tape_redact::config::TapeRcConfig::parse(&rules_yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: parse {}: {e}", rules_file.display());
+            std::process::exit(2);
+        }
+    };
+    let mut engine = tape_redact::Engine::with_default_rules();
+    if let Err(e) = config.apply(&mut engine) {
+        eprintln!("error: apply {}: {e}", rules_file.display());
+        std::process::exit(2);
+    }
+
+    let cases_text = match std::fs::read_to_string(cases_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", cases_file.display());
+            std::process::exit(2);
+        }
+    };
+
+    let mut passed = 0usize;
+    let mut false_positives: Vec<String> = Vec::new();
+    let mut false_negatives: Vec<String> = Vec::new();
+
+    for (line_no, line) in cases_text.lines().enumerate() {
+        let line_no = line_no + 1; // 1-indexed for human-readable diagnostics.
+        if line.trim().is_empty() {
+            continue;
+        }
+        let case: RedactTestCase = match serde_json::from_str(line) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {}: line {line_no}: {e}", cases_file.display());
+                std::process::exit(2);
+            }
+        };
+        let matched = !engine.scan(&case.input).is_empty();
+        match (case.expect_match, matched) {
+            (true, true) | (false, false) => passed += 1,
+            (false, true) => false_positives.push(case.input),
+            (true, false) => false_negatives.push(case.input),
+        }
+    }
+
+    let total = passed + false_positives.len() + false_negatives.len();
+    let failed = false_positives.len() + false_negatives.len();
+    println!(
+        "{total} test cases: {passed} passed, {failed} failed ({fps} false positives, {fns_} false negatives)",
+        fps = false_positives.len(),
+        fns_ = false_negatives.len(),
+    );
+
+    if !false_positives.is_empty() {
+        println!();
+        println!("FALSE POSITIVES (matched but expect_match=false)");
+        for input in &false_positives {
+            println!("- {}", truncate_redact_test_input(input));
+        }
+    }
+    if !false_negatives.is_empty() {
+        println!();
+        println!("FALSE NEGATIVES (didn't match but expect_match=true)");
+        for input in &false_negatives {
+            println!("- {}", truncate_redact_test_input(input));
+        }
+    }
+
+    if failed > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Cap an input echo at `REDACT_TEST_INPUT_TRUNCATE` chars (not
+/// bytes — multi-byte UTF-8 inputs would otherwise risk panic on a
+/// non-boundary slice). Appends `…` when truncated.
+fn truncate_redact_test_input(s: &str) -> String {
+    let truncated: String = s.chars().take(REDACT_TEST_INPUT_TRUNCATE).collect();
+    if truncated.chars().count() < s.chars().count() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod redact_test_handler_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_input_passes_through() {
+        assert_eq!(truncate_redact_test_input("hello"), "hello");
+    }
+
+    #[test]
+    fn truncate_long_input_caps_with_ellipsis() {
+        let long = "x".repeat(300);
+        let out = truncate_redact_test_input(&long);
+        // 200 'x' + 1 '…' (one char, three bytes)
+        assert_eq!(out.chars().count(), REDACT_TEST_INPUT_TRUNCATE + 1);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_multibyte_does_not_panic_on_boundary() {
+        // 250 copies of a 3-byte char; if we sliced by byte we'd
+        // panic on a non-char-boundary.
+        let s: String = "✓".repeat(250);
+        let out = truncate_redact_test_input(&s);
+        assert_eq!(out.chars().count(), REDACT_TEST_INPUT_TRUNCATE + 1);
+        assert!(out.ends_with('…'));
+    }
 }
 
 #[cfg(test)]
