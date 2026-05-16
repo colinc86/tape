@@ -14,6 +14,10 @@ pub struct TapeRcConfig {
     /// `tape new` slices land. Issue #190.
     #[serde(default)]
     pub new: NewConfig,
+    /// `[annotate]` block. Three optional fallback fields for the
+    /// `tape annotate` flag surface. Issue #192.
+    #[serde(default)]
+    pub annotate: AnnotateConfig,
 }
 
 /// `.taperc::pricing` block. One field today: `pricing_file`, the
@@ -44,6 +48,39 @@ pub struct NewConfig {
     /// `--template <unknown>` already emits.
     #[serde(default)]
     pub default_template: Option<String>,
+}
+
+/// `.taperc::annotate` block. Three optional fallbacks consumed by
+/// `tape annotate` when the corresponding CLI flags / env vars are
+/// absent. CLI flags still win; the config is a per-user defaults
+/// layer between the flag and the binary's built-in defaults.
+/// (Issue #192 / Step-4a of #74.)
+///
+/// `default_kind` / `default_pin` / `strict_kind` from #74 §3.11 are
+/// **deliberately absent** — they depend on the not-yet-shipped
+/// `--kind` / `--pin` payload-fields slice. `deny_unknown_fields`
+/// keeps that boundary load-bearing: a user who tries to set them
+/// today gets a clean typo-style error rather than a silent no-op.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnnotateConfig {
+    /// Default `--actor` value. Resolution order:
+    /// CLI `--actor` > this field > `$USER` > `"unknown"`.
+    #[serde(default)]
+    pub default_actor: Option<String>,
+    /// Default `--by` value. Validation set: `{"agent", "human"}`,
+    /// applied to the *resolved* value (CLI flag if present; else
+    /// this field; else `"human"`). An invalid resolved value
+    /// surfaces an exit-2 diagnostic naming the `.taperc` path.
+    /// Resolution order: CLI `--by` > this field > `"human"`.
+    #[serde(default)]
+    pub default_by: Option<String>,
+    /// Editor command consumed by `tape annotate --editor`. When
+    /// set, takes precedence over `$VISUAL` / `$EDITOR` / `vi`.
+    /// Resolution order: this field > `$VISUAL` > `$EDITOR` > `vi`.
+    /// Dormant when `--editor` is not passed.
+    #[serde(default)]
+    pub editor: Option<String>,
 }
 
 /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
@@ -444,6 +481,67 @@ redact:
             "new:\n  default_templates: minimal\n",
             "new:\n  defaultTemplate: minimal\n",
             "new:\n  template_id: minimal\n",
+        ] {
+            assert!(
+                TapeRcConfig::parse(bad).is_err(),
+                "expected typo to fail config-load: {bad}"
+            );
+        }
+    }
+
+    // --- Issue #192: `annotate:` block parse tests ---
+
+    #[test]
+    fn annotate_section_with_all_three_fields_parses() {
+        let yaml = r"
+annotate:
+  default_actor: alice
+  default_by: human
+  editor: nvim
+";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.annotate.default_actor.as_deref(), Some("alice"));
+        assert_eq!(cfg.annotate.default_by.as_deref(), Some("human"));
+        assert_eq!(cfg.annotate.editor.as_deref(), Some("nvim"));
+    }
+
+    #[test]
+    fn annotate_section_with_partial_fields_parses() {
+        let yaml = "annotate:\n  default_actor: alice\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.annotate.default_actor.as_deref(), Some("alice"));
+        assert!(cfg.annotate.default_by.is_none());
+        assert!(cfg.annotate.editor.is_none());
+    }
+
+    #[test]
+    fn missing_annotate_section_is_default() {
+        let yaml = "redact:\n  disable_default: [\"email\"]\n";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert!(cfg.annotate.default_actor.is_none());
+        assert!(cfg.annotate.default_by.is_none());
+        assert!(cfg.annotate.editor.is_none());
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    #[test]
+    fn typo_under_annotate_rejects() {
+        // `#[serde(deny_unknown_fields)]` boundary: every entry here
+        // is either a realistic typo or a deferred-field name from
+        // #74 §3.11. The future slice that adds default_kind /
+        // default_pin / strict_kind extends `AnnotateConfig` and
+        // those names start parsing cleanly — until then they fail
+        // load (intentional, per the issue body).
+        for bad in [
+            "annotate:\n  default-actor: alice\n",
+            "annotate:\n  defaultActor: alice\n",
+            "annotate:\n  default_actors: alice\n",
+            "annotate:\n  default_by_kind: human\n",
+            "annotate:\n  default_kind: finding\n",
+            "annotate:\n  default_pin: false\n",
+            "annotate:\n  strict_kind: true\n",
+            "annotate:\n  editors: nvim\n",
+            "annotate:\n  editor_cmd: nvim\n",
         ] {
             assert!(
                 TapeRcConfig::parse(bad).is_err(),
