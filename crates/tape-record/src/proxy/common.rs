@@ -227,10 +227,7 @@ async fn forward(state: &AppState, req: Request<Body>, record: bool) -> Response
     if stream_requested && status.is_success() {
         let upstream_stream = upstream_resp.bytes_stream();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-        let teed = TeeStream::new(
-            upstream_stream.map_err(std::io::Error::other),
-            tx,
-        );
+        let teed = TeeStream::new(upstream_stream.map_err(std::io::Error::other), tx);
         let body = Body::from_stream(teed);
 
         if record {
@@ -263,14 +260,15 @@ async fn forward(state: &AppState, req: Request<Body>, record: bool) -> Response
     } else {
         let resp_bytes = match upstream_resp.bytes().await {
             Ok(b) => b,
-            Err(e) => return error_response(StatusCode::BAD_GATEWAY, &format!("upstream body: {e}")),
+            Err(e) => {
+                return error_response(StatusCode::BAD_GATEWAY, &format!("upstream body: {e}"))
+            }
         };
 
         if record {
-            let resp_json: Value =
-                serde_json::from_slice(&resp_bytes).unwrap_or_else(|_| {
-                    Value::String(String::from_utf8_lossy(&resp_bytes).into_owned())
-                });
+            let resp_json: Value = serde_json::from_slice(&resp_bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8_lossy(&resp_bytes).into_owned())
+            });
             let mut payload = serde_json::json!({
                 "vendor": vendor,
                 "model": model,

@@ -14,8 +14,7 @@ pub const REQUIRED_SECTIONS: &[&str] = &[
 /// An empty section is one whose body before the next H2 (or EOF) contains no
 /// non-whitespace characters.
 pub fn missing_or_empty_sections(content: &str) -> Vec<String> {
-    let mut found: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut found: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut current: Option<(String, String)> = None;
 
     for line in content.lines() {

@@ -31,8 +31,7 @@ use tokio::sync::Mutex;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -50,7 +49,10 @@ async fn main() -> Result<()> {
     let recorder = match UnixStream::connect(&socket_path).await {
         Ok(s) => Some(Arc::new(Mutex::new(s))),
         Err(e) => {
-            tracing::warn!(?e, "could not connect to recorder socket; proxying without recording");
+            tracing::warn!(
+                ?e,
+                "could not connect to recorder socket; proxying without recording"
+            );
             None
         }
     };
@@ -64,8 +66,14 @@ async fn main() -> Result<()> {
         .spawn()
         .with_context(|| format!("spawn real MCP server: {cmd}"))?;
 
-    let server_stdin = child.stdin.take().ok_or_else(|| anyhow!("no server stdin"))?;
-    let server_stdout = child.stdout.take().ok_or_else(|| anyhow!("no server stdout"))?;
+    let server_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("no server stdin"))?;
+    let server_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("no server stdout"))?;
 
     let pending: Arc<Mutex<HashMap<String, PendingCall>>> = Arc::new(Mutex::new(HashMap::new()));
 

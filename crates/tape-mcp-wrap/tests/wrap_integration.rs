@@ -27,7 +27,13 @@ fn mock_server_bin() -> std::path::PathBuf {
 async fn wrap_records_tools_call() {
     // Build the mock server example before the test runs.
     let status = std::process::Command::new("cargo")
-        .args(["build", "--example", "mock_mcp_server", "-p", "tape-mcp-wrap"])
+        .args([
+            "build",
+            "--example",
+            "mock_mcp_server",
+            "-p",
+            "tape-mcp-wrap",
+        ])
         .status()
         .expect("cargo build example");
     assert!(status.success(), "failed to build mock_mcp_server example");
@@ -43,7 +49,9 @@ async fn wrap_records_tools_call() {
     let dir = tempfile::tempdir().unwrap();
     let sock_path = dir.path().join("rec.sock");
     let session = Session::start("mcp wrap test", "test/0.0.1");
-    let socket_handle = socket::spawn(sock_path.clone(), session.clone()).await.unwrap();
+    let socket_handle = socket::spawn(sock_path.clone(), session.clone())
+        .await
+        .unwrap();
 
     // Spawn the wrap binary.
     let mut child = tokio::process::Command::new(wrap_bin())
@@ -64,7 +72,10 @@ async fn wrap_records_tools_call() {
     let init = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
     });
-    wrap_stdin.write_all(format!("{init}\n").as_bytes()).await.unwrap();
+    wrap_stdin
+        .write_all(format!("{init}\n").as_bytes())
+        .await
+        .unwrap();
     wrap_stdin.flush().await.unwrap();
     let mut line = String::new();
     wrap_stdout.read_line(&mut line).await.unwrap();
@@ -80,7 +91,10 @@ async fn wrap_records_tools_call() {
         "method": "tools/call",
         "params": {"name": "echo", "arguments": {"hello": "world"}}
     });
-    wrap_stdin.write_all(format!("{call}\n").as_bytes()).await.unwrap();
+    wrap_stdin
+        .write_all(format!("{call}\n").as_bytes())
+        .await
+        .unwrap();
     wrap_stdin.flush().await.unwrap();
     wrap_stdout.read_line(&mut line).await.unwrap();
     let call_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();

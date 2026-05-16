@@ -71,12 +71,7 @@ impl Session {
     /// the event's real timestamp is already known from the source data and
     /// overriding it with `Utc::now()` would collapse the entire conversation
     /// into a single instant. (Issue #5.)
-    pub fn append_at(
-        &self,
-        kind: Kind,
-        payload: Value,
-        ts: chrono::DateTime<chrono::Utc>,
-    ) -> u64 {
+    pub fn append_at(&self, kind: Kind, payload: Value, ts: chrono::DateTime<chrono::Utc>) -> u64 {
         let mut g = self.inner.lock().expect("session mutex poisoned");
         let step = (g.tracks.len() as u64) + 1;
         g.tracks.push(Track {
@@ -132,7 +127,11 @@ impl Session {
 
     /// Number of tracks currently recorded.
     pub fn track_count(&self) -> usize {
-        self.inner.lock().expect("session mutex poisoned").tracks.len()
+        self.inner
+            .lock()
+            .expect("session mutex poisoned")
+            .tracks
+            .len()
     }
 }
 
@@ -172,8 +171,14 @@ mod tests {
     #[test]
     fn session_appends_steps_monotonically() {
         let s = Session::start("hello", "test/0.0.1");
-        let a = s.append(Kind::ModelCall, serde_json::json!({"vendor": "anthropic", "model": "x"}));
-        let b = s.append(Kind::ModelCall, serde_json::json!({"vendor": "anthropic", "model": "x"}));
+        let a = s.append(
+            Kind::ModelCall,
+            serde_json::json!({"vendor": "anthropic", "model": "x"}),
+        );
+        let b = s.append(
+            Kind::ModelCall,
+            serde_json::json!({"vendor": "anthropic", "model": "x"}),
+        );
         assert_eq!(a, 2);
         assert_eq!(b, 3);
         assert_eq!(s.track_count(), 3);
@@ -191,7 +196,11 @@ mod tests {
             .with_timezone(&chrono::Utc);
 
         let s = Session::start_at("hi", "test/0.0.1", start);
-        s.append_at(Kind::ModelCall, serde_json::json!({"vendor": "x", "model": "x"}), later);
+        s.append_at(
+            Kind::ModelCall,
+            serde_json::json!({"vendor": "x", "model": "x"}),
+            later,
+        );
 
         let snap = s.snapshot();
         assert_eq!(snap.tracks[0].ts, format_ts(start));

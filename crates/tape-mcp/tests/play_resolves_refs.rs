@@ -52,9 +52,8 @@ fn play_resolves_oversize_artifact_ref_to_string() {
     let handle = load_handle(&deck, &path);
 
     let resp = play_step(&deck, &handle, 2);
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false,
+    assert!(
+        !resp["result"]["isError"].as_bool().unwrap_or(false),
         "play reported error: {resp}"
     );
 
@@ -110,8 +109,5 @@ fn resolver_leaves_stub_when_artifact_missing() {
     let path = fixture_path("minimal-success.tape");
     let handle = load_handle(&deck, &path);
     let resp = play_step(&deck, &handle, 1);
-    assert_eq!(
-        resp["result"]["isError"].as_bool().unwrap_or(false),
-        false
-    );
+    assert!(!resp["result"]["isError"].as_bool().unwrap_or(false));
 }
