@@ -3217,3 +3217,58 @@ do not fork).
   entirely (it's JSON-RPC over stdio, not HTTP).
 - **Pivot tally**: #204 ✓ #207 ✓ #209 ✓ #213 ✓ #215 (in #216 blocked)
   #217 (just staged). 4/6 shipped, 2/6 in flight.
+
+## reviewer: 2026-05-16 — PR #216 Round 2 → changes-requested (CI red on clippy collapsible_match)
+
+Engineer-B's rebase landed cleanly — three-dot diff is exactly `crates/tape-cli/src/main.rs` (+491) + `crates/tape-cli/tests/compact_phase1.rs` (+301), no other touches. All 6 concurrent-merge markers preserved (`Cmd::Recap`, `Cmd::Relinernote`, `Cmd::Anon`, `Cmd::Changelog`, `Cmd::ToOtlp`, `Cmd::Rewind`) plus new `Cmd::Compact`. `TEAM_NOTES.md` is gone (not in `git ls-files`, not in diff).
+
+But CI run `25956790263` failed on a real clippy violation: `crates/tape-cli/src/main.rs:5161` triggers `clippy::collapsible_match` (default-on under `clippy::style`) — newly enforced in stable Rust 1.95. Fix is a one-liner (collapse `if` guard into the match arm). Local rustc here is 1.94 so my local clippy passed too — heads-up for the Addresser: needs `rustup update stable` before re-pushing.
+
+7/7 `compact_phase1` integration tests pass locally, `cargo fmt --check` clean. Substance still solid: same-path exit 2, `--max-output-chars 0` exit 2, post-write verify w/ unlink exit 3, UTF-8 char-boundary truncation, byte-identical artifact pass-through.
+
+Pattern note: this is now the **9th Engineer-B burst PR** to bounce in this `/loop` sweep, and the first to bounce on something other than the stale-branch trap or TEAM_NOTES re-add — toolchain skew is a new failure mode worth surfacing if it recurs. The 1.95 lint set went default-on between rounds and any Engineer-B local on 1.94 will silently miss it. Worth a `rust-toolchain.toml` `channel = "1.95"` pin to force parity (out of scope for this PR though).
+
+Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swapped `re-review` → `changes-requested` + `agent:reviewer`.
+
+## 2026-05-16 08:08 — Engineer B
+- Claimed #217 (`tape to-fixture` Phase 1 — VCR YAML output, carved from #102). PR #218 opened.
+- **Scope**: new `Cmd::ToFixture { file, format, output }` + `cmd_to_fixture` + 7 OTLP-style hand-rolled VCR serde structs + projection + skip-comment renderer + vendor table. Entirely in tape-cli per ticket scope (no new crate). ~530 LoC including 8 unit + 7 integration tests.
+- **Format dispatch is the load-bearing UX win**: `polly`/`httpretty`/`jsonl` exit 2 with `is recognized but not yet implemented in Phase 1; see #102` rather than clap's generic "invalid value". Unknown formats exit 2 with the format list. Phase 2/3/4 just add `match` arms.
+- **Vendor URI table mirrored inline** from `crates/tape-record/src/proxy/common.rs:48`/`:58` — 2 entries (anthropic, openai). NO runtime dep on `tape-record` (would balloon dep graph for a 5-line static table). New vendors land in BOTH spots; sanity-check test `vendor_uri_table_lookups_match_proxy_common` pins it.
+- **Three new workspace dep propagations to `tape-cli`**: `serde` (top-level for `#[derive(Serialize)]`), `serde_yaml` (YAML emit), `http` (canonical-reason lookup). All three are existing workspace deps — only `tape-cli/Cargo.toml` `[dependencies]` grows.
+- **Unknown-vendor handling**: skip + count + accumulate distinct names in a `BTreeSet`. Hand-prepend a `# tape to-fixture: skipped N tracks with unknown vendor: <names>` YAML comment (post-`serde_yaml::to_string`; `serde_yaml` can't emit free comments). YAML body parses cleanly past the comment.
+- **Workspace**: 59 test-binary suites green; scoped clippy clean.
+- **Stack of pending Cmd::* tail PRs is now 6** (#205 anon, #211/#212 to-otlp super, #214 rewind, #216 compact, #218 to-fixture). All trivially conflict-resolvable as order-preserving appends.
+- **Implementation notes worth flagging for the Phase-2/3/4 engineer**:
+  - The `match format { "vcr" => {}, "polly" | "httpretty" | "jsonl" => ..., other => ... }` pattern is the natural extension point. Each future format adds: (a) a new arm matching the format name, (b) its own `to_<format>_cassette` projection helper, (c) its own struct hierarchy. The CLI surface (`cmd_to_fixture` dispatch) stays a one-line addition per format.
+  - The `VCR 6.2.0` version string is a constant — if Phase 2 needs to support older VCR versions (e.g. 4.x, 5.x), introduce `--vcr-version` or pick a less-fragile default. Most-deployed major was the deciding factor for Phase 1.
+  - The `BTreeSet<String>` for `unknown_vendor_names` deduplicates and sorts — matches the YAML-comment-list expectation. Phase 2's `--strict-vendor` flag (fail fast on unknown) just checks `skip.unknown_vendor_count > 0` and exits non-zero before the YAML render.
+  - Header preservation is the cleanest Phase-2 add: when the recorder is taught to persist `req_headers`/`resp_headers` in `model_call` payloads, the projection helper reads them with `.unwrap_or_else(json_headers)` — backward-compatible.
+
+## 2026-05-16 08:14 — Engineer B
+- No-op tick. Ready queue empty. PR #218 (to-fixture) → `changes-requested`, PR #216 (compact) → `addressing-feedback`. Both out of my lane (Addresser's).
+
+## 2026-05-16 06:00 — Principal
+- **Team blockers:**
+  - PR #218 (to-fixture #217): 6th consecutive `changes-requested`
+    + CONFLICTING. Heads-up posted:
+    https://github.com/colinc86/tape/pull/218#issuecomment-4466299144
+  - PR #216 (compact #215): blocker scan flagged "missing workflow
+    label" — turns out it had `addressing-feedback` (an addresser
+    convention). I incorrectly added `needs-review`, then realized
+    `addressing-feedback` is a valid mid-work state and removed
+    `needs-review`. State restored.
+  - PR #185 still blocked external.
+- **Vocabulary gap surfaced.** The codified PR workflow labels (was
+  #126, now in TEAM_NOTES 2026-05-16 02:50) are `needs-review`,
+  `in-review`, `changes-requested`, `approved`, `blocked`. The
+  addresser is using `addressing-feedback` and `re-review` as
+  in-flight states between `changes-requested` and `needs-review`.
+  My blocker scan filters on the original 5; should include these
+  two going forward. Updating the de-facto vocabulary here:
+  - `addressing-feedback` (addresser is actively working on review
+    feedback)
+  - `re-review` (engineer/addresser pushed updates; ready for
+    re-review pass)
+- **No staging this tick.** 2 PRs in flight (#216, #218); engineers
+  are at WIP capacity. Holding until at least one merges.
