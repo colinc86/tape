@@ -2838,3 +2838,70 @@ do not fork).
   No engineers `in-progress` after the merges.
 - **Engineer `ready` queue:** 1 (#200). PR queue: 2 (#185 blocked
   external, #202 needs-review for #175).
+- **PR #202 (CI workflow v2 for #175) MERGED** (squash `c5ead97`,
+  2026-05-16 04:24Z). The #201 must-fix (stale 6-commit branch
+  re-introducing tracked `TEAM_NOTES.md`) is fully resolved on the
+  re-spin: branch had exactly 2 clean commits (`aed60f1` fmt/clippy
+  fixups + `9fbcbe9` `.github/workflows/build.yml`), `git ls-files`
+  has no `team_notes`, `.gitignore` still has `/TEAM_NOTES.md`, no
+  `principal: notes` commits. Local 4-check on PR head all green:
+  `cargo fmt --check`, `cargo check --workspace --all-targets`,
+  `cargo clippy --workspace --all-targets -- -A clippy::pedantic
+  -D warnings`, `cargo test --workspace --no-fail-fast` (every
+  result line `ok. N passed; 0 failed`). Live CI on PR passed in
+  2m4s (run 25952446317). Workflow itself: `pull_request` + `push:
+  main` triggers, `dtolnay/rust-toolchain@stable` honoring
+  `rust-toolchain.toml`, `Swatinem/rust-cache@v2`, default
+  read-only `GITHUB_TOKEN` (fork-PR safe, no `${{ secrets.* }}`),
+  all 4 gates with meaningful enforcement (`--check`, `-D warnings`).
+  `-A clippy::pedantic` is a documented scoped opt-out for the
+  pre-existing pedantic backlog (#200 tracks Phase 1 cleanup);
+  standard clippy still deny-warnings, which is what catches actual
+  regressions. Branch-protection deferred per the issue's pitfall
+  guidance — separate follow-up. **CI gate is now live** — the
+  regression class seen all session (#32, #134→#137, #156, #154-R2,
+  #167, #159, plus pedantic drift across #155/#180/#193/#195/#197/
+  #199) is automatically gated from this point. Self-PR so the
+  approval was recorded as a comment, not a `gh pr review --approve`.
+  Labels: removed `needs-review`+`re-review`, added `agent:reviewer`.
+  Engineer `ready` queue now: 1 (#200). PR queue: 1 (#185 blocked
+  external).
+
+## 2026-05-16 04:34 — Engineer B
+- Claimed #200, shipped **cluster 1 of N** as PR #203. Issue stays `in-progress` for follow-on clusters (per its own approach hint: "Land in clusters (one PR per ~3 related lints)").
+- **Scope of this cluster (3 doc/string-shape lints)**:
+  - `clippy::doc_markdown` ×15 sites — backticks around `OpenAI`, `JSONPath`, `BTreeMap`, `TAPE_WRAP_*`, `tool_use`/`tool_result`, `mcp_call`, `PreToolUse`/`PostToolUse`, `WebFetch`/`WebSearch`/`TodoWrite`, `content_hash`, `new_string`, `meta.created_at`, `anthropic_api_key`/`openai_api_key`, `rule_id`/`rule_ids`, `new_step`, `TAG_NO_CHANGE`, `build_fixtures`.
+  - `clippy::needless_raw_string_hashes` ×7 sites — 2 production (AWS-secret regex in `tape-format/secret_scan.rs` + `tape-redact/rules.rs`), 5 test YAML literals in `tape-redact/config.rs` (the ones whose YAML content has no `"` char; the 4 others that DO contain `"` keep their hashes).
+  - `clippy::doc_overindented_list_items` ×1 — convert.rs:10 list arrow-continuation.
+- **Lesson learned (worth flagging next pedantic-cluster engineer)**: `Edit{replace_all: true}` on `let yaml = r#"\nredact:` over-stripped 4 blocks whose content DOES contain `"` (the `["ipv4_private"]`, `["email"]`, `["emial"]` test YAMLs). Reverted via `git checkout --` and re-applied site-by-site. **For future raw-string-hash cleanups, do NOT use `replace_all` on `r#"`; verify content has no `"` first.**
+- **Workspace verify**: `cargo test --workspace` → 58 suites green. `cargo clippy -- -A clippy::pedantic -W <my 3 lints> -D warnings` clean for my cluster. Full workspace clippy still red on unrelated `format_in_format_args`/`redundant_pattern_matching`/`unnecessary_cast` — those are owned by #202 (Engineer C's PR, in re-review), will go away when it merges.
+- **Cluster queue remaining for #200** (recommended order: low-risk → high-risk):
+  - **Cluster 2 — format / closure modernization**: `uninlined_format_args` (4), `redundant_closure_for_method_calls` (1), `implicit_clone` (1), `manual_let_else` (1), `single_match_else` (1) — mechanical, no logic.
+  - **Cluster 3 — match / control-flow**: `match_same_arms` (2), `if_not_else` (2), `enum_glob_use` (1), `default_trait_access` (1), `question_mark` (1), `explicit_iter_loop` (2).
+  - **Cluster 4 — map/iter ergonomics**: `map_unwrap_or` (5).
+  - **Cluster 5 — cast lints (require care)**: `cast_possible_truncation` (12), `cast_lossless` (2), `cast_possible_wrap` (1), `cast_precision_loss` (1), `cast_sign_loss` (1), `unnecessary_cast` (1). Some are real bugs; per-site decision between `try_from` and `#[allow]`.
+  - **Cluster 6 — function shape**: `too_many_lines` (4) — the `main` dispatch one is the `dispatch_new` trampoline opportunity flagged in #200's hint.
+  - **Cluster 7 — misc**: `unused_async`, `unreadable_literal`, `unnecessary_wraps`, `unnecessary_unwrap`, `missing_fields_in_debug`, `case_sensitive_file_extension_comparisons`, `cloned_ref_to_slice_refs` (1 each).
+  - **Cluster N (last)**: drop `-A clippy::pedantic` from `.github/workflows/build.yml` once all clusters above land — that's the AC's final step.
+
+## 2026-05-16 04:50 — Engineer B
+- No-op tick. `ready` queue empty. PR #203 awaiting review; holding cluster 2 of #200 until cluster 1 lands or gets review feedback (don't want to re-do cluster 2 if a stylistic pattern gets pushed back on).
+
+## 2026-05-16 04:20 — Principal
+- **Team blockers:**
+  - PR #203 (#200 clippy Phase 1, Engineer-A author): CONFLICTING post-
+    #202 merge (CI workflow just landed). Posted heads-up asking for
+    rebase: https://github.com/colinc86/tape/pull/203#issuecomment-4465651251
+  - PR #185 still blocked, external contributor.
+- **State updates:** PR #202 (CI workflow for #175) MERGED at ~04:00Z.
+  PR #203 opened by Engineer-A against #200. PR #185 unchanged.
+  Engineer `ready` queue: empty.
+- **Pivot from Phase-N follow-ons to priority:later carves.** Last
+  response to user noted the follow-on vein drying up; starting
+  Phase-1 carves on the wishlist.
+- **Filed #204** — `tape anon Phase 1 — strip absolute file paths
+  (carved from #42)`. New `crates/tape-anon/` crate, ONE rule
+  (unix_home_path), HMAC-SHA256→8-hex pseudonyms, atomic write of
+  `.anon.tape`. Engineer-half-day; defers 8 other rules from #42 §3.2,
+  --map/unanon/aggressive/salt/dry-run, .taperc, meta audit, SPEC
+  changes — all explicitly out-of-scope.
