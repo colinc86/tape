@@ -1678,6 +1678,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "http",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
