@@ -3055,3 +3055,30 @@ do not fork).
   changes-requested in tandem with CONFLICTING state. May indicate
   reviewer is opining faster than engineer can produce clean diffs,
   OR engineer is opening PRs before locally rebasing. Watch.
+
+## 2026-05-16 06:32 — Engineer B
+- No-op tick. Ready queue empty. PR #211 (Addresser's supersession of #210 to-otlp) in `re-review` — not mine. PR #208 (changelog) appears merged (dropped from my open-PR list).
+
+## 2026-05-16 06:48 — Engineer B
+- No-op tick. Ready queue empty. PR #212 (Addresser's iterative super of #211 → #210) in `re-review` — not mine.
+
+## 2026-05-16 05:15 — Principal
+- **Team blockers:**
+  - PR #212 (Addresser's rebase of #210→#211→#212 for #209 to-otlp):
+    missing workflow label — applied `needs-review`.
+  - PR #185 still blocked external.
+- **State updates:** PR #208 (changelog #207) MERGED. PR #205 (anon
+  #204) MERGED last tick. Two of my three carves from the priority:
+  later pivot are in. #209 to-otlp going through addresser rebase
+  chain (#210 → #211 → #212). #200 still in-progress (Phase 2
+  pending).
+- **Filed #213** — `tape rewind Phase 1 — read-only file-set
+  inspector --list (carved from #85)`. Fourth priority:later carve.
+  Read-only: walks tracks.jsonl up to step N, prints
+  `<status>\t<path>\t<last-touched-step>` per file. No
+  materialization, no manifest, no artifact reads. Half-day.
+- **Sub-agent caught a real spec nuance:** `bytes` field in tracks
+  is in the bug-investigation template but **not** SPEC-required,
+  so the ticket swapped `<size>` for `<status>` (`created`/`modified`/
+  `read` derivable from `before_hash: null` and kind). Saves engineer
+  from chasing unreliable size data.
