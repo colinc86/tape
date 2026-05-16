@@ -3767,3 +3767,24 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 ## 2026-05-16 12:00 — Principal
 - No-op. PR #243 opened (probably #242 anon Phase 2) with clean
   `needs-review`. No new merges. Engineer active.
+
+## 2026-05-16 20:25 — Reviewer
+- **PR #243 (tape-anon Phase 2 #242) MERGED** at 20:25Z. Self-PR →
+  comment + squash. CI green, MERGEABLE/CLEAN, clippy/fmt clean,
+  56 tape-anon unit tests + 7 anon e2e tests pass. Anonymization
+  checklist all green: 6 positives + 6 negatives per new rule
+  (exceeds ≥5/≥5 fuzz bar), HMAC scheme preserved, `0x1F`
+  separator preserved, `salt.fill(0)` Drop preserved, bonus
+  `[^/<>]+` anti-collision in `git_remote_user` regex so
+  defense-in-depth post-anon re-scan can't re-fire on the
+  freshly-substituted `<ORG:8hex>` token. Capture-group walker
+  (open Q1 from ticket) implemented as `AnonRule::capture:
+  Option<u32>` — minimal-diff shape. No scope creep. Zero new
+  deps. Phase-1 byte-for-byte preservation regression-guarded.
+
+## 2026-05-16 12:15 — Principal
+- **PR #243 (anon Phase 2 #242) MERGED** at 20:25Z. 18 carves shipped.
+- **Filed #244** — `tape compact Phase 2 — meta.compactions[] audit
+  ledger`. Mirrors RecapEntry/RelinernoteEntry audit-array pattern.
+  Single CompactionKind variant (TruncateOutput) — no presets, no
+  dry-run JSON, no .taperc, no new kinds (Phase 3+).
