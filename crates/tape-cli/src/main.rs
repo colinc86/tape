@@ -155,13 +155,15 @@ enum Cmd {
         out: Option<std::path::PathBuf>,
         /// Template id. Built-ins: `minimal`, `test-fixture`,
         /// `bug-investigation`. Unknown values exit 2 with
-        /// `NEW_TEMPLATE_NOT_FOUND`.
-        #[arg(
-            long,
-            default_value = "minimal",
-            conflicts_with_all = ["list_templates", "describe_template"],
-        )]
-        template: String,
+        /// `NEW_TEMPLATE_NOT_FOUND`. Resolution order (issue #190):
+        /// this flag > `.taperc::new.default_template` > `minimal`
+        /// terminal fallback (preserves pre-#190 default for
+        /// existing scripts; back-compat path (b) of #190 ACs —
+        /// callers wanting hard failure on missing config can
+        /// `.taperc`-pin a deliberate value and remove `minimal`
+        /// from their workflow).
+        #[arg(long, conflicts_with_all = ["list_templates", "describe_template"])]
+        template: Option<String>,
         /// One-line description of what the cassette represents. Lands
         /// in `meta.task`, in the task event's `prompt`, and in the
         /// liner-notes. Plain UTF-8; rejected if it contains a `"`,
@@ -562,15 +564,58 @@ fn dispatch_new(cmd: Cmd) -> Result<()> {
         eprintln!("tape new: <out> is required (or use --list-templates / --describe-template)");
         std::process::exit(2);
     };
+    let template_id = resolve_template_id(template);
     cmd_new(
         &out,
-        &template,
+        &template_id,
         task,
         force,
         created_at,
         recorder_agent,
         set,
     )
+}
+
+/// Resolve the effective `--template` id (issue #190). The precedence
+/// is `--template` CLI flag > `.taperc::new.default_template` >
+/// `minimal` terminal fallback. The terminal fallback preserves the
+/// pre-#190 implicit default so existing test fixtures and scripts
+/// that invoked `tape new <out> --task ...` without `--template`
+/// continue to land a `minimal` cassette — back-compat path (b) of
+/// #190's acceptance criteria, documented in the PR body.
+fn resolve_template_id(cli: Option<String>) -> String {
+    if let Some(t) = cli {
+        return t;
+    }
+    // Probe the workspace + user `.taperc` chain. Same locator the
+    // redaction engine + `resolve_pricing_source` use so all three
+    // stay in lockstep on path-discovery rules. Failed parse exits
+    // 2 with the file path named; missing key falls through to the
+    // `minimal` terminal default.
+    if let Ok(cwd) = std::env::current_dir() {
+        let taperc_path = tape_redact::config::TapeRcConfig::locate_workspace(&cwd)
+            .or_else(tape_redact::config::TapeRcConfig::locate_user);
+        if let Some(p) = taperc_path {
+            match std::fs::read_to_string(&p) {
+                Ok(yaml) => match tape_redact::config::TapeRcConfig::parse(&yaml) {
+                    Ok(cfg) => {
+                        if let Some(t) = cfg.new.default_template {
+                            return t;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("tape new: failed to parse {}: {e}", p.display());
+                        std::process::exit(2);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("tape new: failed to read {}: {e}", p.display());
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+    "minimal".to_owned()
 }
 
 fn cmd_record(
