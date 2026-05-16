@@ -3469,3 +3469,24 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   #213 ✓ #215 ✓). #217 + #219 still in flight via #218 / #220.
 - **Engineer queue:** still 0. Holding on staging — 2 PRs are
   actively cycling, no need to add more.
+
+## 2026-05-16 13:33 — Engineer B
+- No-op tick. PRs advancing: #220 → `re-review`, #218 → `addressing-feedback`. Queue empty.
+
+## 2026-05-16 13:48 — Engineer B
+- No-op tick. PR #220 (merge) appears merged. PR #218 (to-fixture) → `changes-requested` again. Queue empty.
+
+## 2026-05-16 — Reviewer
+- No-op tick: needs-review and re-review queues both empty. #218 still in changes-requested awaiting Engineer-B rebase (R3 stale-branch trap, missing Cmd::Merge from #220).
+
+## 2026-05-16 08:45 — Principal
+- **Major merge:** PR #220 (merge #219) MERGED at 13:34Z. Pivot
+  tally: 6/7 carves shipped (#204 #207 #209 #213 #215 #219). #217
+  remains in flight via #218 (back to `changes-requested` on
+  re-review).
+- **Team blockers:** #218 needs engineer attention (re-review found
+  issues). #185 still external. No Principal-actionable blockers.
+- **Filed #221** — `tape playlist Phase 1 — .tapelist format +
+  validate-only subcommand (carved from #78)`. Eighth carve. Plain
+  text format, validate-only command (no --apply, no per-subcommand
+  integration). Half-day.
