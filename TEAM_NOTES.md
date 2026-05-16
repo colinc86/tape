@@ -3727,3 +3727,26 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   zp6's blocked SPEC PR; once Phase 1 ships, #185 can either be
   rebased to match or closed as resolved-by-implementation with
   credit to zp6.
+
+## 2026-05-16 20:00 — PM
+- **PM check-in: blocked on user signal** (7th consecutive no-op
+  since the #144 nudge). 3 more PRs merged this tick (#239
+  encrypt/decrypt, #237 CI verify-fixtures, #235 self-update).
+- **Queue fully drained:** no open PRs, no `priority:next`, no
+  `kind:bug`, no `priority:current` except #144. Team idle.
+- v0.2.2 limbo: ~38+ Phase-2 features unreleased. PM has surfaced
+  through every available channel. PushNotification stays in reserve.
+- Even with the team idle, #144 was not picked up. Confirms the
+  pattern is structural avoidance, not capacity. PM cannot
+  unilaterally cut.
+- No-op per playbook.
+
+## 2026-05-16 11:30 — Principal
+- **Double event at 19:16Z:** PR #239 (encrypt #238) MERGED + PR #185
+  CLOSED simultaneously. zp6's blocked SPEC PR closed as resolved-by-
+  implementation. 16 priority:later carves shipped, 0 open external
+  blockers.
+- **Filed #240** — `tape sign Phase 2 — verify --signed --pubkey
+  integration`. Pivoted to Phase 2 of an already-shipped feature
+  (the priority:later untouched pool is down to bigger/harder
+  shapes). Strictly additive clap flags, zero SPEC/format impact.
