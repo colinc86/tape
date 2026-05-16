@@ -10,6 +10,10 @@ pub struct TapeRcConfig {
     /// `tape stats --with-cost` slices land. Issue #186.
     #[serde(default)]
     pub pricing: PricingConfig,
+    /// `[new]` block. Currently single-field; gains options as later
+    /// `tape new` slices land. Issue #190.
+    #[serde(default)]
+    pub new: NewConfig,
 }
 
 /// `.taperc::pricing` block. One field today: `pricing_file`, the
@@ -25,6 +29,21 @@ pub struct PricingConfig {
     /// this path if the `--pricing-file` flag is not supplied.
     #[serde(default)]
     pub pricing_file: Option<String>,
+}
+
+/// `.taperc::new` block. One field today: `default_template`, the
+/// template id consumed by `tape new` when `--template` is not
+/// supplied. (Issue #190 / Step-5 of #99.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewConfig {
+    /// Default template id (e.g. `minimal`, `test-fixture`,
+    /// `bug-investigation`). Validated against the built-in
+    /// template catalog by `dispatch_new`; an unknown id surfaces
+    /// the same `NEW_TEMPLATE_NOT_FOUND` diagnostic that
+    /// `--template <unknown>` already emits.
+    #[serde(default)]
+    pub default_template: Option<String>,
 }
 
 /// SPEC §9.1: unknown keys under `redact:` MUST cause a config-load failure.
@@ -387,6 +406,50 @@ redact:
         let cfg = TapeRcConfig::parse(yaml).unwrap();
         assert!(cfg.pricing.pricing_file.is_none());
         assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    // --- Issue #190: `new:` block parse tests ---
+
+    #[test]
+    fn new_section_with_default_template_parses() {
+        let yaml = r"
+new:
+  default_template: bug-investigation
+";
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert_eq!(
+            cfg.new.default_template.as_deref(),
+            Some("bug-investigation")
+        );
+    }
+
+    #[test]
+    fn missing_new_section_is_default() {
+        let yaml = r#"
+redact:
+  disable_default: ["email"]
+"#;
+        let cfg = TapeRcConfig::parse(yaml).unwrap();
+        assert!(cfg.new.default_template.is_none());
+        assert_eq!(cfg.redact.disable_default, vec!["email"]);
+    }
+
+    #[test]
+    fn typo_under_new_rejects() {
+        // `#[serde(deny_unknown_fields)]` on NewConfig: typos fail
+        // config-load so a user notices immediately.
+        for bad in [
+            "new:\n  default-template: minimal\n",
+            "new:\n  template: minimal\n",
+            "new:\n  default_templates: minimal\n",
+            "new:\n  defaultTemplate: minimal\n",
+            "new:\n  template_id: minimal\n",
+        ] {
+            assert!(
+                TapeRcConfig::parse(bad).is_err(),
+                "expected typo to fail config-load: {bad}"
+            );
+        }
     }
 
     #[test]
