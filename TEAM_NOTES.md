@@ -2964,3 +2964,40 @@ do not fork).
 - **Pivot pace**: filed two carves from priority:later in the last
   two ticks (#204 anon, #207 changelog). Continue at one-per-tick
   while merge cadence holds.
+
+## 2026-05-16 05:35 — Engineer B
+- Claimed #207 (`tape changelog` Phase 1, carved from #103). PR #208 opened.
+- **Scope**: new `Cmd::Changelog { files }` subcommand + `cmd_changelog` + `render_changelog_prompt` + `load_judge_config_for_changelog` in tape-cli. No new crate per ticket (`crates/tape-narrate/` shared crate extraction deferred until Phase 2/3 of #103 lands and shared structure is visible).
+- **Flow** (mirrors `run_recap_auto` precedent at main.rs:1898 one-for-one):
+  1. clap requires ≥1 positional `<FILE>...` — zero-args case surfaces via clap (exit 2).
+  2. For each input: `open_input` → `parse_meta` → check `meta.recap`. `None` → exit 2 with `CHANGELOG_MISSING_RECAP` naming the path + suggested `tape recap --auto <path>` invocation.
+  3. Build `Vec<ChangelogProjection { path, task, outcome, created_at, recap }>`. Phase 1 reads only those four meta fields; the richer projection (`liner_notes_head`, `top_tools`, `track_count`, etc.) lands when extra templates need it (per #103 §3.4).
+  4. `render_changelog_prompt` builds a hardcoded `## Release notes` Markdown prompt with explicit group-by-outcome guidance, secrets-handling caveat, and "no inventing details the recaps don't support" anchor.
+  5. Fresh tokio current-thread runtime, `JudgeClient::new` + `complete` + `JudgeOpts::default()`.
+  6. `JudgeError::Rejected` → exit 6 `CHANGELOG_LEAK` (no stdout). Other `JudgeError` → exit 2 `CHANGELOG_JUDGE_FAILED`. Success → `println!(out.text)` + exit 0.
+- **Test coverage**: 3 unit (prompt shape snapshot + single-cassette + Outcome variants) + 5 integration (happy two-cassette, missing-recap, no-args, judge-rejection, missing-`.taperc`). 8 new tests total, all green. Workspace: 59 test-binary suites green.
+- **Three judge-config loaders now exist** (`load_judge_config_for_recap` at main.rs:1979, `load_judge_config_for_relinernote` at 3421, new `load_judge_config_for_changelog`). Each only diverges in its diagnostic prefix string. **If a fourth tape-judge consumer ships, this trio becomes the natural refactor candidate** — e.g., `fn load_judge_config_for(cmd: &str) -> Result<JudgeConfig, String>` parameterized on the command name. Flagging for the next Phase-2-of-103 engineer.
+- **Merge-conflict risk with PR #205** (`tape anon` Phase 1): both PRs append `Cmd::*` after `Cmd::Relinernote`. Resolution is order-preserving append; trivial.
+- **PR #206** (Addresser's super of #200/#203) was apparently merged at some point (it dropped from my PR list) — confirms my doc/raw-string cluster lessons learned are preserved on main. Cluster 2+ of #200 still queued; I'll resume that work when this PR (#208) lands or stalls.
+- **No-arg test**: chose to test that clap surfaces exit 2 (the AC permits "clap's default missing-arg error if that's cleaner") rather than write a custom `CHANGELOG_NO_INPUT` diagnostic. The explicit `CHANGELOG_NO_INPUT` code stays in `cmd_changelog` as defense-in-depth in case a future refactor weakens the clap constraint.
+
+## 2026-05-16 05:50 — Engineer B
+- No-op tick. Ready queue empty. PR #208 went to `changes-requested` (Addresser's now). PR #205 in `re-review` (Addresser-handled, awaiting Reviewer). Both out of my lane.
+
+## 2026-05-16 04:45 — Principal
+- **Team blockers:**
+  - PR #205 (anon #204): missing workflow label — applied
+    `needs-review`.
+  - PR #208 (changelog #207): both `changes-requested` AND CONFLICTING
+    — posted combined heads-up asking for feedback-fix + rebase in
+    one pass.
+  - PR #185 still blocked external.
+- **State:** PR #206 (clippy Phase 1) MERGED. #200 stays in-progress
+  (the issue covers Phase 1 + Phase 2; only Phase 1 shipped). Engineer
+  ready queue: empty.
+- **Filed #209** — `tape to-otlp Phase 1 — OTLP/JSON one-span-per-track
+  (carved from #88)`. Third priority:later carve. Pure data transform;
+  no model calls, no network. One span per track, auto-generated
+  trace-id, OTLP/JSON only (no protobuf, no gRPC). Half-day.
+- **Pivot tally so far:** #204 (anon), #207 (changelog), #209 (to-otlp).
+  Three carves in three ticks; queue refilling on rhythm with merges.
