@@ -19,70 +19,118 @@ The three-year arc:
 
 ---
 
-## Current Milestone — v0.2.2 (binary distribution + remaining v0.2 themes)
+## Current Milestone — v0.2.2 (binary distribution + Phase-2 feature rollup)
 
-**Status:** Open. v0.2.0 shipped 2026-05-15 with the judge-model
-narration theme + 9 new CLI subcommands; v0.2.1 shipped same day as a
-hotfix for #174's workspace path-dep regression. v0.2.2 picks up the
-originally-planned v0.2.1 scope.
+**Status:** Blocked on #144 only. v0.2.0 shipped 2026-05-15 with the
+judge-model narration theme + 9 new CLI subcommands; v0.2.1 shipped
+same day as a hotfix for #174's workspace path-dep regression. v0.2.2
+ships the binary distribution pipeline plus the Phase-2 follow-ons
+that have been landing continuously since v0.2.1.
 
 **Cut criteria for v0.2.2** (in priority order):
 
 1. **#144 (binary distribution) resolved.** Build the macOS-aarch64
    tarball + `SHA256SUMS` for v0.2.0, v0.2.1, and v0.2.2; update the
-   README's `curl` URLs; bump the plugin marketplace entry.
-2. **At least one more original-v0.2 headline theme landed.** Pick from
-   themes #1 (Claude Desktop concrete adapter), #2 (interactive eject),
-   #3 (embedding diff alignment), or #5 (liner-notes-at-eject). Principal
-   scopes which.
-3. **#175 (CI workflow) landed.** Without CI, the next v0.2.x cut
-   risks the same #174-style regression silently surviving. The release
-   pipeline needs a guardrail.
-4. **All open `priority:current` issues closed.**
+   README's `curl` URLs; bump the plugin marketplace entry. **As of
+   2026-05-16 ~05:30Z, #144 has been `priority:current` for 24+ hours
+   without a PR.** PM has elevated and commented; Principal triaged
+   to `priority:current` but no engineer has claimed.
+2. ✅ ~~#175 (CI workflow) landed~~ — done via PR #202 (commit
+   `c5ead97`, 2026-05-16). Minimal cargo check/test/clippy/fmt
+   workflow firing on PR open. The next #174-style regression now
+   has a guardrail.
+3. **All open `priority:current` issues closed** — reduces to "#144
+   resolved" since #144 is the only `priority:current` open.
 
-### Remaining headline themes from the original v0.2 definition
+That's it. **v0.2.2 is one ticket away from releasable.**
 
-These slipped past v0.2.0 and are the v0.2.x target:
+### Headline themes from the original v0.2 definition — deferred to v0.3
 
-1. **Claude Desktop adapter (concrete impl).** Infrastructure landed in
-   v0.2.0 (PR #143); the `ClaudeDesktopAdapter` concrete impl is open.
-   No issue filed yet.
-2. **Interactive eject prompt.** The `[y/n/d/e]` confirmation flow.
-   Not started; no issue filed.
-3. **Embedding-based diff alignment.** Needleman-Wunsch on step-intent
-   embeddings. Not started; no issue filed. Will share `tape-judge`
-   model-client infrastructure.
-5. **Liner-notes-at-eject.** Configurable model + token budget.
-   Adjacent work (`tape relinernote` PR #159) is open at cut; the
-   eject-time variant is the headline-theme target.
+The previous version of this section (commit `9158c9c`, ROADMAP v0.2.2
+spec) listed "At least one more original-v0.2 headline theme landed"
+as cut criterion 2. Dropping it. Reasoning:
+
+- Principal has filed ~15 Phase-2 follow-on tickets since v0.2.0 cut
+  without filing engineering tickets for any of the four original
+  headline themes (#1 Claude Desktop concrete, #2 interactive eject,
+  #3 embedding diff alignment, #5 liner-notes-at-eject). That's a
+  clear staging signal: the headline themes are not v0.2.x scope in
+  practice.
+- v0.2 already delivered headline theme #4 (judge-model narration via
+  PR #153) in v0.2.0. The "minor bump = at least one headline theme"
+  bar has been met.
+- The originally-planned themes #1/#2/#3/#5 move to **v0.3 scope** —
+  see Next Milestone below.
+- Pragmatic shipping over aspirational gating, same precedent as
+  v0.2.0's #144 deferral (commit `dc87494`).
+
+### Phase-2 features shipping in v0.2.2
+
+The continuous Phase-2 work since v0.2.1 — these all ship with v0.2.2
+when it cuts:
+
+- `tape relinernote` (#71 → #159) + `--template` (#196 → #197)
+- `tape annotate --import` (#173 → #176) + `--editor`/`--in-place`
+  (#158 → #161)
+- `tape new --list-templates` / `--describe-template` (#179 → #180),
+  `--set` (#188 → #189), bundled templates (#162 → #165)
+- `tape doctor` categories: `claude-code` (#163 → #164), `signing`
+  (#166 → #167), `index.*` (#183 → #184), `pricing.table.fresh`
+  (#177 → #178)
+- `tape stats --format json` (#157 → #160), `--with-cost` (#168 →
+  #169), `--pricing-file` (#181 → #182)
+- `tape recap --auto` (#151 → #172), `--model` + `.taperc::recap.
+  default_model` (#198 → #199), `tape export --format md` (#8 → #156)
+- `.taperc` extensions: `pricing.pricing_file` (#186 → #187),
+  `new.default_template` (#190 → #191), `annotate` (#192 → #193),
+  `relinernote.default_model` (#194 → #195)
+- `tape tag` Step-1 (#93 → #155)
+- Minimal CI workflow (#175 → #202)
 
 ### Stretch items for v0.2.x
 
 - **Causal-flow detection in diff** (the `causal` class in the schema
-  today but never produced). Pairs with the embedding-based diff
-  alignment work in headline theme #3.
-- **Phase-2 Phase-1 follow-ons** from in-flight PRs at the v0.2.0
-  cut: `tape recap --auto` (#154), `tape export --format md` (#156),
-  `tape relinernote` (#159), `tape new` templates (#165), doctor
-  `signing` category (#167), `tape stats --with-cost` (#168).
-  These ship as they merge — no `priority:current` promotion needed.
+  today but never produced). Pairs with embedding-based diff alignment
+  in v0.3.
+- **`tape anon` Phase 1** (#204 → PR #205 in flight) — strip unix
+  home paths. Ships in v0.2.2 if it merges pre-cut.
 
 ---
 
-## Next Milestone — v0.3 (multi-runtime + ecosystem)
+## Next Milestone — v0.3 (multi-runtime + finish v0.2 promises + ecosystem)
 
-Once the format is proven on two runtimes (Claude Code + Claude Desktop in
-v0.2), v0.3 broadens the surface and seeds the hosted-registry direction:
+v0.3 absorbs the four original-v0.2 headline themes that didn't make
+the v0.2.x cuts, alongside the multi-runtime + ecosystem work:
+
+**Deferred v0.2 headline themes** (still no engineering tickets — Principal
+to scope):
+
+- **Claude Desktop adapter — concrete impl.** Infrastructure (`RuntimeAdapter`
+  trait + `ClaudeCodeAdapter`) landed in v0.2.0 via PR #143. The
+  `ClaudeDesktopAdapter` concrete impl is the gating piece for the
+  second runtime.
+- **Interactive eject prompt** (`[y/n/d/e]` confirmation flow). Lets the
+  user inspect proposed redactions before the tape lands on disk.
+- **Embedding-based diff alignment.** Needleman-Wunsch on step-intent
+  embeddings (see `tape-diff` skill). Shares the model-client
+  infrastructure from the merged `tape-judge` crate.
+- **Liner-notes-at-eject.** Configurable model + token budget. The
+  `tape relinernote` command (shipped in v0.2.x) regenerates after the
+  fact; this would land it at eject time. Shares the `tape-judge`
+  infrastructure.
+
+**Original v0.3 scope:**
 
 - **Codex / OpenAI Agents adapter** and **OpenClaw adapter** — third and
-  fourth runtimes.
-- **Cursor adapter** (#106) — slipping forward if it lands as a v0.2 stretch.
+  fourth runtimes (after Claude Desktop concrete adapter).
+- **Cursor adapter** (build on `RuntimeAdapter` trait).
 - **`tape splice`** — surgical edit of a single track's payload, preserving
   structure.
 - **Hosted cassette registry** — the WebAssembly `tape verify` build (#107)
   is the gating prerequisite for in-browser verification.
-- **Cross-platform binary distribution.** v0.1.x ships macOS-Apple-Silicon
-  only; v0.3 broadens to at least Linux x86_64 + macOS Intel.
+- **Cross-platform binary distribution.** v0.1.x / v0.2.x ship
+  macOS-Apple-Silicon only; v0.3 broadens to at least Linux x86_64 +
+  macOS Intel.
 
 ---
 
