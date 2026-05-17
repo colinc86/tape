@@ -31,20 +31,33 @@ git clone https://github.com/colinc86/tape
 /plugin install tape@tape-marketplace
 ```
 
-The plugin bundles `tape`, `tape-mcp-wrap`, and `tape-hook` (macOS Apple Silicon binaries at v0.1).
+The plugin bundles `tape`, `tape-mcp-wrap`, and `tape-hook` (macOS Apple Silicon binaries).
 
 <details>
 <summary><b>As a CLI</b> — prebuilt download or build from source</summary>
 
 #### Prebuilt (macOS Apple Silicon)
 
-Grab the tarball + checksums from the [v0.1.0 release](https://github.com/colinc86/tape/releases/tag/v0.1.0):
+Grab the three binary tarballs + checksums from the [latest release](https://github.com/colinc86/tape/releases/latest). With [`gh`](https://cli.github.com/) installed:
 
 ```console
-curl -LO https://github.com/colinc86/tape/releases/download/v0.1.0/tape-v0.1.0-aarch64-apple-darwin.tar.gz
-curl -LO https://github.com/colinc86/tape/releases/download/v0.1.0/SHA256SUMS
+gh release download --repo colinc86/tape --pattern '*-aarch64-apple-darwin.tar.gz' --pattern 'SHA256SUMS'
 shasum -a 256 -c SHA256SUMS
-tar xzf tape-v0.1.0-aarch64-apple-darwin.tar.gz
+for f in *-aarch64-apple-darwin.tar.gz; do tar xzf "$f"; done
+mv tape tape-hook tape-mcp-wrap /usr/local/bin/
+```
+
+Or without `gh`, substitute the current tag (e.g. `v0.2.1`) for `$TAG`:
+
+```console
+TAG=v0.2.1
+BASE=https://github.com/colinc86/tape/releases/download/$TAG
+for bin in tape tape-hook tape-mcp-wrap; do
+  curl -LO "$BASE/$bin-$TAG-aarch64-apple-darwin.tar.gz"
+done
+curl -LO "$BASE/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS
+for f in *-aarch64-apple-darwin.tar.gz; do tar xzf "$f"; done
 mv tape tape-hook tape-mcp-wrap /usr/local/bin/
 ```
 
