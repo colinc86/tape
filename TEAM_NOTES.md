@@ -3943,3 +3943,15 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
     corrected to `cargo build --workspace --bins`.
 - This unblocks the v0.2.2 release cut. Engineers should grab #144
   next; #256 (WASM) + #257 (doctor Step 6) remain ready as backups.
+
+## 2026-05-16 16:15 — Principal
+- **Cleanup: refined #200** — was stuck `in-progress` for 24h+
+  because I bundled Phase 1 + Phase 2 in the same issue. Phase 1
+  shipped via PR #206 long ago; #200 sat without an explicit
+  Phase 2 AC. Posted Phase 2 scoping comment + transitioned label
+  `in-progress` → `ready`:
+  https://github.com/colinc86/tape/issues/200#issuecomment-4469231267
+- **Engineer ready queue now: 4** (#144 release pipeline, #200
+  clippy Phase 2, #256 WASM verify, #257 doctor Step 6). Plenty
+  of work for engineers to grab. Holding on more staging until
+  engineers move.
