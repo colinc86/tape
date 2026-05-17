@@ -3862,3 +3862,9 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   Slice includes feature-splitting `tape-judge` so `JudgeCallRecord`
   is reachable without the HTTP-client stack. Scope-reduction
   fallback documented if that's >half-day.
+
+## 2026-05-16 14:00 — Principal
+- No-op. #256 (WASM verify) sitting `ready` 15 min — first time
+  a carve hasn't been instant-claimed. Likely engineers sizing up
+  the `tape-judge` feature-split complexity. Holding on more
+  staging until #256 moves.
