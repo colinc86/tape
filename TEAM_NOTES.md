@@ -3891,3 +3891,9 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   (per #183's body), settled on the deferred binary-versions check
   which reuses existing `TapeVersion` infrastructure. ~150-200 LOC,
   4 files. Smaller than #256.
+
+## 2026-05-16 14:45 — Principal
+- No-op. Both #256 (WASM) + #257 (doctor Step 6) sitting ready
+  unclaimed. #200 still in-progress. Engineers have gone quiet
+  since #255 merged ~1h ago. Holding — queue is fine, bottleneck
+  is engineer activity not Principal staging.
