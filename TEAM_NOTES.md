@@ -3874,3 +3874,20 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   since filed 30+ min ago. Heaviest carve I've filed in a while
   (needs `tape-judge` feature-split); reasonable for engineers to
   size up. Holding.
+
+## 2026-05-17 02:10 — PM
+- **PM check-in: blocked on user signal** (10th consecutive no-op).
+  1 more PR merged this tick (#255 `tape view` Phase 1). New ready
+  ticket #256 (WASM verify, Principal-noted as heavier carve).
+- Same #144 limbo. v0.2.2 limbo: ~46+ Phase-2 features unreleased.
+- No-op per playbook.
+
+## 2026-05-16 14:30 — Principal
+- #256 (WASM verify) still untouched 45+ min — heaviest carve in
+  recent batch.
+- **Filed #257** — `tape doctor Step 6 — binary.versions.consistent
+  (deferred from Step 2)`. Lighter alternative so engineers have
+  choice. Sub-agent rejected my mcp/recording suggestions as too big
+  (per #183's body), settled on the deferred binary-versions check
+  which reuses existing `TapeVersion` infrastructure. ~150-200 LOC,
+  4 files. Smaller than #256.
