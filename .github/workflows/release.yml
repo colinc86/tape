@@ -1,0 +1,103 @@
+name: release
+
+# Builds + uploads release assets on every `v*` tag push.
+#
+# Why this exists: v0.1.2, v0.2.0, and v0.2.1 all shipped without
+# binary assets — three releases in a row where the README's `curl`
+# install path pointed at a stale `v0.1.0` tarball that was the
+# only tarball ever uploaded. Issue #144 tracked the user impact;
+# Principal's 2026-05-16 scope call picked the "fix-once-stays-
+# fixed" durable path over manual per-release uploads.
+#
+# On tag push this workflow:
+#   1. Builds `tape`, `tape-hook`, `tape-mcp-wrap` for
+#      `aarch64-apple-darwin` (the only target v0.2.x ships).
+#   2. Tars each binary as
+#      `<bin>-<tag>-aarch64-apple-darwin.tar.gz`.
+#   3. Emits a single `SHA256SUMS` covering all three tarballs.
+#   4. Uploads everything to the matching GitHub release via
+#      `gh release upload`.
+#
+# Out of scope (per #144):
+# - Cross-platform builds (Linux x86_64, macOS Intel) — v0.3 work.
+# - Plugin marketplace bundle update — manual PM step post-merge.
+# - Retroactive backfill of v0.1.2 / v0.2.0 / v0.2.1 assets — a
+#   one-time PM `gh release upload <tag> ...` after this workflow
+#   proves itself on a fresh v0.2.2 tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# `gh release upload` against the workflow's own `GITHUB_TOKEN`
+# requires `contents: write`. Default `GITHUB_TOKEN` scope is
+# `contents: read` for forks; explicit grant keeps this working
+# regardless of the org-wide default.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-aarch64-apple-darwin:
+    name: build + upload aarch64-apple-darwin
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Honors `rust-toolchain.toml`'s `channel = "stable"`. Mirrors
+      # the toolchain shape used by `build.yml` and
+      # `verify-fixtures.yml` so a release build behaves identically
+      # to the PR-time `cargo build`.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Shares the cache key shape with the other workflows so a
+      # tag push can reuse the warm cache from the merge commit's
+      # `build.yml` run.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      # `--workspace --bins` builds every `[[bin]]` target across the
+      # workspace. The three binaries we ship live across three
+      # crates (`tape-cli` → `tape`, `tape-record` → `tape-hook`,
+      # `tape-mcp-wrap` → `tape-mcp-wrap`); building the whole
+      # workspace is simpler than per-crate `-p` flags and stays
+      # correct if a future bin gets added.
+      - name: Build release binaries
+        run: cargo build --release --workspace --bins
+
+      # Per-binary tarball matches the v0.1.0 / v0.1.1 asset shape
+      # the README's `curl` instructions are built around. `-C
+      # target/release <bin>` produces a tarball whose root entry
+      # is just the bare binary, so `tar xzf ...` drops it into
+      # `$PWD` cleanly.
+      - name: Package tarballs
+        id: package
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          mkdir -p dist
+          for bin in tape tape-hook tape-mcp-wrap; do
+            tar czf "dist/${bin}-${TAG}-aarch64-apple-darwin.tar.gz" \
+              -C target/release "${bin}"
+          done
+          ( cd dist && shasum -a 256 *.tar.gz > SHA256SUMS )
+          ls -la dist
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          # `--clobber` keeps the workflow idempotent: if a tag is
+          # re-pushed or this job is re-run, existing assets get
+          # overwritten instead of erroring.
+          gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
