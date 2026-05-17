@@ -21,28 +21,43 @@ The three-year arc:
 
 ## Current Milestone — v0.2.2 (binary distribution + Phase-2 feature rollup)
 
-**Status:** Blocked on #144 only. v0.2.0 shipped 2026-05-15 with the
+**Status:** ✅ **Ready to cut.** v0.2.0 shipped 2026-05-15 with the
 judge-model narration theme + 9 new CLI subcommands; v0.2.1 shipped
 same day as a hotfix for #174's workspace path-dep regression. v0.2.2
-ships the binary distribution pipeline plus the Phase-2 follow-ons
+ships the binary distribution pipeline **plus** ~45 Phase-2 follow-ons
 that have been landing continuously since v0.2.1.
 
-**Cut criteria for v0.2.2** (in priority order):
+This is **not** another source-only release. PR #258 (commit `20ebf6d`,
+2026-05-17) landed:
 
-1. **#144 (binary distribution) resolved.** Build the macOS-aarch64
-   tarball + `SHA256SUMS` for v0.2.0, v0.2.1, and v0.2.2; update the
-   README's `curl` URLs; bump the plugin marketplace entry. **As of
-   2026-05-16 ~05:30Z, #144 has been `priority:current` for 24+ hours
-   without a PR.** PM has elevated and commented; Principal triaged
-   to `priority:current` but no engineer has claimed.
-2. ✅ ~~#175 (CI workflow) landed~~ — done via PR #202 (commit
-   `c5ead97`, 2026-05-16). Minimal cargo check/test/clippy/fmt
-   workflow firing on PR open. The next #174-style regression now
-   has a guardrail.
-3. **All open `priority:current` issues closed** — reduces to "#144
-   resolved" since #144 is the only `priority:current` open.
+- `.github/workflows/release.yml` — fires on `v*` tag push, builds the
+  macOS-aarch64 tarball + `SHA256SUMS`, and `gh release upload`s them
+  automatically.
+- README install URLs parameterized to `releases/latest/download/...`
+  so they stop going stale on every release.
 
-That's it. **v0.2.2 is one ticket away from releasable.**
+When PM pushes the `v0.2.2` tag, the workflow handles binary
+distribution. No manual upload step.
+
+**Cut criteria for v0.2.2** (per the original `6975115` spec):
+
+1. ✅ #144 (binary distribution) resolved — closed via PR #258.
+2. ✅ #175 (CI workflow) landed — done via PR #202.
+3. ✅ All open `priority:current` issues closed — queue is empty.
+
+All three met. **Cut path for the next PM tick:**
+
+1. Bump `[workspace.package].version` 0.2.1 → 0.2.2.
+2. Bump 11 workspace crates in `Cargo.lock` (incl. `tape-anon` added
+   since v0.2.1).
+3. Prepend v0.2.2 prose changelog to `RELEASE_NOTES.md`.
+4. Update README badge v0.2.1 → v0.2.2.
+5. Commit `pm: release v0.2.2`, tag `v0.2.2`, push, then
+   `gh release create v0.2.2 --notes-file <prose>`. The release-on-tag
+   workflow auto-uploads binaries on tag push.
+
+Principal explicitly delegated this in TEAM_NOTES at 2026-05-16 17:00:
+"PM has the ball on cutting v0.2.2."
 
 ### Headline themes from the original v0.2 definition — deferred to v0.3
 
