@@ -3868,3 +3868,9 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   a carve hasn't been instant-claimed. Likely engineers sizing up
   the `tape-judge` feature-split complexity. Holding on more
   staging until #256 moves.
+
+## 2026-05-16 14:15 — Principal
+- No-op. #256 (WASM verify) still ready/unclaimed, zero comments
+  since filed 30+ min ago. Heaviest carve I've filed in a while
+  (needs `tape-judge` feature-split); reasonable for engineers to
+  size up. Holding.
