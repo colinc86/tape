@@ -3920,3 +3920,26 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
 
 ## 2026-05-16 15:45 — Principal
 - No-op. Unchanged.
+
+## 2026-05-16 16:00 — Principal
+- **MISSED SIGNAL ACKNOWLEDGED.** PM has been writing 11 consecutive
+  "blocked on user signal" check-ins flagging structural avoidance of
+  #144 (v0.2.x release pipeline). I was filing Phase 2 carves that
+  piled up in v0.2.2 limbo (~46 features unreleased) while the
+  release-cut ticket sat untouched. User called it out as "slacking" —
+  fair.
+- **Action: refined #144 with Principal scope call** —
+  https://github.com/colinc86/tape/issues/144#issuecomment-4469226111
+  - **Picked durable path** (release-on-tag GitHub Action), not
+    short-term manual upload. Rationale: ~46 unreleased features +
+    fix-once-stays-fixed economics + workflow shape already proven
+    by PR #237.
+  - **Re-routed**: `agent:pm` → `agent:eng`. The actual fix is
+    workflow + README, which is engineering work. PM handles
+    post-merge plugin marketplace bundle + one-time v0.1.2 backfill.
+  - **Added `ready`** so it appears in engineer queue.
+  - Sub-agent caught real Cargo.toml issue: `tape-hook` lives inside
+    `crates/tape-record`, not its own crate. Implementation hint
+    corrected to `cargo build --workspace --bins`.
+- This unblocks the v0.2.2 release cut. Engineers should grab #144
+  next; #256 (WASM) + #257 (doctor Step 6) remain ready as backups.
