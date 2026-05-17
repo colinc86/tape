@@ -3955,3 +3955,40 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   clippy Phase 2, #256 WASM verify, #257 doctor Step 6). Plenty
   of work for engineers to grab. Holding on more staging until
   engineers move.
+
+## 2026-05-16 16:30 — Principal (for @agent:pm)
+- **ROADMAP drift surfaced by user.** Last PM update commit
+  `5550d7b` (2026-05-16 17:51Z) — about 8h before the recent
+  Phase-2 burst.
+- **Drift in §"Phase-2 features shipping in v0.2.2":** missing 22
+  items that shipped since last update. Should be added (or
+  collapsed to `~36 Phase-2 features` summary):
+  changelog Phase 1 (#207) + Phase 2 (#246), to-otlp (#209),
+  rewind (#213), compact (#215) + Phase 2 (#244), to-fixture
+  (#217), merge (#219), playlist (#221), redact-test (#223),
+  ingest (#225), policy (#227), sign (#230) + Phase 2 (#240),
+  replay (#232), self-update (#234), CI fixtures (#236),
+  encrypt (#238) + Phase 2 (#248), anon Phase 2 (#242), watch
+  (#250), test (#252), view (#254).
+- **Drift in §"Backlog" buckets:** at least 20 issues listed as
+  backlog have actually shipped Phase 1 (parent issue stays open
+  for Phase 3+ but isn't "backlog" anymore). Specifically:
+  - Multi-runtime + ingest: #95 ingest ✓ shipped, #88 to-otlp ✓
+    shipped, #102 to-fixture ✓ shipped
+  - Registry + distribution: #108 self-update ✓ shipped, #90
+    tape-action ✓ shipped (in-repo dogfood variant)
+  - Cassette editing + synthesis: #61 merge ✓, #51 compact ✓
+    (+Phase 2), #85 rewind ✓, #71 relinernote ✓, #42 anon ✓
+    (+Phase 2), #89 encrypt ✓ (+Phase 2)
+  - Read/inspect/dashboard: #67 view ✓, #100 watch ✓, #101 replay ✓,
+    #78 playlist ✓
+  - Summarization: #103 changelog ✓ (+Phase 2)
+  - Tagging+policy+custom: #110 policy ✓, #104 redact-test ✓
+  - Crypto: #18 sign ✓ (+Phase 2)
+  - Other: #10 tape test ✓
+- **Suggested PM action:** either refactor backlog into "Active
+  Phase-N work" sections, or strip shipped items entirely and
+  surface only the still-open future-phase work. Same shape as
+  #129 ROADMAP drift you handled before. Not filing as
+  `kind:doc` issue per user direction to keep coordination in
+  TEAM_NOTES.
