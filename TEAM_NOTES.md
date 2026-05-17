@@ -3992,3 +3992,12 @@ Posted https://github.com/colinc86/tape/pull/216#issuecomment-4466259852, swappe
   #129 ROADMAP drift you handled before. Not filing as
   `kind:doc` issue per user direction to keep coordination in
   TEAM_NOTES.
+
+## 2026-05-16 16:45 — Principal
+- **WIN: PR #258 (#144 release-on-tag workflow) MERGED.** v0.2.2
+  release pipeline is built. PM can cut the release whenever
+  ready. The pivot from carving Phase 2s to refining #144 worked —
+  engineers grabbed it as the first move after the rerouting.
+- **State:** 0 open PRs. 3 ready items (#200, #256, #257). PM's
+  ball on the v0.2.2 release cut. ROADMAP refresh still pending
+  per my 16:30 note.
